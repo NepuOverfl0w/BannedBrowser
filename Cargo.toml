@@ -82,6 +82,12 @@ opt-level = 3
 codegen-units = 4
 debug = "line-tables-only"
 
+# Release packages (scripts/package.sh): stripped binaries.
+[profile.dist]
+inherits = "release"
+debug = false
+strip = true
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 

@@ -11,10 +11,10 @@ mkdir -p dist
 OS="${TARGET:-$(uname -s)}"
 case "$OS" in
   Linux)
-    cargo build --release -p bannedbrowser
+    cargo build --profile dist -p bannedbrowser
     D=dist/bannedbrowser-$VER-linux-x86_64
     rm -rf "$D"; mkdir -p "$D/share/applications" "$D/share/icons/hicolor"
-    cp target/release/bannedbrowser "$D/"
+    cp target/dist/bannedbrowser "$D/"
     cp packaging/linux/bannedbrowser.desktop "$D/share/applications/"
     for s in 16 32 48 64 128 256 512; do
       mkdir -p "$D/share/icons/hicolor/${s}x${s}/apps"
@@ -25,8 +25,12 @@ case "$OS" in
     echo "$D.tar.gz" ;;
   MINGW*|MSYS*|CYGWIN*|Windows_NT|x86_64-pc-windows-gnu)
     T=""; [ "$OS" = "x86_64-pc-windows-gnu" ] && T="--target x86_64-pc-windows-gnu"
-    cargo build --release -p bannedbrowser $T
-    EXE=$(ls target/*/release/bannedbrowser.exe target/release/bannedbrowser.exe 2>/dev/null | head -1)
+    cargo build --profile dist -p bannedbrowser $T
+    EXE=""
+    for f in target/x86_64-pc-windows-gnu/dist/bannedbrowser.exe target/dist/bannedbrowser.exe; do
+      [ -f "$f" ] && { EXE="$f"; break; }
+    done
+    [ -n "$EXE" ] || { echo "bannedbrowser.exe not found" >&2; exit 1; }
     D=dist/bannedbrowser-$VER-windows-x86_64
     rm -rf "$D"; mkdir -p "$D"
     cp "$EXE" resources/icons/bannedbrowser.ico README.md LICENSE-MIT LICENSE-APACHE "$D/"
@@ -34,10 +38,10 @@ case "$OS" in
     if command -v zip >/dev/null; then (cd dist && zip -qr "$(basename "$D").zip" "$(basename "$D")"); else powershell -Command "Compress-Archive -Force -Path '$D' -DestinationPath '$D.zip'"; fi
     echo "$D.zip" ;;
   Darwin)
-    cargo build --release -p bannedbrowser
+    cargo build --profile dist -p bannedbrowser
     APP=dist/BannedBrowser.app
     rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-    cp target/release/bannedbrowser "$APP/Contents/MacOS/"
+    cp target/dist/bannedbrowser "$APP/Contents/MacOS/"
     ICONSET=$(mktemp -d)/BannedBrowser.iconset; mkdir -p "$ICONSET"
     for s in 16 32 128 256 512; do
       cp resources/icons/bannedbrowser-$s.png "$ICONSET/icon_${s}x${s}.png"
