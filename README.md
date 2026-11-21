@@ -20,9 +20,10 @@
 
 ---
 
-> **Status: early development (pre-v0.1).** BannedBrowser renders example.com and
-> 1990s-style sites like theoldnet.com convincingly, but it has no JavaScript,
-> cookies, bookmarks or sandboxing yet. See [PROGRESS.md](PROGRESS.md) for the honest details.
+> **Status: [v0.1.0 "Hello, Old Web"](https://github.com/imm0nv1nhtv/BannedBrowser/releases/tag/v0.1.0) released.**
+> BannedBrowser renders example.com, theoldnet.com and archived 1990s sites convincingly, but
+> it has no JavaScript, cookies, bookmarks or sandboxing yet (that's v0.2). See
+> [PROGRESS.md](PROGRESS.md) for the honest details.
 
 ## 📑 Contents
 

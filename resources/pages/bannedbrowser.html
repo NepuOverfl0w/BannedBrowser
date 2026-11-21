@@ -2,13 +2,32 @@
 <html><head><meta charset="utf-8"><title>About BannedBrowser</title><link rel="stylesheet" href="about:style.css"></head>
 <body><main>
 <h1 class="brand"><span class="b">Banned</span>Browser<span class="x">_</span></h1>
-<p>Version {{VERSION}} — a web browser written from scratch in Rust.</p>
+<p><strong>A web browser hacked together from scratch in Rust. No engines borrowed, no rules followed.</strong></p>
+<p>Version {{VERSION}} · <a href="https://github.com/imm0nv1nhtv/BannedBrowser">github.com/imm0nv1nhtv/BannedBrowser</a> · <a href="https://github.com/imm0nv1nhtv/BannedBrowser/releases">Releases</a></p>
+
 <div class="card glitch">
-<p>Every web-platform component — URL parsing, HTTP, HTML, DOM, CSS, style, layout, painting and this very page — is BannedBrowser's own code. Only platform glue (windows, fonts, image codecs, TLS) comes from third-party crates.</p>
+<p>Most "new browsers" are a skin on Chromium, Gecko or WebKit. BannedBrowser writes the web platform itself: URL parsing, HTTP, HTML, DOM, CSS, style, layout, painting, the browser chrome and this very page are all its own code. Third-party crates are limited to platform glue such as windows, fonts, image codecs and TLS, and the build fails if a borrowed engine sneaks in.</p>
 </div>
-<h2>Credits</h2>
-<p>Built on the WHATWG and CSSWG specifications, tested with html5lib-tests and Web Platform Tests.</p>
-<p>The name is a nod to Silver Wolf's nickname, "Banned". BannedBrowser is an unofficial fan-named project, not affiliated with, endorsed by, or sponsored by HoYoverse. UI inspired by Firefox; not affiliated with Mozilla.</p>
+
+<h2>What we wrote ourselves</h2>
+<table class="list">
+<tr><td>WHATWG URL parser, IDNA, Punycode</td></tr>
+<tr><td>HTTP/1.1 client: keep-alive, chunked, redirects, proxies, <code>data:</code>/<code>file:</code>/<code>about:</code></td></tr>
+<tr><td>HTML tokenizer and tree builder, DOM</td></tr>
+<tr><td>CSS parser, selectors, media queries, cascade, <code>calc()</code>, <code>var()</code></td></tr>
+<tr><td>Block, inline, float, table, flex, positioned layout; frames</td></tr>
+<tr><td>Anti-aliased rasterizer, gradients, shadows, clipping, glyph cache</td></tr>
+<tr><td>The browser chrome toolkit and its icons</td></tr>
+</table>
+
+<h2>Why "BannedBrowser"?</h2>
+<p>The name is a nod to <strong>Silver Wolf</strong> (银狼, <em>Yín Láng</em>) from <em>Honkai: Star Rail</em>, whose handle is <strong>@Banned_Player</strong>. She is a member of the Stellaron Hunters and a genius hacker who has mastered "Aether Editing" to tamper with the data of reality, and who views the universe as a massive immersive simulation game.</p>
+<p>It fits the project's spirit: a browser that <em>bans</em> borrowed engines and builds every piece of the web platform from scratch, just to see if it can.</p>
+<p><em>BannedBrowser is an unofficial fan-named project and is not affiliated with, endorsed by, or sponsored by HoYoverse. Honkai: Star Rail and Silver Wolf are trademarks of their respective owners.</em> No game art, character images or logos are used anywhere in this project.</p>
+
+<h2>Acknowledgements</h2>
+<p>The WHATWG and CSSWG specifications, html5lib-tests, Web Platform Tests and test262. Firefox / Mozilla for UI inspiration (not affiliated). The authors of winit, softbuffer, rustls, ring, fontdb, ttf-parser, rustybuzz, encoding_rs, the image codecs and the other crates we rely on.</p>
+
 <h2>License</h2>
-<p>MIT OR Apache-2.0.</p>
+<p>Licensed under either of MIT or Apache-2.0, at your option.</p>
 </main></body></html>
