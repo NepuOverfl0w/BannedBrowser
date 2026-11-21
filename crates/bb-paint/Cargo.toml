@@ -1,0 +1,18 @@
+[package]
+name = "bb-paint"
+description = "Display list, software rasterizer and Canvas trait"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bb-text.workspace = true
+bb-image.workspace = true
+rustc-hash.workspace = true
+log.workspace = true

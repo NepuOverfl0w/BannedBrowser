@@ -1,0 +1,98 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/bb-url",
+    "crates/bb-net",
+    "crates/bb-dom",
+    "crates/bb-html",
+    "crates/bb-css",
+    "crates/bb-style",
+    "crates/bb-text",
+    "crates/bb-image",
+    "crates/bb-paint",
+    "crates/bb-layout",
+    "crates/bb-js",
+    "crates/bb-engine",
+    "crates/bb-ui",
+    "crates/bannedbrowser",
+    "xtask",
+]
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0-dev"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+repository = "https://github.com/imm0nv1nhtv/BannedBrowser"
+authors = ["BannedBrowser contributors"]
+
+[workspace.dependencies]
+bb-url = { path = "crates/bb-url" }
+bb-net = { path = "crates/bb-net" }
+bb-dom = { path = "crates/bb-dom" }
+bb-html = { path = "crates/bb-html" }
+bb-css = { path = "crates/bb-css" }
+bb-style = { path = "crates/bb-style" }
+bb-text = { path = "crates/bb-text" }
+bb-image = { path = "crates/bb-image" }
+bb-paint = { path = "crates/bb-paint" }
+bb-layout = { path = "crates/bb-layout" }
+bb-engine = { path = "crates/bb-engine" }
+bb-ui = { path = "crates/bb-ui" }
+
+# --- platform glue & narrow utilities (see DEPENDENCIES.md) ---
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+softbuffer = "0.4"
+ttf-parser = "0.25"
+fontdb = "0.23"
+rustybuzz = "0.20"
+unicode-linebreak = "0.1"
+unicode-segmentation = "1"
+unicode-bidi = "0.3"
+unicode-normalization = "0.1"
+png = "0.18"
+zune-jpeg = "0.5"
+gif = "0.14"
+image-webp = "0.2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1"
+flate2 = "1"
+brotli-decompressor = "5"
+encoding_rs = "0.8"
+arboard = { version = "3", default-features = false }
+dirs = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+thiserror = "2"
+anyhow = "1"
+smallvec = "1"
+bitflags = "2"
+rustc-hash = "2"
+crossbeam-channel = "0.5"
+proptest = "1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+codegen-units = 4
+debug = "line-tables-only"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+new_without_default = "allow"
+collapsible_if = "allow"
+collapsible_else_if = "allow"
+needless_range_loop = "allow"
+manual_range_contains = "allow"

@@ -1,0 +1,15 @@
+[package]
+name = "bb-dom"
+description = "Arena-based DOM for BannedBrowser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bitflags.workspace = true

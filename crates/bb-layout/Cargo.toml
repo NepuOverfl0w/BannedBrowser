@@ -1,0 +1,23 @@
+[package]
+name = "bb-layout"
+description = "Box tree and layout (block, inline, float, table, positioned)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bb-dom.workspace = true
+bb-css.workspace = true
+bb-style.workspace = true
+bb-text.workspace = true
+bb-image.workspace = true
+bb-paint.workspace = true
+log.workspace = true
+unicode-linebreak.workspace = true
+smallvec.workspace = true

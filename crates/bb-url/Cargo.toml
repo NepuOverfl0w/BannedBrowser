@@ -1,0 +1,19 @@
+[package]
+name = "bb-url"
+description = "WHATWG URL Standard parser and serializer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true

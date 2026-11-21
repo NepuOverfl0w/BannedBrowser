@@ -1,0 +1,27 @@
+[package]
+name = "bb-engine"
+description = "Per-tab page pipeline: load, parse, style, layout, paint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bb-url.workspace = true
+bb-net.workspace = true
+bb-dom.workspace = true
+bb-html.workspace = true
+bb-css.workspace = true
+bb-style.workspace = true
+bb-text.workspace = true
+bb-image.workspace = true
+bb-paint.workspace = true
+bb-layout.workspace = true
+log.workspace = true
+crossbeam-channel.workspace = true
+encoding_rs.workspace = true

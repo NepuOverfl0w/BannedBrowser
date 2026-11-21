@@ -1,0 +1,22 @@
+[package]
+name = "bb-net"
+description = "HTTP/1.1 client, TLS, redirects, content decoding, file:/data:/about: for BannedBrowser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bb-url.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+flate2.workspace = true
+brotli-decompressor.workspace = true
+encoding_rs.workspace = true
+log.workspace = true
+thiserror.workspace = true

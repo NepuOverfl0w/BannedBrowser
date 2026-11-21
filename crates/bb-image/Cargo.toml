@@ -1,0 +1,19 @@
+[package]
+name = "bb-image"
+description = "Image decoding and caching (wraps allowed decoders)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+png.workspace = true
+zune-jpeg.workspace = true
+gif.workspace = true
+image-webp.workspace = true
+log.workspace = true

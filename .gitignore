@@ -1,0 +1,6 @@
+/target
+/third_party/
+/tests/gui/out/
+/tests/reftests/out/
+*.log
+/out*.png

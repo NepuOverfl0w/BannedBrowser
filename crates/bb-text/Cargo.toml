@@ -1,0 +1,22 @@
+[package]
+name = "bb-text"
+description = "Font discovery, fallback, shaping, line breaking and glyph outlines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fontdb.workspace = true
+ttf-parser.workspace = true
+rustybuzz.workspace = true
+unicode-linebreak.workspace = true
+unicode-segmentation.workspace = true
+unicode-bidi.workspace = true
+log.workspace = true
+rustc-hash.workspace = true
