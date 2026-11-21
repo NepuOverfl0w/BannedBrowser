@@ -121,7 +121,12 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   - **Tree construction is pinned to html5lib-tests `224991e~1`.** Switch to the current tests (they now live in WPT). That brings in processing instructions and `<selectedcontent>`, both of which fail today.
   - **Snapshot regressions are skipped when the font set differs** (every non-Linux runner). Bundle open-licensed test fonts so snapshots render identically on Linux, Windows and macOS.
   - **GUI tests run only on Linux.** Add a GUI test driver for Windows and macOS.
-  - The suites' pass-rate floors (URL 95 %, tokenizer 98 %, tree 90 %) become 100 %, so a failing case can't hide behind a threshold either.
+* **All tests pass** (maintainer, 2026-11-21). v0.2 ships only with 100 % of every suite passing.
+  - The pass-rate floors (URL 95 %, tokenizer 98 %, tree 90 %) become 100 %.
+  - Known failures to fix:
+    - **html5lib tokenizer, 28 cases:** `<?…>` processing instructions (newer spec).
+    - **html5lib tree construction, 5 cases:** 4 × `<selectedcontent>` mirroring, plus `<font><select><option>` with the adoption agency algorithm.
+    - Plus whatever the un-pinned and newly included suites (WPT tree construction, `#script-on`, lone surrogates) reveal.
 * **Certificate error page** (requested by the maintainer):
   - Two buttons: **Go Back** (recommended; goes home if there is no history) and **Advanced…**.
   - Advanced reveals the warning, the readable reason and an error code, plus **Accept the Risk and Continue**.
