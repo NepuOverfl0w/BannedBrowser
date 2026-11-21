@@ -1475,7 +1475,7 @@ impl App {
         let shift = m.shift_key();
         let alt = m.alt_key();
         let ch = |s: &str| matches!(key, Key::Character(c) if c.eq_ignore_ascii_case(s));
-        // Global shortcuts (CLAUDE.md §3.4).
+        // Global shortcuts (Firefox-style; Cmd on macOS, Ctrl elsewhere).
         if (p && ch("l")) || (alt && ch("d")) || matches!(key, Key::Named(NamedKey::F6)) {
             if let Some(f) = bw.find.as_mut() {
                 f.focused = false;

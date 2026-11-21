@@ -86,7 +86,7 @@ Most "new browsers" are a skin on Chromium, Gecko or WebKit. BannedBrowser write
 web platform itself — and enforces it: [`scripts/check-deps.sh`](scripts/check-deps.sh)
 fails the build if `cargo tree` contains html5ever, cssparser, selectors, taffy,
 cosmic-text, tiny-skia, url, hyper, reqwest, egui, gtk, servo, boa, … (full list in
-[CLAUDE.md](CLAUDE.md)).
+[AGENTS.md](AGENTS.md)).
 
 | We wrote it ourselves | We use a crate for it |
 |---|---|

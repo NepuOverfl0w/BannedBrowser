@@ -1,5 +1,6 @@
 # Contributing
 
+* **Rules.** All project rules are in [`AGENTS.md`](../AGENTS.md); this is a summary.
 * **No borrowed engines.** Never add a crate that implements part of the web
   platform, layout, painting, text layout or a GUI toolkit.
   `scripts/check-deps.sh` enforces the banned list; new crates go into

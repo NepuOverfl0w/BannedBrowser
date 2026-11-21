@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Enforce BannedBrowser's "no borrowed engines" rule and the unsafe policy
-# (see CLAUDE.md §1.1-1.3).
+# (see AGENTS.md, hard rules 1-3).
 #
 # Runs `cargo tree -e normal,build --prefix none` for the whole workspace and
 # fails if any banned crate appears. Plain names match exactly (plus `-sys` /
@@ -22,7 +22,7 @@ BANNED=(
   'egui*' eframe 'iced*' 'slint*' 'gtk*' 'gtk4*' 'relm*' 'druid*' 'xilem*' 'fltk*' 'qt*' 'tauri*'
 )
 
-# The only crate allowed to contain `unsafe` (CLAUDE.md §1.3): FFI to the OS
+# The only crate allowed to contain `unsafe` (AGENTS.md, hard rule 3): FFI to the OS
 # video decoders (Media Foundation, VideoToolbox, VA-API). Decided for v0.2.
 UNSAFE_CRATE="crates/bb-media-os"
 
@@ -122,6 +122,6 @@ unsafe_policy "$PWD" || status=1
 if [[ $status == 0 ]]; then
   echo "check-deps: OK ($(echo "$TREE" | awk '{print $1}' | sort -u | wc -l) crates, none banned)"
 else
-  echo "check-deps: FAILED — see the banned crates / unsafe policy violations above (CLAUDE.md §1.1-1.3)" >&2
+  echo "check-deps: FAILED — see the banned crates / unsafe policy violations above (AGENTS.md, hard rules 1-3)" >&2
 fi
 exit $status
