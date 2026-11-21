@@ -7,3 +7,4 @@
 /tests/pages/snapshots/out/
 /dist/
 /out/
+__pycache__/
