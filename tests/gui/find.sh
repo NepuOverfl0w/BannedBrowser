@@ -7,8 +7,7 @@ source "$(dirname "$0")/lib.sh"
 start_browser "$BASE/frames/welcome.html"
 wait_state '.title == "Welcome" and .loading == false'
 
-key ctrl+f
-wait_state '.find_open == true'
+key_until ctrl+f '.find_open == true'
 type_text "paragraph"
 wait_state '.find_total == 40 and .find_active == 0'
 shot find-01
@@ -28,6 +27,5 @@ type_text "zebra"
 wait_state '.find_total == 0'
 shot find-03-notfound
 
-key Escape
-wait_state '.find_open == false'
+key_until Escape '.find_open == false'
 pass "find"

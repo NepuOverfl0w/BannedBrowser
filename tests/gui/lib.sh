@@ -46,8 +46,8 @@ start_browser() {
 
 # wait_state <python-ish jq-like expression over the state JSON>
 wait_state() {
-  local expr="$1" t=0
-  while [ $t -lt 300 ]; do
+  local expr="$1" t=0 tries="${WAIT_TRIES:-300}"
+  while [ $t -lt "$tries" ]; do
     if [ -f "$STATE" ] && python3 - "$STATE" "$expr" <<'PY' 2>/dev/null
 import json, sys, re
 s = json.load(open(sys.argv[1]))
@@ -58,10 +58,23 @@ PY
     then return 0; fi
     sleep 0.1; t=$((t+1))
   done
+  [ -n "${WAIT_TRIES:-}" ] && return 1
   fail "timed out waiting for: $expr"
 }
 
 key() { xdotool key --clearmodifiers "$1"; sleep 0.2; }
+
+# key_until <key> <condition>: press a key, retrying (up to 3 times) if the
+# window manager swallowed it (seen occasionally on CI right after a click).
+key_until() {
+  local k="$1" cond="$2" i
+  for i in 1 2 3; do
+    xdotool windowactivate --sync "$WID" 2>/dev/null || true
+    key "$k"
+    if WAIT_TRIES=30 wait_state "$cond" 2>/dev/null; then return 0; fi
+  done
+  wait_state "$cond"
+}
 type_text() { xdotool type --delay 15 "$1"; sleep 0.2; }
 click_at() { xdotool mousemove --window "$WID" "$1" "$2"; sleep 0.3; xdotool click 1; sleep 0.3; }
 wheel_down() { xdotool mousemove --window "$WID" 640 400; for _ in $(seq 1 "$1"); do xdotool click 5; sleep 0.05; done; }
