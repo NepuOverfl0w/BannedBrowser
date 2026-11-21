@@ -658,6 +658,20 @@ impl FontSystem {
         })
     }
 
+    /// Whether any installed face covers `c` (independent of the fallback logic).
+    pub fn any_face_covers(&self, c: char) -> bool {
+        self.db.faces().any(|f| {
+            self.db
+                .with_face_data(f.id, |data, index| {
+                    ttf_parser::Face::parse(data, index)
+                        .ok()
+                        .and_then(|face| face.glyph_index(c))
+                        .is_some_and(|g| g.0 != 0)
+                })
+                .unwrap_or(false)
+        })
+    }
+
     /// Raw font data, for consumers that need it.
     pub fn face_data(&self, font: FontId) -> Option<(&'static [u8], u32)> {
         self.faces.get(font.0 as usize).map(|f| (f.data, f.index))
@@ -749,12 +763,13 @@ mod tests {
         let s = fs.shape("Hello", &l, 16.0);
         assert_eq!(s.glyphs.len(), 5);
         assert!(s.width > 20.0 && s.width < 60.0, "{}", s.width);
-        // Thai and CJK must not render as .notdef if a font exists.
+        // Thai and CJK must not render as .notdef when a suitable font is installed.
         for text in ["สวัสดี", "日本語"] {
-            let s = fs.shape(text, &l, 16.0);
-            let notdef = s.glyphs.iter().filter(|g| g.id == 0).count();
-            if fs.face_count() > 50 {
-                assert_eq!(notdef, 0, "{text} fell back to tofu");
+            let covered = text.chars().all(|c| fs.any_face_covers(c));
+            let shaped = fs.shape(text, &l, 16.0);
+            let notdef = shaped.glyphs.iter().filter(|g| g.id == 0).count();
+            if covered {
+                assert_eq!(notdef, 0, "{text} fell back to tofu although a font covers it");
             }
         }
         let o = fs.outline(s.glyphs[0].font, s.glyphs[0].id, 16.0);

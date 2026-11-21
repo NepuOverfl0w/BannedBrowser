@@ -30,7 +30,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev \
             libx11-dev libxcursor-dev libxrandr-dev libxi-dev fontconfig fonts-dejavu-core \
-            fonts-liberation2 fonts-noto-core xvfb fluxbox xdotool imagemagick
+            fonts-liberation2 fonts-noto-core fonts-noto-cjk xvfb fluxbox xdotool imagemagick
       - name: Fetch spec suites
         shell: bash
         run: scripts/fetch-spec-tests.sh
