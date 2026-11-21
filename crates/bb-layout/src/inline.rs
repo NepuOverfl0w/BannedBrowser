@@ -395,7 +395,24 @@ pub fn layout_inline(l: &mut Layout, id: BoxId, cx: f32, cy: f32, cw: f32, bfc: 
             Item::Text { .. } => {
                 while pi < pieces.len() && pieces[pi].item == i {
                     let mut p = pieces[pi].clone();
-                    let fits = lb.width + p.width - p.trailing_space <= avail(&st) + 0.01;
+                    // CSS Text 3 §5: decide at a break opportunity using the whole
+                    // unbreakable run up to the next opportunity, which may span
+                    // several pieces (e.g. "D<span>OWNLOAD</span>").
+                    let run_w = if p.break_before || !lb.has_content {
+                        let (mut w, mut k) = (0.0, pi);
+                        let trail = loop {
+                            let q = &pieces[k];
+                            w += q.width;
+                            k += 1;
+                            if q.forced_after || k >= pieces.len() || pieces[k].break_before {
+                                break q.trailing_space;
+                            }
+                        };
+                        w - trail
+                    } else {
+                        p.width - p.trailing_space
+                    };
+                    let fits = lb.width + run_w <= avail(&st) + 0.01;
                     if !fits && lb.has_content && p.break_before {
                         finish_line(
                             l,
