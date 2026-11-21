@@ -22,14 +22,16 @@ wheel_down 6
 wait_state '.scroll_y > 100'
 key_until Home '.scroll_y == 0'
 
-# Overlay scrollbar: track click pages down, thumb drag scrolls to the end.
-click_at 1274 700
+# Overlay scrollbar (6px from the right edge): track click pages down, thumb drag scrolls
+# to the end.
+W=$(state_num win_w); H=$(state_num win_h)
+click_at $((W - 6)) $((H - 100))
 wait_state '.scroll_y > 400 and .scrollbar_visible == true'
 key_until Home '.scroll_y == 0'
-mouse_move 1274 95
+mouse_move $((W - 6)) 95
 mouse_down
 wait_state '.scrollbar_dragging == true'
-mouse_move 1274 790
+mouse_move $((W - 6)) $((H - 10))
 shot 02b-scrollbar-drag
 mouse_up
 wait_state '.scrollbar_dragging == false and .scroll_y > 2000'

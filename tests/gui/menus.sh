@@ -7,8 +7,9 @@ source "$(dirname "$0")/lib.sh"
 start_browser "$BASE/gui/start.html"
 wait_state '.title == "GUI Start" and .loading == false'
 
-# ≡ app menu → New Tab (keyboard).
-click_at 1256 60
+# ≡ app menu (24px from the right edge) → New Tab (keyboard).
+W=$(state_num win_w)
+click_at $((W - 24)) 60
 wait_state '.menu["kind"] == "app" and "New Tab" in .menu["items"] and "About BannedBrowser" in .menu["items"]'
 shot menus-01-app
 key Down
@@ -18,7 +19,7 @@ key accel+w
 wait_state '.window_tabs == 1'
 
 # Clicking outside an open menu closes it without activating what's underneath.
-click_at 1256 60
+click_at $((W - 24)) 60
 wait_state '.menu["kind"] == "app"'
 click_at 100 130
 wait_state '.menu == null'

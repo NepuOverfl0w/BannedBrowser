@@ -137,6 +137,13 @@ PY
   fail "timed out waiting for: $expr"
 }
 
+# state_num <field>: a number from the state file, as an integer (e.g. win_w, win_h). Tests
+# use it for positions near the right/bottom edge, since the window may be smaller than asked
+# for on a small screen (the macOS runner's is 1024x768).
+state_num() {
+  "$PY" -c "import json,sys; print(int(round(json.load(open(sys.argv[1]))[sys.argv[2]])))" "$STATE" "$1"
+}
+
 # key <combo>: e.g. accel+t, shift+Return, alt+Left, Escape.
 key() {
   local k="$1"
