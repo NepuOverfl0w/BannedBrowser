@@ -8,7 +8,7 @@
 | Reftests | `scripts/run-reftests.sh` | `tests/reftests/*.html` with `<link rel="match">`; diffs land in `tests/reftests/out/` |
 | Robustness | part of `cargo test` | proptest / seeded random input for URL, HTML, CSS, HTTP decoding, images |
 | Headless screenshots | `bannedbrowser --headless --screenshot out.png --window-size 1024x768 URL` | look at them! |
-| GUI | `scripts/gui-smoke.sh` | Xvfb + Fluxbox, xdotool, asserts on `BB_TEST_STATE` JSON |
+| GUI | `scripts/gui-smoke.sh` | real OS input: xdotool (Linux, Xvfb + Fluxbox), SendInput (Windows), CGEvent (macOS); asserts on `BB_TEST_STATE` JSON |
 
 ## Writing a reftest
 

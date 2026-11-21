@@ -47,6 +47,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 - Version is `0.2.0-dev` on `main`.
 
 ### Development
+- GUI tests run on Windows and macOS too, with real OS input (`SendInput`, `CGEvent`), in CI on
+  every push. They now also assert window resizing and maximizing.
 - Snapshot regressions render with bundled, openly licensed fonts (`tests/fonts/`: Liberation,
   Inter, Noto Naskh Arabic, small Noto Sans SC / Noto Sans subsets) instead of the system's, so
   they run on Linux, Windows and macOS rather than being skipped off Linux.

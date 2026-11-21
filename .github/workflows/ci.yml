@@ -59,6 +59,14 @@ jobs:
           DISPLAY=:99 fluxbox >/dev/null 2>&1 &
           sleep 1
           DISPLAY=:99 scripts/gui-smoke.sh
+      - name: Screen size (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+      - name: GUI tests (real OS input)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: scripts/gui-smoke.sh
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

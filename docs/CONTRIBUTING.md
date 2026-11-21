@@ -75,7 +75,7 @@ scripts/check-deps.sh --self-test && scripts/check-deps.sh
 | Network | `cargo test -p bb-net --test http_integration` | Starts `tests/server/testserver.py`, which serves HTTP and HTTPS. Its CA in `tests/certs/` is test-only. |
 | Reftests | `scripts/run-reftests.sh` | `tests/reftests/NAME.html` + `<link rel="match" href="NAME-ref.html">`. Diffs go to `tests/reftests/out/`. |
 | Snapshot regressions | `cargo test -p bb-engine --test snapshots` | Saved real pages compared with `tests/pages/snapshots/approved/`. Rendered with only the bundled fonts in `tests/fonts/`, so results are the same on every OS. |
-| GUI | `scripts/gui-smoke.sh` | Linux with Xvfb. Each test drives the real window with xdotool and checks the state file the browser writes when `BB_TEST_STATE` is set. |
+| GUI | `scripts/gui-smoke.sh` | Linux (Xvfb + xdotool), Windows (Git Bash; a `SendInput` driver built with the .NET Framework's `csc`) and macOS (a `CGEvent` driver built with `swiftc`; grant your terminal Accessibility). Each test drives the real window and checks the state file the browser writes when `BB_TEST_STATE` is set. |
 
 ### Writing a reftest
 

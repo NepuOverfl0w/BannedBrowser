@@ -129,9 +129,15 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
   - Re-approve with `BB_UPDATE_SNAPSHOTS=1 cargo test -p bb-engine --test snapshots`, but **only
     after viewing every changed PNG**.
 - **GUI tests:**
-  - `scripts/gui-smoke.sh` runs `tests/gui/*.sh` under Xvfb + a window manager, driven with xdotool.
+  - `scripts/gui-smoke.sh` runs `tests/gui/*.sh` with real OS input on all three OSes:
+    xdotool under Xvfb + a window manager on Linux, a `SendInput` driver on Windows (Git Bash),
+    a `CGEvent` driver on macOS (needs Accessibility for the terminal/runner).
+  - Tests only use `tests/gui/lib.sh` functions (`click_at`, `mouse_move`, `key accel+t`, …):
+    coordinates are logical pixels in the content area, `accel` is Cmd on macOS and Ctrl elsewhere.
+    Use `state_num win_w`/`win_h` for positions near the right/bottom edge (small screens shrink
+    the window).
   - The tests assert on the JSON state file the browser writes when `BB_TEST_STATE` is set.
-  - Packages they need: `xvfb fluxbox xdotool wmctrl imagemagick libxkbcommon-x11-0`.
+  - Linux packages they need: `xvfb fluxbox xdotool wmctrl imagemagick libxkbcommon-x11-0`.
   - Use `key_until` (in `tests/gui/lib.sh`) only for idempotent keys.
 - **Archived sites:**
   - `scripts/archived-sites.sh` (also the CI workflow "Archived sites") renders the sites listed in

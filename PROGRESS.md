@@ -26,7 +26,7 @@ _Last updated: 2026-11-21 (session 1)._
 | Reftests (`tests/reftests`) | **48 / 48** |
 | Snapshot regressions (`tests/pages/snapshots`) | 12 pages (example.com ×2, theoldnet ×2, myip.wtf, 5 archived sites, retro, frames), rendered with the bundled `tests/fonts/` only, so they run on every OS |
 | `cargo test --workspace` | 119 test functions, 0 failures |
-| GUI smoke (`scripts/gui-smoke.sh`) | `basic.sh` (open, link click, back, wheel scroll, scrollbar track click + thumb drag, URL bar, new/close/reopen tab, resize, maximize, new window, private window), `frames.sh` (frameset render, wheel scrolls the frame under the pointer, targeted link loads into the named frame), `find.sh` (incremental find, stepping, scroll to match, not found, close) and `menus.sh` (≡ menu, link/tab/page/URL-bar context menus, keyboard and mouse, Esc and click-outside) pass |
+| GUI tests (`scripts/gui-smoke.sh`), Linux + Windows + macOS with real OS input | `basic.sh` (open, link click, back, wheel scroll, scrollbar track click + thumb drag, URL bar, new/close/reopen tab, resize, maximize, new window, private window), `frames.sh` (frameset render, wheel scrolls the frame under the pointer, targeted link loads into the named frame), `find.sh` (incremental find, stepping, scroll to match, not found, close) and `menus.sh` (≡ menu, link/tab/page/URL-bar context menus, keyboard and mouse, Esc and click-outside) pass |
 | `scripts/check-deps.sh` | OK — 162 crates, none banned |
 | Cross targets | `cargo clippy --target x86_64-pc-windows-gnu -D warnings` ✅ and Windows release `.exe` builds; `cargo check --target aarch64-apple-darwin` ✅ for every crate except those linking `ring` (see gaps) |
 
@@ -64,7 +64,7 @@ _Last updated: 2026-11-21 (session 1)._
 - [x] Robustness: unknown tags, broken markup, missing images, `<script>` ignored, `<noscript>` shown
 - [x] Local snapshots + regression tests (example.com, theoldnet.com + lite, myip.wtf)
 - [x] 5 archived sites via theoldnet (GeoCities Area51, GeoCities home, Netscape, WinZip, Microsoft IE; live renders + offline snapshots)
-- [x] CI green on all three OSes (build, clippy, tests, reftests, snapshots; GUI tests on Linux)
+- [x] CI green on all three OSes (build, clippy, tests, reftests, snapshots; GUI tests on Linux; since v0.2 work also on Windows and macOS)
 - [x] Release artifacts built in CI on all three OSes: Linux `.tar.gz` (3.9 MB, binary + .desktop + icons), Windows `.zip` (2.9 MB), macOS `.app` zip (2.9 MB); stripped `dist` profile. Unsigned/not notarized.
 - [x] README with real screenshots
 
@@ -140,11 +140,13 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   - **Tree construction, 14 `#script-on` cases not run** (8 old ones plus 6 in WPT's `scripted_*.dat`). Run them with the scripting flag on once our JS engine exists (milestone E).
   - ~~**Tree construction is pinned to html5lib-tests `224991e~1`.**~~ Done (session 2): the suite now comes from WPT (`html/syntax/parsing/resources`, pinned to a WPT commit for reproducibility). That brought in processing instructions (now implemented), `#description` records, the new frameset-ok reset when `<body>` is inserted implicitly, and "parsing template contents" for the form element pointer (both fixed).
   - ~~**Snapshot regressions are skipped when the font set differs.**~~ Done (session 2): the test renders with only the bundled fonts in `tests/fonts/` (Liberation 2.1.5, Inter 4.0, Noto Naskh Arabic unmodified; Noto Sans SC and Noto Sans subsets; all OFL 1.1), ~7 MB. Two approvals changed after viewing: `retro` ("Comic Sans MS, Arial" now falls to Arial instead of the system's DejaVu alias) and `example.com-postjs` (Arabic now in Noto Naskh Arabic).
-  - **GUI tests run only on Linux.** Add a GUI test driver for Windows and macOS. Decided: real
-    OS-level input on every OS (xdotool on Linux, SendInput via PowerShell on Windows, CGEvent /
-    AppleScript on macOS), not an in-app hook. The risk: GitHub's macOS runners need
-    accessibility permission for synthetic input; if that can't be granted, report it rather
-    than skip the tests.
+  - ~~**GUI tests run only on Linux.**~~ Done (session 2): all four GUI tests run in CI on Linux,
+    Windows and macOS with real OS input: xdotool (Linux), `tests/gui/drivers/Driver.cs`
+    (Windows, `SendInput`, built with the .NET Framework's `csc`) and
+    `tests/gui/drivers/macos.swift` (macOS, `CGEvent` + Accessibility, built with `swiftc`).
+    GitHub's macOS runners do grant Accessibility. macOS lessons: pressing the green button
+    means full screen (zoom is Option-click), and hovering it opens a tiling popover that takes
+    the keyboard, so tests keep the pointer inside the page.
 * **All tests pass** (maintainer, 2026-11-21). v0.2 ships only with 100 % of every suite passing.
   - The pass-rate floors (URL 95 %, tokenizer 98 %, tree 90 %) become 100 %.
   - Known failures to fix:

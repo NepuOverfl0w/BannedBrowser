@@ -313,7 +313,7 @@ HTTPS/HTTP proxies are taken from `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `
 scripts/fetch-spec-tests.sh            # html5lib-tests, WPT urltestdata, entities.json → third_party/
 cargo test --workspace                 # unit, spec, integration, robustness, reftests, snapshots
 scripts/run-reftests.sh                # reftests only (diff PNGs in tests/reftests/out/)
-scripts/gui-smoke.sh                   # GUI tests under Xvfb + Fluxbox (xdotool)
+scripts/gui-smoke.sh                   # GUI tests with real OS input (Linux, Windows, macOS)
 scripts/check-deps.sh                  # the no-borrowed-engines rule
 ```
 
