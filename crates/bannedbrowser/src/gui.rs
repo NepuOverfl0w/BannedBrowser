@@ -62,6 +62,7 @@ enum Target {
     Home,
     UrlBar,
     Menu,
+    Scrollbar,
     Content,
 }
 
@@ -85,6 +86,10 @@ struct BrowserWindow {
     pending_background: Vec<Url>,
     /// The next content click should open in a background tab.
     click_background: bool,
+    /// When the page was last scrolled (scrollbar visibility).
+    last_scroll: Instant,
+    /// Dragging the scrollbar thumb: grab offset within the thumb (logical px).
+    drag_thumb: Option<f32>,
 }
 
 struct ClosedTab {
@@ -190,6 +195,8 @@ impl App {
             dirty: true,
             pending_background: Vec::new(),
             click_background: false,
+            last_scroll: Instant::now() - Duration::from_secs(10),
+            drag_thumb: None,
         };
         for u in urls {
             let t = self.new_tab(&mut bw, Some(u));
@@ -278,6 +285,8 @@ impl App {
                 v["private"] = serde_json::json!(w.private);
                 v["hover_link"] = serde_json::json!(t.hover_link);
                 v["url_text"] = serde_json::json!(w.url.text);
+                v["scrollbar_visible"] = serde_json::json!(w.scrollbar().is_some() && w.scrollbar_visible());
+                v["scrollbar_dragging"] = serde_json::json!(w.drag_thumb.is_some());
             }
         }
         let tmp = path.with_extension("tmp");
@@ -382,6 +391,7 @@ impl BrowserWindow {
             let ny = (t.scroll_y + dy).clamp(0.0, max);
             if (ny - t.scroll_y).abs() > 0.1 {
                 t.scroll_y = ny;
+                self.last_scroll = Instant::now();
                 self.request_render();
                 self.dirty = true;
             }
@@ -429,6 +439,28 @@ impl BrowserWindow {
         Rect::new(x, TAB_STRIP_H + 4.0, (w - x - 56.0).max(60.0), 32.0)
     }
 
+    /// Scrollbar track and thumb rects (logical px), if the page scrolls.
+    fn scrollbar(&self) -> Option<(Rect, Rect)> {
+        let t = self.tab()?;
+        let c = self.content_rect();
+        if t.content_height <= c.h + 0.5 || c.h <= 0.0 {
+            return None;
+        }
+        let wide = matches!(self.hover, Target::Scrollbar) || self.drag_thumb.is_some();
+        let w = if wide { 10.0 } else { 6.0 };
+        let track = Rect::new(c.right() - w - 2.0, c.y + 2.0, w, c.h - 4.0);
+        let th = (track.h * c.h / t.content_height).max(24.0).min(track.h);
+        let max = (t.content_height - c.h).max(1.0);
+        let ty = track.y + (track.h - th) * (t.scroll_y / max).clamp(0.0, 1.0);
+        Some((track, Rect::new(track.x, ty, w, th)))
+    }
+
+    fn scrollbar_visible(&self) -> bool {
+        self.drag_thumb.is_some()
+            || matches!(self.hover, Target::Scrollbar)
+            || self.last_scroll.elapsed() < Duration::from_millis(1200)
+    }
+
     fn content_rect(&self) -> Rect {
         let (w, h) = self.logical_size();
         Rect::new(0.0, CHROME_H, w, (h - CHROME_H).max(0.0))
@@ -436,6 +468,11 @@ impl BrowserWindow {
 
     fn target_at(&self, x: f32, y: f32) -> Target {
         if y >= CHROME_H {
+            if let Some((track, _)) = self.scrollbar() {
+                if x >= track.x - 6.0 {
+                    return Target::Scrollbar;
+                }
+            }
             return Target::Content;
         }
         for (i, r) in self.tab_rects().iter().enumerate() {
@@ -633,6 +670,19 @@ impl BrowserWindow {
             p.rect(Rect::new(0.0, CHROME_H - 2.0, w * frac * 0.9, 2.0), th.glitch);
         }
         p.rect(Rect::new(0.0, CHROME_H - 1.0, w, 1.0), th.separator);
+        // Overlay scrollbar.
+        if self.scrollbar_visible() {
+            if let Some((track, thumb)) = self.scrollbar() {
+                if matches!(self.hover, Target::Scrollbar) || self.drag_thumb.is_some() {
+                    p.rounded(track, track.w / 2.0, th.text.with_alpha(0.08));
+                }
+                let c = if self.drag_thumb.is_some() { th.accent } else { th.text.with_alpha(0.5) };
+                // A halo in the toolbar color keeps the thumb visible on any page color.
+                let halo = Rect::new(thumb.x - 1.0, thumb.y - 1.0, thumb.w + 2.0, thumb.h + 2.0);
+                p.rounded(halo, halo.w / 2.0, th.toolbar.with_alpha(0.6));
+                p.rounded(thumb, thumb.w / 2.0, c);
+            }
+        }
         // Status panel (hovered link).
         if let Some(link) = t.and_then(|t| t.hover_link.clone()) {
             let (_, h) = self.logical_size();
@@ -868,6 +918,16 @@ impl ApplicationHandler<UserEvent> for App {
                 let k = bw.scale();
                 let (x, y) = (position.x as f32 / k, position.y as f32 / k);
                 bw.mouse = (x, y);
+                if let Some(grab) = bw.drag_thumb {
+                    if let (Some((track, thumb)), Some(t)) = (bw.scrollbar(), bw.tab()) {
+                        let max = (t.content_height - bw.content_rect().h).max(0.0);
+                        let frac = ((y - grab - track.y) / (track.h - thumb.h).max(1.0)).clamp(0.0, 1.0);
+                        bw.scroll_to(frac * max);
+                    }
+                    bw.window.request_redraw();
+                    self.windows.insert(id, bw);
+                    return;
+                }
                 let tgt = bw.target_at(x, y);
                 if tgt != bw.hover {
                     bw.hover = tgt;
@@ -896,6 +956,24 @@ impl ApplicationHandler<UserEvent> for App {
                 let (x, y) = bw.mouse;
                 let tgt = bw.target_at(x, y);
                 match (state, button) {
+                    (ElementState::Pressed, MouseButton::Left) if tgt == Target::Scrollbar => {
+                        if let Some((_, thumb)) = bw.scrollbar() {
+                            if y >= thumb.y && y < thumb.bottom() {
+                                bw.drag_thumb = Some(y - thumb.y);
+                            } else {
+                                let page = bw.viewport().1 * 0.85;
+                                bw.scroll_by(if y < thumb.y { -page } else { page });
+                            }
+                        }
+                        bw.dirty = true;
+                        state_changed = true;
+                    }
+                    (ElementState::Released, MouseButton::Left) if bw.drag_thumb.is_some() => {
+                        bw.drag_thumb = None;
+                        bw.last_scroll = Instant::now();
+                        bw.dirty = true;
+                        state_changed = true;
+                    }
                     (ElementState::Pressed, MouseButton::Left) => {
                         bw.pressed = tgt;
                         if tgt == Target::UrlBar {
@@ -998,14 +1076,25 @@ impl ApplicationHandler<UserEvent> for App {
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         // Animate only while something is loading (idle = 0% CPU).
         let mut animating = false;
+        let mut wake: Option<Instant> = None;
+        let now = Instant::now();
         for bw in self.windows.values() {
             if bw.tabs.iter().any(|t| t.loading) {
                 animating = true;
                 bw.window.request_redraw();
             }
+            // Hide the overlay scrollbar once it goes idle.
+            let hide_at = bw.last_scroll + Duration::from_millis(1250);
+            if hide_at > now {
+                wake = Some(wake.map_or(hide_at, |w| w.min(hide_at)));
+            } else if hide_at + Duration::from_millis(300) > now {
+                bw.window.request_redraw();
+            }
         }
         el.set_control_flow(if animating {
-            ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(33))
+            ControlFlow::WaitUntil(now + Duration::from_millis(33))
+        } else if let Some(w) = wake {
+            ControlFlow::WaitUntil(w + Duration::from_millis(60))
         } else {
             ControlFlow::Wait
         });

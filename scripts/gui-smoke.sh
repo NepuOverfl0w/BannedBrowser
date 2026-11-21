@@ -5,9 +5,9 @@ cd "$(dirname "$0")/.."
 export DISPLAY="${DISPLAY:-:99}"
 command -v vdisplay-start >/dev/null && vdisplay-start >/dev/null
 cargo build -q -p bannedbrowser
-python3 tests/server/testserver.py --port 0 --exit-on-stdin-eof < <(sleep 100000) > /tmp/bb-server.out 2>/dev/null &
-SERVER=$!
-trap 'kill $SERVER 2>/dev/null || true' EXIT
+rm -f /tmp/bb-server.out
+# The server exits when fd 3 (its stdin) closes, i.e. when this script ends.
+exec 3> >(python3 tests/server/testserver.py --port 0 --exit-on-stdin-eof > /tmp/bb-server.out 2>/dev/null)
 for _ in $(seq 1 50); do grep -q '^PORT' /tmp/bb-server.out 2>/dev/null && break; sleep 0.1; done
 export BASE="http://127.0.0.1:$(awk '/^PORT/{print $2}' /tmp/bb-server.out)"
 status=0

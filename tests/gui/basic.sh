@@ -24,6 +24,21 @@ wait_state '.scroll_y > 100'
 key Home
 wait_state '.scroll_y == 0'
 
+# Overlay scrollbar: track click pages down, thumb drag scrolls to the end.
+click_at 1274 700
+wait_state '.scroll_y > 400 and .scrollbar_visible == true'
+key Home
+wait_state '.scroll_y == 0'
+xdotool mousemove --window "$WID" 1274 95; sleep 0.3
+xdotool mousedown 1; sleep 0.2
+wait_state '.scrollbar_dragging == true'
+xdotool mousemove --window "$WID" 1274 790; sleep 0.4
+shot 02b-scrollbar-drag
+xdotool mouseup 1; sleep 0.3
+wait_state '.scrollbar_dragging == false and .scroll_y > 2000'
+key Home
+wait_state '.scroll_y == 0'
+
 # URL bar: focus, type, enter.
 key ctrl+l
 type_text "$BASE/gui/page2.html"
