@@ -16,4 +16,5 @@ png.workspace = true
 zune-jpeg.workspace = true
 gif.workspace = true
 image-webp.workspace = true
-log.workspace = true
+zune-core = "0.5"
+

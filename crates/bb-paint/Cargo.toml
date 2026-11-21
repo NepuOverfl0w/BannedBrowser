@@ -16,3 +16,4 @@ bb-text.workspace = true
 bb-image.workspace = true
 rustc-hash.workspace = true
 log.workspace = true
+png.workspace = true

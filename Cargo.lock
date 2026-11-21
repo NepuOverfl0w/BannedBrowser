@@ -194,7 +194,6 @@ version = "0.1.0-dev"
 dependencies = [
  "log",
  "proptest",
- "smallvec",
 ]
 
 [[package]]
@@ -238,8 +237,8 @@ version = "0.1.0-dev"
 dependencies = [
  "gif",
  "image-webp",
- "log",
  "png",
+ "zune-core",
  "zune-jpeg",
 ]
 
@@ -258,6 +257,7 @@ dependencies = [
  "bb-style",
  "bb-text",
  "log",
+ "rustc-hash",
  "smallvec",
  "unicode-linebreak",
 ]
@@ -283,6 +283,7 @@ dependencies = [
  "bb-image",
  "bb-text",
  "log",
+ "png",
  "rustc-hash",
 ]
 
@@ -292,9 +293,9 @@ version = "0.1.0-dev"
 dependencies = [
  "bb-css",
  "bb-dom",
+ "bb-html",
  "log",
  "rustc-hash",
- "smallvec",
 ]
 
 [[package]]
@@ -305,7 +306,6 @@ dependencies = [
  "log",
  "rustc-hash",
  "rustybuzz",
- "ttf-parser",
  "unicode-bidi",
  "unicode-linebreak",
  "unicode-segmentation",
@@ -863,7 +863,6 @@ checksum = "457e789b3d1202543297a350643cf459f836cade38934e7a4cf6a39e7cde2905"
 dependencies = [
  "fontconfig-parser",
  "log",
- "memmap2",
  "slotmap",
  "tinyvec",
  "ttf-parser",

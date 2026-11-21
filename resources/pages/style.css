@@ -1,0 +1,19 @@
+/* Shared style for BannedBrowser internal pages (rendered by our own engine). */
+:root { color-scheme: light dark; --accent: #7c5cff; --glitch: #3df2e0; --bg: light-dark(#f9f9fb, #1c1b22); --fg: light-dark(#15141a, #fbfbfe); --muted: light-dark(#5b5b66, #bfbfc9); --card: light-dark(#ffffff, #2b2a33); --border: light-dark(#e0e0e6, #3a3944); }
+html { background: var(--bg); color: var(--fg); }
+body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 48px 24px; }
+main { max-width: 680px; margin: 0 auto; }
+h1 { font-size: 28px; font-weight: 600; margin: 0 0 8px; letter-spacing: -0.5px; }
+h2 { font-size: 18px; font-weight: 600; margin: 24px 0 8px; }
+p { margin: 8px 0; color: var(--muted); }
+a { color: var(--accent); }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; margin: 16px 0; }
+.brand { font-weight: 700; letter-spacing: 1px; }
+.brand .b { color: var(--accent); }
+.brand .x { color: var(--glitch); }
+code, pre { font-family: monospace; font-size: 13px; }
+.mono { font-family: monospace; color: var(--muted); }
+.btn { display: inline-block; background: var(--accent); color: white; border-radius: 6px; padding: 6px 16px; text-decoration: none; font-weight: 600; }
+table.list { border-collapse: collapse; width: 100%; }
+table.list td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.glitch { border-left: 4px solid var(--accent); padding-left: 12px; }

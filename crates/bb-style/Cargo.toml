@@ -15,5 +15,7 @@ workspace = true
 bb-css.workspace = true
 bb-dom.workspace = true
 log.workspace = true
-smallvec.workspace = true
 rustc-hash.workspace = true
+
+[dev-dependencies]
+bb-html.workspace = true

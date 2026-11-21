@@ -1,0 +1,8 @@
+/* HTML §15.3.2/§15.3.8 rules that apply only in quirks mode. */
+img[align=left i] { margin-right: 3px; }
+img[align=right i] { margin-left: 3px; }
+li, dd, dt { list-style-position: outside; }
+/* "The table cell font-size quirk": tables don't inherit font properties. */
+table { font-weight: initial; font-style: initial; font-variant: initial; font-size: initial; line-height: initial; white-space: initial; text-align: initial; }
+input:not([type=image i]), textarea { box-sizing: border-box; }
+form { margin-block-end: 1em; }

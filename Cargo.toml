@@ -44,8 +44,7 @@ bb-ui = { path = "crates/bb-ui" }
 # --- platform glue & narrow utilities (see DEPENDENCIES.md) ---
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 softbuffer = "0.4"
-ttf-parser = "0.25"
-fontdb = "0.23"
+fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "fontconfig"] }
 rustybuzz = "0.20"
 unicode-linebreak = "0.1"
 unicode-segmentation = "1"
@@ -96,3 +95,4 @@ collapsible_if = "allow"
 collapsible_else_if = "allow"
 needless_range_loop = "allow"
 manual_range_contains = "allow"
+self_named_constructors = "allow"
