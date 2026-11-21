@@ -260,6 +260,40 @@ impl FontSystem {
         GLOBAL.get_or_init(|| Mutex::new(FontSystem::new()))
     }
 
+    /// Make the shared font system use **only** the fonts in `dir` (no system fonts), so text
+    /// renders identically on every OS. Used by the snapshot tests with the bundled
+    /// `tests/fonts/`. Returns false if the shared font system was already in use (then
+    /// nothing changes).
+    pub fn use_only_fonts_from(dir: &std::path::Path) -> bool {
+        let mut fresh = false;
+        GLOBAL.get_or_init(|| {
+            fresh = true;
+            Mutex::new(FontSystem::from_dir(dir))
+        });
+        fresh
+    }
+
+    /// A font system with only the font files in `dir`, loaded in file-name order so that
+    /// font matching and fallback are deterministic.
+    pub fn from_dir(dir: &std::path::Path) -> FontSystem {
+        let mut db = fontdb::Database::new();
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+            .unwrap_or_default();
+        files.retain(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc" | "otc"))
+        });
+        files.sort();
+        for f in files {
+            if let Err(e) = db.load_font_file(&f) {
+                log::warn!("can't load {}: {e}", f.display());
+            }
+        }
+        Self::with_db(db)
+    }
+
     /// Lock the global font system, recovering from a poisoned lock.
     pub fn lock() -> std::sync::MutexGuard<'static, FontSystem> {
         match Self::global().lock() {
@@ -277,6 +311,10 @@ impl FontSystem {
             db.load_fonts_dir(dir);
         }
         log::info!("font database: {} faces in {:?}", db.len(), t0.elapsed());
+        Self::with_db(db)
+    }
+
+    fn with_db(db: fontdb::Database) -> FontSystem {
         FontSystem {
             db,
             faces: Vec::new(),

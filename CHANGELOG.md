@@ -47,6 +47,9 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 - Version is `0.2.0-dev` on `main`.
 
 ### Development
+- Snapshot regressions render with bundled, openly licensed fonts (`tests/fonts/`: Liberation,
+  Inter, Noto Naskh Arabic, small Noto Sans SC / Noto Sans subsets) instead of the system's, so
+  they run on Linux, Windows and macOS rather than being skipped off Linux.
 - Tree-construction tests come from WPT (`html/syntax/parsing/resources`, where they moved from
   html5lib-tests), pinned to a WPT commit. Tokenizer 7046/7046 and tree construction 1959/1959; both suites
   must now pass 100 %.

@@ -1,11 +1,10 @@
 //! Offline regression tests: render saved real-world pages
 //! (`tests/pages/snapshots/`) and compare with approved screenshots.
 //!
-//! Text rendering depends on the installed fonts, so the approved images are
-//! tied to a font set; `approved/FONTS.txt` records which families the generic
-//! names resolved to. On a machine with a different font set the comparison is
-//! reported as skipped (it can't be meaningful). Set `BB_UPDATE_SNAPSHOTS=1`
-//! to (re)approve after checking the new renders by eye.
+//! Text is rendered with only the bundled fonts in `tests/fonts/` (never the system's), so
+//! the screenshots are the same on Linux, Windows and macOS; `approved/FONTS.txt` records
+//! which families the generic names resolve to, as a check. Set `BB_UPDATE_SNAPSHOTS=1` to
+//! (re)approve after checking the new renders by eye.
 
 use bb_engine::{Page, PageConfig};
 use bb_url::Url;
@@ -44,15 +43,20 @@ fn font_fingerprint() -> String {
 fn snapshot_regressions() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/pages/snapshots");
     let approved = root.join("approved");
+    let fonts = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fonts");
+    assert!(
+        bb_text::FontSystem::use_only_fonts_from(&fonts),
+        "the font system was initialized before the snapshot test could select the bundled fonts"
+    );
     let update = std::env::var_os("BB_UPDATE_SNAPSHOTS").is_some();
     let fp = font_fingerprint();
     let fp_file = approved.join("FONTS.txt");
     if update {
         std::fs::create_dir_all(&approved).unwrap();
         std::fs::write(&fp_file, &fp).unwrap();
-    } else if std::fs::read_to_string(&fp_file).map(|s| s.trim() != fp.trim()).unwrap_or(true) {
-        println!("snapshot comparison skipped: font set differs from the approved one\n{fp}");
-        return;
+    } else {
+        let want = std::fs::read_to_string(&fp_file).unwrap_or_default();
+        assert_eq!(want.trim(), fp.trim(), "bundled fonts resolve differently from approved/FONTS.txt");
     }
     let client = bb_engine::new_client(Vec::new());
     let mut failures = Vec::new();

@@ -125,7 +125,7 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
   - A new reftest should fail without your fix; check that.
 - **Snapshot regressions:**
   - The pages are in `tests/pages/snapshots/`; the approved PNGs are in `approved/`.
-  - The comparison only runs when the installed fonts match `approved/FONTS.txt` (fixing that is a v0.2 item).
+  - They render with only the bundled fonts in `tests/fonts/` (Liberation, Inter, Noto Naskh Arabic and two small Noto subsets), so they run identically on every OS. New CJK test text needs `scripts/make-test-font-subsets.sh`.
   - Re-approve with `BB_UPDATE_SNAPSHOTS=1 cargo test -p bb-engine --test snapshots`, but **only
     after viewing every changed PNG**.
 - **GUI tests:**

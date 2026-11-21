@@ -24,7 +24,7 @@ _Last updated: 2026-11-21 (session 1)._
 | html5lib tokenizer (HEAD `c5495c5`) | **7018 / 7046 (99.60 %)**, nothing skipped (lone-surrogate cases run since session 2) |
 | Tree construction, WPT `html/syntax/parsing/resources` (pinned `9986bb3`, 2026-11-21) | **1959 / 1959 (100 %)**; 14 `#script-on` cases not run yet (need JS, milestone E) |
 | Reftests (`tests/reftests`) | **48 / 48** |
-| Snapshot regressions (`tests/pages/snapshots`) | 12 pages (example.com ×2, theoldnet ×2, myip.wtf, 5 archived sites, retro, frames), pass on the approved font set |
+| Snapshot regressions (`tests/pages/snapshots`) | 12 pages (example.com ×2, theoldnet ×2, myip.wtf, 5 archived sites, retro, frames), rendered with the bundled `tests/fonts/` only, so they run on every OS |
 | `cargo test --workspace` | 119 test functions, 0 failures |
 | GUI smoke (`scripts/gui-smoke.sh`) | `basic.sh` (open, link click, back, wheel scroll, scrollbar track click + thumb drag, URL bar, new/close/reopen tab, resize, maximize, new window, private window), `frames.sh` (frameset render, wheel scrolls the frame under the pointer, targeted link loads into the named frame), `find.sh` (incremental find, stepping, scroll to match, not found, close) and `menus.sh` (≡ menu, link/tab/page/URL-bar context menus, keyboard and mouse, Esc and click-outside) pass |
 | `scripts/check-deps.sh` | OK — 162 crates, none banned |
@@ -139,7 +139,7 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   - ~~**html5lib tokenizer, 4 lone-surrogate cases skipped.**~~ Done (session 2): the tokenizer takes WTF-8 input (`bb-str`) and keeps lone surrogates in its tokens; all 4 run and pass. Still open for E: the DOM stores UTF-8, so the tree builder replaces lone surrogates with U+FFFD on insertion; DOM strings must become WTF-8 for JS and `document.write`.
   - **Tree construction, 14 `#script-on` cases not run** (8 old ones plus 6 in WPT's `scripted_*.dat`). Run them with the scripting flag on once our JS engine exists (milestone E).
   - ~~**Tree construction is pinned to html5lib-tests `224991e~1`.**~~ Done (session 2): the suite now comes from WPT (`html/syntax/parsing/resources`, pinned to a WPT commit for reproducibility). That brought in processing instructions (now implemented), `#description` records, the new frameset-ok reset when `<body>` is inserted implicitly, and "parsing template contents" for the form element pointer (both fixed).
-  - **Snapshot regressions are skipped when the font set differs** (every non-Linux runner). Bundle open-licensed test fonts so snapshots render identically on Linux, Windows and macOS.
+  - ~~**Snapshot regressions are skipped when the font set differs.**~~ Done (session 2): the test renders with only the bundled fonts in `tests/fonts/` (Liberation 2.1.5, Inter 4.0, Noto Naskh Arabic unmodified; Noto Sans SC and Noto Sans subsets; all OFL 1.1), ~7 MB. Two approvals changed after viewing: `retro` ("Comic Sans MS, Arial" now falls to Arial instead of the system's DejaVu alias) and `example.com-postjs` (Arabic now in Noto Naskh Arabic).
   - **GUI tests run only on Linux.** Add a GUI test driver for Windows and macOS. Decided: real
     OS-level input on every OS (xdotool on Linux, SendInput via PowerShell on Windows, CGEvent /
     AppleScript on macOS), not an in-app hook. The risk: GitHub's macOS runners need
