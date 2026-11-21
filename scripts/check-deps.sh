@@ -95,7 +95,9 @@ if [[ "${1:-}" == "--self-test" ]]; then
   unsafe_policy "$t" >/dev/null || { echo "self-test: clean tree flagged"; unsafe_policy "$t"; fail=1; }
   printf 'let v = unsafe { g() };\n' >> "$t/crates/bb-media-os/src/lib.rs"
   unsafe_policy "$t" >/dev/null && { echo "self-test: unsafe without SAFETY not flagged"; fail=1; }
-  sed -i '$d' "$t/crates/bb-media-os/src/lib.rs"
+  # Drop the offending last line again. Portable on purpose: BSD sed (macOS) has no `-i`
+  # without a suffix argument.
+  head -n 3 "$t/crates/bb-media-os/src/lib.rs" > "$t/lib.rs" && mv "$t/lib.rs" "$t/crates/bb-media-os/src/lib.rs"
   printf '#[allow(unsafe_code)] fn x() {}\n' > "$t/crates/ok/src/lib.rs"
   unsafe_policy "$t" >/dev/null && { echo "self-test: allow(unsafe_code) outside the exception not flagged"; fail=1; }
   rm "$t/crates/ok/src/lib.rs"

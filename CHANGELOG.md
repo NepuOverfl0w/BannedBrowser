@@ -37,7 +37,7 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   - Every crate except `crates/bb-media-os` must inherit `unsafe_code = "forbid"`.
   - No `allow(unsafe_code)` anywhere else.
   - Each `unsafe` in `bb-media-os` needs a `// SAFETY:` comment.
-  - Its self-test now runs in CI.
+  - Its self-test now runs in CI, and works with macOS's BSD tools (it used GNU-only `sed -i`).
 - `AGENTS.md` is the rulebook for every coding agent; `CLAUDE.md` holds Claude-specific notes.
 - The v0.2 plan in PROGRESS.md covers:
   - dependency decisions (wgpu, OS video decoders + own VP9, cpal);
