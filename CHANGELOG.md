@@ -3,6 +3,31 @@
 All notable changes to BannedBrowser. Versions follow [SemVer](https://semver.org/);
 the format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] — v0.2
+
+Everything on `main` after the 0.1.0 release commit counts toward v0.2.
+The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
+
+### Changed
+- `about:bannedbrowser` matches the README: tagline, what we wrote ourselves, the name's origin
+  (Silver Wolf's handle `@Banned_Player`, replacing the old "nickname" claim) with the
+  trademark disclaimer, acknowledgements, license, and links to the repository and releases.
+- The README status banner points at the 0.1.0 release.
+- Version is `0.2.0-dev` on `main`.
+
+### Development
+- `scripts/check-deps.sh` enforces the `unsafe` policy:
+  - Every crate except `crates/bb-media-os` must inherit `unsafe_code = "forbid"`.
+  - No `allow(unsafe_code)` anywhere else.
+  - Each `unsafe` in `bb-media-os` needs a `// SAFETY:` comment.
+  - Its self-test now runs in CI.
+- `AGENTS.md` is the rulebook for every coding agent; `CLAUDE.md` holds Claude-specific notes.
+- The v0.2 plan in PROGRESS.md covers:
+  - dependency decisions (wgpu, OS video decoders + own VP9, cpal);
+  - no excluded and no failing tests;
+  - certificate-error page buttons;
+  - a Firefox-inspired About window.
+
 ## [0.1.0] — "Hello, Old Web" — 2026-11-21
 
 The first milestone: a from-scratch engine and shell that render the static, 1990s-style

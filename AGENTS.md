@@ -148,7 +148,10 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
 
 1. Bump `version` in the root `Cargo.toml`. The User-Agent, `--version` and `about:bannedbrowser`
    follow it.
-2. Add a dated `## [X.Y.Z] — "Name" — YYYY-MM-DD` section to `CHANGELOG.md`.
+2. In `CHANGELOG.md`, turn the `## [Unreleased]` section into a dated
+   `## [X.Y.Z] — "Name" — YYYY-MM-DD` section. The release workflow reads that exact heading.
+   Between releases, record changes under `[Unreleased]` as you go, and keep the
+   version at `X.Y.0-dev`.
 3. Publish in either of two ways:
    - Push a `vX.Y.Z` tag.
    - Push a commit whose message contains **`[release]`**. GitHub creates the tag when it
