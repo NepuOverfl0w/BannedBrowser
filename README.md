@@ -53,6 +53,7 @@
 | ![example.com, light](docs/screenshots/example-com-light.png) <br> example.com (light) | ![example.com, dark](docs/screenshots/example-com-dark.png) <br> example.com honouring `color-scheme` + `light-dark()` (dark) |
 | ![New tab, light](docs/screenshots/newtab-light.png) <br> New-tab page (rendered by our engine) | ![New tab, dark](docs/screenshots/newtab-dark.png) <br> New-tab page, dark theme |
 | ![Private window](docs/screenshots/private-window.png) <br> Private window (dark-violet frame) | ![myip.wtf headers](docs/screenshots/myip-headers.png) <br> https://myip.wtf/headers — what we send |
+| ![Frameset](docs/screenshots/frameset.png) <br> A `<frameset>` page after clicking a `target="main"` link | ![Retro test page](docs/screenshots/retro-page.png) <br> Our own 1990s-style test page (original artwork) |
 
 <details>
 <summary>More: example.com with its JavaScript-inserted translations applied by hand (Arabic RTL, CJK, Cyrillic)</summary>
@@ -109,8 +110,8 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Tabs (new, close, middle-click close, reopen closed, Ctrl+Tab, Ctrl+1…9) | ✅ |
 | Multiple windows, private windows | ✅ |
 | Back / forward / reload / home, URL bar with editing + IME | ✅ |
-| Link hover status + pointer cursor, click / Ctrl+click (background tab) | ✅ |
-| Wheel and keyboard scrolling | ✅ (no scrollbars yet) |
+| Link hover status + pointer cursor, click / Ctrl+click (background tab), `target=_blank` | ✅ |
+| Wheel and keyboard scrolling, overlay scrollbar (drag, track paging) | ✅ |
 | Favicons, loading throbber + progress line, page title in tab and window | ✅ |
 | Light / dark theme following the OS (`--dark` / `--light` override) | ✅ |
 | ≡ app menu, context menus, find bar, sidebars | 📋 |
@@ -152,7 +153,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Images (PNG, JPEG, GIF, WebP, BMP, ICO), image maps | ✅ (GIF animation 📋) |
 | Fonts: system fonts, fallback (CJK, Thai, Arabic, emoji) | ✅ · `@font-face` 📋 |
 | Bidi text | 🚧 basic reordering |
-| Frames | 🚧 framesets render as link lists |
+| Frames: `<frameset>`, `<iframe>` (src/srcdoc), link targets, per-frame scrolling | ✅ (frame navigations not in history yet) |
 | SVG | 📋 |
 | JavaScript | 📋 M10 (own engine) |
 
@@ -173,7 +174,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | WPT urltestdata | **904 / 904 (100 %)** |
 | html5lib tokenizer | **7014 / 7042 (99.60 %)** |
 | html5lib tree construction | **1779 / 1784 (99.72 %)** |
-| Reftests | **46 / 46** |
+| Reftests | **47 / 47** |
 | test262 | 📋 (M10) |
 
 ## 🏗 Architecture
@@ -322,7 +323,7 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 - [x] M2 HTML
 - [ ] M3 CSS & style (mostly done)
 - [ ] M4 Layout I (mostly done)
-- [ ] M5 Paint (mostly done; 46 reftests)
+- [ ] M5 Paint (mostly done; 47 reftests)
 - [ ] M6 GUI shell core (started)
 - [ ] M7 Layout II (grid, transforms, `@font-face`, …)
 - [ ] M8 Forms, cookies, cache, profile storage
