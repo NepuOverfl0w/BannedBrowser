@@ -1,0 +1,107 @@
+name: Re-publish release
+
+# Manually re-creates an existing GitHub Release (and its tag) on another commit of main,
+# with freshly built packages and notes from that commit's CHANGELOG. Used after history
+# rewrites, when a release's tag points at a commit that is no longer on main.
+# Destructive: the existing release and tag are deleted first.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v0.1.0"
+        required: true
+      target:
+        description: "Full SHA of the commit on main to release"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate inputs
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "tag must look like v1.2.3" >&2; exit 1; }
+          [[ "$TARGET" =~ ^[0-9a-f]{40}$ ]] || { echo "target must be a full commit SHA" >&2; exit 1; }
+          git merge-base --is-ancestor "$TARGET" origin/main || { echo "target is not on main" >&2; exit 1; }
+          ver="$(git show "$TARGET:Cargo.toml" | grep -m1 '^version' | sed 's/.*"\(.*\)"/\1/')"
+          [[ "v$ver" == "$TAG" ]] || { echo "Cargo.toml at the target is $ver, not ${TAG#v}" >&2; exit 1; }
+
+  package:
+    name: package ${{ matrix.os }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux system packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
+      - name: package
+        shell: bash
+        run: scripts/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bannedbrowser-${{ matrix.os }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  publish:
+    name: Re-create GitHub Release
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: bannedbrowser-*
+          merge-multiple: true
+      - name: Title and notes from CHANGELOG
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          ver="${TAG#v}"
+          awk -v v="$ver" '/^## \[/{p = index($0, "[" v "]") > 0; next} p' CHANGELOG.md \
+            | sed -E "s#\]\(([A-Z]+\.md)\)#](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/\1)#g" > notes.md
+          [ -s notes.md ] || { echo "no CHANGELOG section for $ver" >&2; exit 1; }
+          cat >> notes.md <<'NOTE'
+
+          ### Downloads
+          Linux (`.tar.gz`), Windows (`.zip`) and macOS (`.app` in a `.zip`). The binaries are
+          **not code-signed or notarized**, so Windows SmartScreen and macOS Gatekeeper will warn
+          (on macOS: right-click → Open).
+          NOTE
+          grep -m1 "^## \[$ver\]" CHANGELOG.md \
+            | sed -E 's/^## \[([^]]*)\] — "([^"]*)".*/BannedBrowser \1 — "\2"/' > title.txt
+      - name: Replace the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          ls -la dist
+          gh release delete "$TAG" --cleanup-tag --yes || echo "no existing release $TAG"
+          gh release create "$TAG" dist/* --target "$TARGET" \
+            --title "$(cat title.txt)" --notes-file notes.md

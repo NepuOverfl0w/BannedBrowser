@@ -350,7 +350,9 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 
 ## 🤝 Contributing
 
-Read [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md). In short: no web-platform crates
+Read [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) (setup per OS, how every test works,
+good first areas) and the [code of conduct](CODE_OF_CONDUCT.md). Report security problems
+privately as described in [SECURITY.md](SECURITY.md). In short: no web-platform crates
 (check-deps enforces it), `cargo fmt` + `clippy -D warnings`, cite spec sections, add a
 reftest for rendering changes, and use conventional commits (`feat(layout): …`).
 

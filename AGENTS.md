@@ -160,6 +160,10 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
    `.app` zip (stripped `dist` profile), and creates the GitHub Release with the CHANGELOG section as notes.
 5. `[package]` in a commit message test-builds the packages without releasing.
 6. Pre-release versions (`-dev`) and versions that already have a release are refused.
+7. To move an existing release to another commit on `main` (e.g. after a history rewrite),
+   run the **"Re-publish release"** workflow manually with the tag and the full commit SHA.
+   It checks that the commit is on `main` and that its `Cargo.toml` has that version,
+   rebuilds the packages from that commit, and replaces the release and tag.
 
 ## Environment notes and lessons learned
 

@@ -1,0 +1,33 @@
+name: Website looks or works wrong
+description: A page renders or behaves differently from other browsers.
+labels: ["web-compat"]
+body:
+  - type: input
+    id: url
+    attributes:
+      label: URL
+      description: A public page. Please don't share pages with personal data.
+    validations:
+      required: true
+  - type: textarea
+    id: diff
+    attributes:
+      label: What's wrong?
+      description: Compare with another browser (e.g. Firefox). Screenshots of both are ideal.
+    validations:
+      required: true
+  - type: textarea
+    id: reduced
+    attributes:
+      label: Reduced test case (optional)
+      description: The smallest HTML/CSS that shows the problem. These become reftests.
+      render: html
+  - type: input
+    id: version
+    attributes:
+      label: BannedBrowser version and OS
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: "Note: JavaScript isn't supported yet (planned for v0.2). Pages that need it won't work."

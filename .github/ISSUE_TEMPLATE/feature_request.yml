@@ -1,0 +1,18 @@
+name: Feature request
+description: Suggest a browser feature or web-platform feature.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why?
+      description: The problem it solves, or the sites/specs it's needed for (links to spec sections help).
+  - type: markdown
+    attributes:
+      value: "Check the roadmap in README.md and PROGRESS.md first; many features are already planned."

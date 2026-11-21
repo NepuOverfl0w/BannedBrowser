@@ -27,6 +27,12 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 - Version is `0.2.0-dev` on `main`.
 
 ### Development
+- Ready for a public repository: `SECURITY.md` (private vulnerability reporting),
+  `CODE_OF_CONDUCT.md`, issue templates (bug, website compatibility, feature) and a pull
+  request template; `docs/CONTRIBUTING.md` now covers setup per OS, every test layer, and
+  good first areas.
+- "Re-publish release" workflow: manually re-creates a release and its tag on another
+  commit of `main` (used after history rewrites).
 - `scripts/check-deps.sh` enforces the `unsafe` policy:
   - Every crate except `crates/bb-media-os` must inherit `unsafe_code = "forbid"`.
   - No `allow(unsafe_code)` anywhere else.
