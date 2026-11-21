@@ -81,15 +81,29 @@ _Last updated: 2026-11-21 (session 1)._
 * **Packages:** not code-signed or notarized (macOS Gatekeeper / Windows SmartScreen will warn); no Windows icon resource embedded in the `.exe` yet.
 * **Environment:** `web.archive.org` blocked by the dev sandbox's egress policy (archived-site checks run on GitHub runners); theoldnet.com serves "Hello World" to non-browser user agents (our UA is fine).
 
-## Next steps (in order)
+## Next steps: the v0.2 milestone order (agreed with the maintainer, 2026-11-21)
 
-1. v0.1.0 is released (https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0); this branch becomes `main`.
-2. v0.2 (not started; see scope below): GUI ≡ app menu, page/link/tab context menus, history dropdown, session restore.
-3. v0.2 dependency questions are settled (see "v0.2 scope"); `check-deps.sh` already enforces the `unsafe` exception.
-4. Frames: session history for frame navigations, border dragging.
-5. Reftests to ≥150 (M7), real WPT CSS subset; fix `border-collapse`, captions, inline-block baseline.
-6. `@font-face` (TTF/OTF first, WOFF/WOFF2 decoders), GIF animation, SVG basics for icons.
-7. Then M8 (forms, cookies, cache, profile storage) and on through M11.
+Each milestone ends with CI green on all three OSes, no excluded or failing tests, PROGRESS.md
+and CHANGELOG `[Unreleased]` updated, pushed to `main`.
+
+| # | Milestone | Contents |
+|---|---|---|
+| **A** | Test bar | Tokenizer input as code points (4 lone-surrogate cases); `<?…>` processing instructions (28); tree construction from current WPT incl. `<selectedcontent>` and `<font><select>`; floors to 100 %; bundled test fonts so snapshots run on every OS; GUI tests on Windows and macOS with real OS input. (`#script-on` lands in E.) |
+| **B** | Maintainer requests | Certificate error page (readable reasons, DER-pinned exceptions, session token, `<details>`/`<summary>`); About window with an honest update check; frame navigations in session history. |
+| **C** | M8 network + storage | Cookies, HTTP cache, profile storage (rusqlite), forms; HTTP/2 (HPACK, RFC 9113, ALPN). |
+| **D** | M10a JS core | Parser, bytecode, interpreter, GC, built-ins, RegExp, Promise/async, modules; test262 `language`/`built-ins`/`annexB` in CI. |
+| **E** | M10b Web APIs | DOM bindings, events + event loop, timers, fetch/XHR, storage, workers, `document.write`, Canvas 2D; `#script-on` cases; first whatismybrowser.com check. |
+| **E2** | JIT | `bb-js-jit` (second `unsafe` exception); every suite passes with and without it. |
+| **F** | M3/M4/M7 CSS + layout | Every gap above, grid, transforms, sticky/fixed, `@font-face` + WOFF/WOFF2, full bidi, counters, `@layer`, nesting, color functions; WPT CSS subset; ≥150 reftests. |
+| **G** | M5 paint + GPU | SVG, CSS animations/transitions, GIF/APNG animation, filters; wgpu compositing/raster (software renderer stays the reference). |
+| **H** | HTTP/3 | Our QUIC (RFC 9000/9001/9002), QPACK, HTTP/3 framing; `Alt-Svc`. |
+| **I** | Media | MP4/WebM demuxers, Opus/AAC, our VP9, cpal output, `<video>`/`<audio>`, MSE, `bb-media-os` hardware decode. No DRM. |
+| **J** | M9 browser features | Bookmarks, history, downloads, settings, Reader View, passwords, session restore, pinned tabs, tab dragging, sidebars. |
+| **K** | WebExtensions | MV2/MV3, content/background scripts, `browser.*`, blocking `webRequest`, DNR, `.xpi`, add-ons page; uBlock Origin, Privacy Badger, SponsorBlock, SteamDB. |
+| **L** | M11 | DevTools, incremental style/layout, accessibility (accesskit), Windows `.exe` icon. |
+| **M** | Release | whatismybrowser.com acceptance, 100 % everywhere, `[release]` commit. |
+
+**Now:** milestone A.
 
 ## v0.2 scope (agreed with the maintainer)
 
