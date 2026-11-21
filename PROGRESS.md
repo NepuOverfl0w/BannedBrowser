@@ -101,3 +101,27 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   content scripts, background scripts/service workers, `browser.*`/`chrome.*`
   APIs (tabs, storage, runtime messaging, webRequest, contextMenus, …) on our
   own JS engine (M10), `.xpi` installation, an add-ons manager page.
+  **Acceptance extensions:** uBlock Origin, Privacy Badger, SponsorBlock
+  (on youtube.com) and SteamDB (on store.steampowered.com). These imply a
+  modern JS engine and DOM good enough for YouTube and the Steam store,
+  `declarativeNetRequest`/blocking `webRequest`, cosmetic filtering via
+  injected stylesheets, and extension options/popup pages.
+* **Video playback** — `<video>`/`<audio>`, Media Source Extensions (YouTube
+  needs MSE), MP4/WebM demuxers of our own; codecs (H.264, VP9, AV1, AAC,
+  Opus) and audio output.
+* **Hardware acceleration** — GPU compositing/rasterization and hardware
+  video decode.
+
+**Open dependency questions for v0.2 (to settle before starting; no crate is
+added until it is justified in DEPENDENCIES.md):**
+1. *GPU backend.* `wgpu` implements the WebGPU standard, so it falls under the
+   "no web-standard crates" rule; raw API bindings (`ash`/`metal`/`windows`)
+   need `unsafe`, which the workspace forbids. Options: a narrowly scoped,
+   documented `unsafe` exception confined to a `bb-gpu` platform crate, or an
+   explicit allowance for `wgpu` as platform glue.
+2. *Codecs and audio output.* Video codecs are not web standards, but writing
+   H.264/VP9/AV1 decoders from scratch is a multi-month project each.
+   Options: our own decoders (start with VP9 or AV1 for YouTube), OS decoders
+   via platform APIs (Media Foundation / VideoToolbox / VA-API: again `unsafe`
+   FFI), or an allowed codec crate. Audio output needs a platform crate such as
+   `cpal` (not on the allowed list yet).

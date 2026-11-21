@@ -19,6 +19,7 @@ pub struct Args {
     pub profile: Option<std::path::PathBuf>,
     pub urls: Vec<String>,
     pub no_images: bool,
+    pub user_agent: Option<String>,
 }
 
 pub const HELP: &str = "BannedBrowser — a web browser written from scratch in Rust.
@@ -37,6 +38,7 @@ OPTIONS:
     --dump-layout              Print the layout/fragment tree and exit
     --dark | --light           Force the color scheme
     --extra-ca <FILE.pem>      Trust an extra CA bundle (repeatable)
+    --user-agent <STRING>      Override the User-Agent header
     --private-window           Open a private window
     --new-tab <URL>            Open URL in a new tab
     --profile <DIR>            Use DIR as the profile directory
@@ -72,6 +74,7 @@ pub fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--light" => a.dark = Some(false),
             "--scale" => a.scale = Some(val("--scale")?.parse().map_err(|_| "bad --scale")?),
             "--extra-ca" => a.extra_ca.push(val("--extra-ca")?.into()),
+            "--user-agent" => a.user_agent = Some(val("--user-agent")?),
             "--private-window" | "--private" => a.private_window = true,
             "--new-tab" => a.new_tab.push(val("--new-tab")?),
             "--profile" => a.profile = Some(val("--profile")?.into()),

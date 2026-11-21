@@ -126,7 +126,7 @@ fn primary(m: ModifiersState) -> bool {
 pub fn run(args: Args) -> anyhow::Result<()> {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let client = Arc::new(bb_engine::new_client(args.extra_ca.clone()));
+    let client = Arc::new(bb_engine::new_client_with(args.extra_ca.clone(), args.user_agent.clone()));
     let mut initial: Vec<Url> =
         args.urls.iter().chain(args.new_tab.iter()).filter_map(|u| fixup_url(u)).collect();
     if initial.is_empty() {

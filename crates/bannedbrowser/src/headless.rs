@@ -8,7 +8,7 @@ pub fn run(args: &Args) -> Result<()> {
     let url_s = args.urls.first().cloned().unwrap_or_else(|| "about:newtab".into());
     let url = fixup_url(&url_s).ok_or_else(|| anyhow!("can't make a URL from {url_s:?}"))?;
     let (w, h) = args.window_size.unwrap_or((1280, 800));
-    let client = bb_engine::new_client(args.extra_ca.clone());
+    let client = bb_engine::new_client_with(args.extra_ca.clone(), args.user_agent.clone());
     let config = PageConfig {
         viewport: (w as f32, h as f32),
         prefers_dark: args.dark.unwrap_or(false),

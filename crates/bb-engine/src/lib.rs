@@ -714,8 +714,14 @@ impl Page {
 
 /// Build the network client with the internal `about:` handler installed.
 pub fn new_client(extra_ca: Vec<std::path::PathBuf>) -> Client {
+    new_client_with(extra_ca, None)
+}
+
+/// [`new_client`] with an optional `User-Agent` override.
+pub fn new_client_with(extra_ca: Vec<std::path::PathBuf>, user_agent: Option<String>) -> Client {
     Client::new(bb_net::ClientConfig {
         extra_ca_files: extra_ca,
+        user_agent,
         about_handler: Some(Arc::new(about_handler)),
         ..Default::default()
     })

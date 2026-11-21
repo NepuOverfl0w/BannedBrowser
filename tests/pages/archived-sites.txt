@@ -1,0 +1,14 @@
+# Archived 1990s sites checked for v0.1 ("Hello, Old Web"), served by theoldnet.com.
+# Format: <name> <url>. Used by scripts/archived-sites.sh (CI workflow "Archived sites").
+gc-area51        http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://geocities.com/area51/station/2820
+gc-tokyo         http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://geocities.com/Tokyo/Towers/2649
+gc-colosseum     http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://geocities.com/colosseum/loge/4818
+gc-heartland     http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://geocities.com/heartland/hills/1780
+gc-tropics       http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://geocities.com/TheTropics/7795
+aol-davade       http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://members.aol.com/davade
+af-tjf           http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://angelfire.com/ny/TJF/index.html
+af-collector     http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://angelfire.com/on/collector/index.html
+netscape         http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://netscape.com
+geocities        http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://geocities.com
+microsoft-ie     http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://microsoft.com//ie/ie.htm
+winzip           http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://winzip.com/

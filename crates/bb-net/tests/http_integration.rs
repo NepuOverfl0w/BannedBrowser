@@ -243,3 +243,17 @@ fn connection_refused() {
     let e = client().fetch(Request::get(Url::parse("http://127.0.0.1:9/").unwrap())).unwrap_err();
     assert!(matches!(e.kind, NetErrorKind::Connect | NetErrorKind::Timeout), "{e:?}");
 }
+
+#[test]
+fn user_agent_default_and_override() {
+    let body = String::from_utf8(get(&client(), "/echo").body).unwrap();
+    assert!(body.contains(bb_net::USER_AGENT), "{body}");
+    let custom = Client::new(ClientConfig {
+        no_proxy_env: true,
+        user_agent: Some("Mozilla/5.0 (test override)".into()),
+        ..Default::default()
+    });
+    let body = String::from_utf8(get(&custom, "/echo").body).unwrap();
+    assert!(body.contains("Mozilla/5.0 (test override)"), "{body}");
+    assert!(!body.contains("BannedBrowser/"), "{body}");
+}

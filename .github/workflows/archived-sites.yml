@@ -1,0 +1,38 @@
+name: Archived sites
+
+# Renders the archived 1990s sites listed in tests/pages/archived-sites.txt
+# with the real browser and captures offline snapshots (with images) for the
+# regression suite. Results are uploaded as the "archived-sites" artifact and
+# reviewed by a human before snapshots are committed.
+on:
+  push:
+    branches: ["main", "claude/**"]
+    paths:
+      - tests/pages/archived-sites.txt
+      - scripts/archived-sites.sh
+      - scripts/snapshot-site.py
+      - .github/workflows/archived-sites.yml
+  workflow_dispatch:
+
+jobs:
+  archived:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fontconfig fonts-dejavu-core \
+            fonts-liberation2 fonts-noto-core fonts-noto-cjk
+      - name: Build
+        run: cargo build --release -p bannedbrowser
+      - name: Render and snapshot
+        run: scripts/archived-sites.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archived-sites
+          path: |
+            out/archived/
+            tests/pages/snapshots/archived-*/

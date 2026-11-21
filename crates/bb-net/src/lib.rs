@@ -198,6 +198,15 @@ pub struct ClientConfig {
     pub about_handler: Option<AboutHandler>,
     /// Send `DNT: 1` and `Sec-GPC: 1`.
     pub do_not_track: bool,
+    /// Override the `User-Agent` header (default: [`USER_AGENT`]).
+    pub user_agent: Option<String>,
+}
+
+impl ClientConfig {
+    /// The `User-Agent` this client sends.
+    pub fn user_agent(&self) -> &str {
+        self.user_agent.as_deref().unwrap_or(USER_AGENT)
+    }
 }
 
 /// A shareable HTTP client with a keep-alive connection pool.

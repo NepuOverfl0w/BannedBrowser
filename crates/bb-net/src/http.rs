@@ -396,7 +396,7 @@ fn open_connection(client: &Client, req: &Request, deadline: Instant) -> NetResu
             let authority = format!("{}:{port}", host.connect_name_for_authority());
             let mut msg = format!(
                 "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nUser-Agent: {}\r\n",
-                crate::USER_AGENT
+                client.config.user_agent()
             );
             if let Some(a) = &p.authorization {
                 msg.push_str(&format!("Proxy-Authorization: {a}\r\n"));
@@ -479,7 +479,7 @@ fn build_request(client: &Client, req: &Request, absolute_form: bool) -> Vec<u8>
     };
     push("Host", &url.host_with_port());
     let defaults: [(&str, &str); 4] = [
-        ("User-Agent", crate::USER_AGENT),
+        ("User-Agent", client.config.user_agent()),
         ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/png,image/*;q=0.8,*/*;q=0.5"),
         ("Accept-Language", "en-US,en;q=0.5"),
         ("Accept-Encoding", "gzip, deflate, br"),
