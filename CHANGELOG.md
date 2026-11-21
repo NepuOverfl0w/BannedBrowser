@@ -32,7 +32,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   request template; `docs/CONTRIBUTING.md` now covers setup per OS, every test layer, and
   good first areas.
 - "Re-publish release" workflow: manually re-creates a release and its tag on another
-  commit of `main` (used after history rewrites).
+  commit of `main` (used after history rewrites). It refuses before deleting anything when the
+  Actions token couldn't re-create the tag, and keeps a tag that already points at the target.
 - `scripts/check-deps.sh` enforces the `unsafe` policy:
   - Every crate except `crates/bb-media-os` must inherit `unsafe_code = "forbid"`.
   - No `allow(unsafe_code)` anywhere else.

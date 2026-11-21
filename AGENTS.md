@@ -164,6 +164,11 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
    run the **"Re-publish release"** workflow manually with the tag and the full commit SHA.
    It checks that the commit is on `main` and that its `Cargo.toml` has that version,
    rebuilds the packages from that commit, and replaces the release and tag.
+   - GitHub's Actions token can't create a tag on a commit whose `.github/workflows/` differ
+     from `main` (403 "Resource not accessible by integration"). In that case the workflow stops
+     before deleting anything and asks the maintainer to push the tag first
+     (`git push --force origin <sha>:refs/tags/vX.Y.Z`); run it again and it keeps that tag and
+     only re-creates the release.
 
 ## Environment notes and lessons learned
 

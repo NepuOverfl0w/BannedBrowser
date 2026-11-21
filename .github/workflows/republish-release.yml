@@ -35,6 +35,18 @@ jobs:
           git merge-base --is-ancestor "$TARGET" origin/main || { echo "target is not on main" >&2; exit 1; }
           ver="$(git show "$TARGET:Cargo.toml" | grep -m1 '^version' | sed 's/.*"\(.*\)"/\1/')"
           [[ "v$ver" == "$TAG" ]] || { echo "Cargo.toml at the target is $ver, not ${TAG#v}" >&2; exit 1; }
+          # GITHUB_TOKEN may not create a ref on a commit whose workflow files differ from
+          # main (it has no `workflows` permission; the API answers 403 "Resource not
+          # accessible by integration"). Refuse before anything is deleted, unless the tag
+          # already points at the target, in which case only the release is re-created.
+          at="$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}" | tail -n1 | cut -f1)"
+          if [[ "$at" != "$TARGET" ]] && ! git diff --quiet "$TARGET" origin/main -- .github/workflows; then
+            echo "The tag $TAG must be created by a maintainer first: .github/workflows at the" >&2
+            echo "target differs from main, and GITHUB_TOKEN can't create that ref. Run" >&2
+            echo "  git push --force origin $TARGET:refs/tags/$TAG" >&2
+            echo "then start this workflow again. Nothing was changed." >&2
+            exit 1
+          fi
 
   package:
     name: package ${{ matrix.os }}
@@ -102,6 +114,14 @@ jobs:
           TARGET: ${{ inputs.target }}
         run: |
           ls -la dist
-          gh release delete "$TAG" --cleanup-tag --yes || echo "no existing release $TAG"
-          gh release create "$TAG" dist/* --target "$TARGET" \
-            --title "$(cat title.txt)" --notes-file notes.md
+          at="$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}" | tail -n1 | cut -f1)"
+          if [[ "$at" == "$TARGET" ]]; then
+            # Keep the tag; only replace the release on it.
+            gh release delete "$TAG" --yes || echo "no existing release $TAG"
+            gh release create "$TAG" dist/* --verify-tag \
+              --title "$(cat title.txt)" --notes-file notes.md
+          else
+            gh release delete "$TAG" --cleanup-tag --yes || echo "no existing release $TAG"
+            gh release create "$TAG" dist/* --target "$TARGET" \
+              --title "$(cat title.txt)" --notes-file notes.md
+          fi
