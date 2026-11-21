@@ -10,7 +10,7 @@
 //   driver type TEXT...          type text (as Unicode key events)
 //   driver activate PID          bring the app to the front
 //   driver resize PID W H        resize its focused window (points)
-//   driver maximize PID          zoom its focused window
+//   driver maximize PID          zoom its focused window (Option-click on the green button)
 //
 // Test tooling only: not part of BannedBrowser and not built by cargo.
 import AppKit
@@ -175,13 +175,41 @@ func run(_ args: [String]) throws {
             throw DriverError(description: "resize failed")
         }
     case "maximize":
+        // Pressing the green button means full screen on current macOS; a user zooms a window
+        // with Option-click on it. Do exactly that, with real events at the button's position.
         let w = try focusedWindow(pid_t(try int(1)))
         var zoom: CFTypeRef?
         guard AXUIElementCopyAttributeValue(w, kAXZoomButtonAttribute as CFString, &zoom) == .success,
-              let button = zoom, AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString) == .success
+              let button = zoom
         else {
-            throw DriverError(description: "zoom failed")
+            throw DriverError(description: "no zoom button")
         }
+        var posRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        guard AXUIElementCopyAttributeValue(button as! AXUIElement, kAXPositionAttribute as CFString, &posRef) == .success,
+              AXUIElementCopyAttributeValue(button as! AXUIElement, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let p = posRef, let sz = sizeRef,
+              AXValueGetValue(p as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(sz as! AXValue, .cgSize, &size)
+        else {
+            throw DriverError(description: "no zoom button frame")
+        }
+        let center = CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
+        try mouse(.mouseMoved, center, .left)
+        let option = CGEvent(keyboardEventSource: nil, virtualKey: 58, keyDown: true)
+        option?.flags = .maskAlternate
+        try post(option)
+        for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+            let e = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: center, mouseButton: .left)
+            e?.flags = .maskAlternate
+            e?.setIntegerValueField(.mouseEventClickState, value: 1)
+            try post(e)
+        }
+        let release = CGEvent(keyboardEventSource: nil, virtualKey: 58, keyDown: false)
+        release?.flags = []
+        try post(release)
     default:
         throw DriverError(description: "unknown command \(cmd)")
     }
