@@ -7,8 +7,8 @@
 
 ### A web browser hacked together from scratch in Rust. No engines borrowed, no rules followed.
 
-[![CI](https://github.com/imm0nv1nhtv/BannedBrowser/actions/workflows/ci.yml/badge.svg)](https://github.com/imm0nv1nhtv/BannedBrowser/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/imm0nv1nhtv/BannedBrowser?include_prereleases&label=release&color=7c5cff)](https://github.com/imm0nv1nhtv/BannedBrowser/releases)
+[![CI](https://github.com/NepuOverfl0w/BannedBrowser/actions/workflows/ci.yml/badge.svg)](https://github.com/NepuOverfl0w/BannedBrowser/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/NepuOverfl0w/BannedBrowser?include_prereleases&label=release&color=7c5cff)](https://github.com/NepuOverfl0w/BannedBrowser/releases)
 ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 ![Rust](https://img.shields.io/badge/rust-stable%201.85%2B-orange?logo=rust)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-3df2e0)
@@ -20,7 +20,7 @@
 
 ---
 
-> **Status: [v0.1.0 "Hello, Old Web"](https://github.com/imm0nv1nhtv/BannedBrowser/releases/tag/v0.1.0) released.**
+> **Status: [v0.1.0 "Hello, Old Web"](https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0) released.**
 > BannedBrowser renders example.com, theoldnet.com and archived 1990s sites convincingly, but
 > it has no JavaScript, cookies, bookmarks or sandboxing yet (that's v0.2). See
 > [PROGRESS.md](PROGRESS.md) for the honest details.
@@ -231,7 +231,7 @@ More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## 🚀 Getting started
 
-**Prebuilt binaries:** see [Releases](https://github.com/imm0nv1nhtv/BannedBrowser/releases)
+**Prebuilt binaries:** see [Releases](https://github.com/NepuOverfl0w/BannedBrowser/releases)
 (Windows `.zip`, macOS `.app` zip, Linux tarball) once v0.1 is tagged.
 
 **Build from source** (stable Rust 1.85+):

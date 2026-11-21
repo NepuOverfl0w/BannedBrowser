@@ -14,7 +14,7 @@ _Last updated: 2026-11-21 (session 1)._
 | M5 Paint | 🚧 mostly | AA rasterizer, borders, gradients, shadows, clips, opacity, glyph cache; 48 reftests |
 | M6 GUI shell core | 🚧 started | tabs, toolbar, URL bar, overlay scrollbar, find bar, frames, links, multiple + private windows, test-state hook; menus 📋 |
 | M7–M11 | 📋 planned | |
-| **v0.1 "Hello, Old Web"** | ✅ released 2026-11-21 ([v0.1.0](https://github.com/imm0nv1nhtv/BannedBrowser/releases/tag/v0.1.0)) | example.com, theoldnet.com, 5 archived sites, snapshots, CI green on 3 OSes, packages; see checklist |
+| **v0.1 "Hello, Old Web"** | ✅ released 2026-11-21 ([v0.1.0](https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0)) | example.com, theoldnet.com, 5 archived sites, snapshots, CI green on 3 OSes, packages; see checklist |
 
 ## Test numbers (session 1)
 
@@ -83,7 +83,7 @@ _Last updated: 2026-11-21 (session 1)._
 
 ## Next steps (in order)
 
-1. v0.1.0 is released (https://github.com/imm0nv1nhtv/BannedBrowser/releases/tag/v0.1.0); this branch becomes `main`.
+1. v0.1.0 is released (https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0); this branch becomes `main`.
 2. v0.2 (not started; see scope below): GUI ≡ app menu, page/link/tab context menus, history dropdown, session restore.
 3. v0.2 dependency questions are settled (see "v0.2 scope"); `check-deps.sh` already enforces the `unsafe` exception.
 4. Frames: session history for frame navigations, border dragging.

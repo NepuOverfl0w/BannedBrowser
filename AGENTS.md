@@ -15,7 +15,7 @@ Windows, macOS and Linux. Every web-platform component is ours.
 
 **Current state:**
 - v0.1.0 "Hello, Old Web" is released:
-  https://github.com/imm0nv1nhtv/BannedBrowser/releases/tag/v0.1.0
+  https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0
 - `main` is the development branch.
 - **v0.2 is next.** It covers M3–M11 in full, plus:
   - HTTP/2 and HTTP/3
