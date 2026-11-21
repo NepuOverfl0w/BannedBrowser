@@ -71,8 +71,11 @@ jobs:
   release:
     name: package ${{ matrix.os }}
     needs: test
-    # Tags build releases; "[package]" in a commit message test-builds the packages.
-    if: startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[package]')
+    # Releases build packages; "[package]" in a commit message test-builds them.
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      contains(github.event.head_commit.message, '[package]') ||
+      contains(github.event.head_commit.message, '[release]')
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -93,10 +96,15 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
 
+  # Publishes a GitHub Release, either for a pushed v* tag, or for a commit whose
+  # message contains "[release]": then the release is v<Cargo.toml version> and
+  # GitHub creates that tag on the commit when the release is published.
   publish:
     name: GitHub Release
     needs: release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      contains(github.event.head_commit.message, '[release]')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -107,12 +115,19 @@ jobs:
           path: dist
           pattern: bannedbrowser-*
           merge-multiple: true
-      - name: Release notes from CHANGELOG
+      - name: Release tag, title and notes
         shell: bash
         run: |
-          ver="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')"
+          fi
+          ver="${tag#v}"
+          case "$ver" in *-*) echo "refusing to release pre-release version $ver" >&2; exit 1;; esac
+          echo "$tag" > tag.txt
           awk -v v="$ver" '/^## \[/{p = index($0, "[" v "]") > 0; next} p' CHANGELOG.md \
-            | sed -E "s#\]\(([A-Z]+\.md)\)#](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/\1)#g" > notes.md
+            | sed -E "s#\]\(([A-Z]+\.md)\)#](https://github.com/${GITHUB_REPOSITORY}/blob/${tag}/\1)#g" > notes.md
           [ -s notes.md ] || { echo "no CHANGELOG section for $ver" >&2; exit 1; }
           cat >> notes.md <<'NOTE'
 
@@ -123,18 +138,25 @@ jobs:
           NOTE
           grep -m1 "^## \[$ver\]" CHANGELOG.md \
             | sed -E 's/^## \[([^]]*)\] — "([^"]*)".*/BannedBrowser \1 — "\2"/' > title.txt
+          echo "tag=$tag title=$(cat title.txt)"
       - name: Create GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          tag="$(cat tag.txt)"
           ls -la dist
-          # The tag may come from `git push` or from GitHub's "Draft a new release"
-          # page; in the second case the release already exists, so fill it in.
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
-            gh release edit "$GITHUB_REF_NAME" --title "$(cat title.txt)" --notes-file notes.md
+          if gh release view "$tag" >/dev/null 2>&1; then
+            if [[ "$GITHUB_REF" != refs/tags/v* ]]; then
+              echo "release $tag already exists; bump the version to release again" >&2
+              exit 1
+            fi
+            # Tag made with GitHub's "Draft a new release" page: fill in that release.
+            gh release upload "$tag" dist/* --clobber
+            gh release edit "$tag" --title "$(cat title.txt)" --notes-file notes.md
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            gh release create "$tag" dist/* --title "$(cat title.txt)" --notes-file notes.md --verify-tag
           else
-            gh release create "$GITHUB_REF_NAME" dist/* \
-              --title "$(cat title.txt)" --notes-file notes.md --verify-tag
+            gh release create "$tag" dist/* --title "$(cat title.txt)" --notes-file notes.md \
+              --target "$GITHUB_SHA"
           fi
