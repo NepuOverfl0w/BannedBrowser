@@ -152,8 +152,7 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   - A small, non-resizable window, opened from ≡ menu → Help → About BannedBrowser (on macOS, the app menu).
   - BannedBrowser logo and wordmark, the version and architecture (e.g. "0.2.0 (64-bit)"), and the release name.
   - Update status: checks the GitHub Releases API on open. Shows "BannedBrowser is up to date" or links to the newer release; nothing is installed automatically.
-    - **The repository is private for now.** Anonymous API requests get `404 Not Found`, so until it's made public the check must say "Couldn't check for updates" with a link to the releases page. It must never claim "up to date".
-    - Also failing while private: the README's CI and release badges, and anonymous downloads of release assets.
+    - The repository is public since 2026-11-21, so the anonymous `releases/latest` API works. When the check fails (offline, rate-limited, any non-200), it must say "Couldn't check for updates" with a link to the releases page. It must never claim "up to date" without a successful answer.
   - Links: what's new (release notes), `about:bannedbrowser` (credits and name origin), license (MIT OR Apache-2.0), source code.
   - The unofficial fan-project / not-affiliated note.
   - Drawn with `bb-ui` like the rest of the chrome, light and dark theme, HiDPI, keyboard accessible (Esc closes).
