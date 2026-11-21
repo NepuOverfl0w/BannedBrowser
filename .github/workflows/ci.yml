@@ -71,7 +71,8 @@ jobs:
   release:
     name: package ${{ matrix.os }}
     needs: test
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Tags build releases; "[package]" in a commit message test-builds the packages.
+    if: startsWith(github.ref, 'refs/tags/v') || contains(github.event.head_commit.message, '[package]')
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
