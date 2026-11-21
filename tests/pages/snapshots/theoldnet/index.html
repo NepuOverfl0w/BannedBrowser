@@ -1,0 +1,1288 @@
+<!-- Snapshot of http://theoldnet.com/ taken 2026-11-21 for offline regression tests. Images saved alongside. -->
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>The Old Net</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+        <meta property="og:title" content="The Old Net" />
+        <meta property="og:url" content="http://theoldnet.com" />
+        <meta property="og:image:type" content="image/jpeg" />
+        <meta property="og:type" content="website" />
+        <meta property="og:description" content="Welcome to the Old Internet Again!" />
+        <meta property="og:image" content="//theoldnet.com/images/theoldnet-square.png" />
+        <link rel="icon" type="image/gif" href="favicon.gif">
+        <style type="text/css">
+            /* Soften fixed-width 90s layout on narrow phones (vintage HTML omits this). */
+            html, body { max-width: 100%; overflow-x: hidden; }
+            img { max-width: 100%; height: auto; }
+            /* Keep webring banner from collapsing to 0x0 on iOS when src is slow/broken. */
+            #theoldnet-webring-href img { width: 468px; max-width: 100%; height: auto; }
+            table { max-width: 100% !important; box-sizing: border-box; }
+            td, th { word-wrap: break-word; overflow-wrap: break-word; }
+            form, input, select { max-width: 100%; box-sizing: border-box; }
+            /* Holiday blurbs only — do not restyle other tables. */
+            @media (max-width: 560px) {
+                table.halloween-funfact,
+                table.thanksgiving-funfact,
+                table.newyear-funfact {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    table-layout: fixed;
+                }
+                table.halloween-funfact td,
+                table.thanksgiving-funfact td,
+                table.newyear-funfact td {
+                    overflow-wrap: anywhere;
+                }
+            }
+        </style>
+        <script async src="befd9d69ec90.img"></script>
+        <script>
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          gtag('js', new Date());
+          gtag('config', 'G-JGFW2C6FED');
+        
+          function tonGaEvent(name, params) {
+            try {
+              if (typeof gtag !== 'function') return;
+              gtag('event', name, params || {});
+            } catch (e) {}
+          }
+        
+          function tonGaQueryParam(href, key) {
+            try {
+              var q = href.split('?')[1] || '';
+              var parts = q.split('&');
+              for (var i = 0; i < parts.length; i++) {
+                var kv = parts[i].split('=');
+                if (decodeURIComponent(kv[0] || '') === key) {
+                  return decodeURIComponent((kv[1] || '').replace(/\+/g, ' '));
+                }
+              }
+            } catch (e) {}
+            return '';
+          }
+        
+          document.addEventListener('click', function (e) {
+            var el = e.target;
+            while (el && el.tagName !== 'A') {
+              el = el.parentNode;
+            }
+            if (!el || !el.href) return;
+            var href = el.getAttribute('href') || '';
+            if (href.indexOf('guestbook') !== -1) {
+              tonGaEvent('guestbook_click', { link_url: href });
+              return;
+            }
+            if (href.indexOf('/get') !== -1 || href.indexOf('action=get') !== -1) {
+              tonGaEvent('archive_link_click', {
+                link_url: href,
+                requested_url: tonGaQueryParam(href, 'url') || href
+              });
+            }
+          }, false);
+        
+          document.addEventListener('submit', function (e) {
+            var form = e.target;
+            if (!form || form.tagName !== 'FORM') return;
+            var action = (form.getAttribute('action') || '').toLowerCase();
+        
+            function fireThenSubmit(name, params) {
+              var submitted = false;
+              function go() {
+                if (submitted) return;
+                submitted = true;
+                try {
+                  form.submit();
+                } catch (err) {}
+              }
+              e.preventDefault();
+              try {
+                if (typeof gtag === 'function') {
+                  var p = params || {};
+                  p.event_callback = go;
+                  p.event_timeout = 2000;
+                  gtag('event', name, p);
+                  setTimeout(go, 2000);
+                  return;
+                }
+              } catch (err) {}
+              go();
+            }
+        
+            if (action.indexOf('/find') !== -1) {
+              var qFind = form.querySelector('[name="query"]');
+              fireThenSubmit('homepage_search', {
+                search_destination: 'find',
+                search_term: qFind && qFind.value ? String(qFind.value).substring(0, 100) : ''
+              });
+              return;
+            }
+            if (action.indexOf('oldavista.com') !== -1) {
+              var qOlda = form.querySelector('[name="q"]');
+              fireThenSubmit('homepage_search', {
+                search_destination: 'oldavista',
+                search_term: qOlda && qOlda.value ? String(qOlda.value).substring(0, 100) : ''
+              });
+              return;
+            }
+            if (action.indexOf('/get') !== -1 || action === 'get' || action.indexOf('get') === 0) {
+              var urlInput = form.querySelector('[name="url"]');
+              var yearInput = form.querySelector('[name="year"]');
+              tonGaEvent('wayback_search_submit', {
+                requested_url: urlInput && urlInput.value ? urlInput.value : '',
+                year: yearInput && yearInput.value ? yearInput.value : ''
+              });
+            }
+          }, false);
+        </script>
+    </head>
+
+    <body>
+        <center>
+                        <img border=0 border="0" src="27c3f6d96773.gif"></img>
+                                    <br>
+                                    <img border=0 border="0" src="27e7a6b249a9.gif"></img>
+                                    <br>
+                                    <p>
+                                        <font size=6 color="maroon">Welcome</font>
+                                        <font size=6 color="olive">To</font>
+                                        <font size=6 color="red">The</font>
+                                        <font size=6 color="green">Thankful</font>
+                                        <font size=6 color="maroon">Internet</font>
+                                        <font size=6 color="green">Again!</font>
+                                    </p>
+                                    <img border=0 border="0" src="c6270afc8b51.gif"></img>
+
+                        <br>
+                        <br>
+                        <form action="/get" id="search-form">
+                            http://<input type="text" name="url" value="thanksgiving.com">
+                            <select name="year">
+                                <option>1994</option>
+                                <option>1995</option>
+                                <option selected>1996</option>
+                                <option>1997</option>
+                                <option>1998</option>
+                                <option>1999</option>
+                                <option>2000</option>
+                                <option>2001</option>
+                                <option>2002</option>
+                                <option>2003</option>
+                                <option>2004</option>
+                                <option>2005</option>
+                                <option>2006</option>
+                                <option>2007</option>
+                                <option>2008</option>
+                                <option>2009</option>
+                                <option>2010</option>
+                            </select>
+                            <input type="hidden" value="false" name="scripts">
+                            <input type="hidden" value="false" name="decode">
+                            <input type="submit" value="Go">
+                        </form>
+                        <br>
+                        <form action="/find" id="search-form">
+                            <input type="text" placeholder="Search Archives" name="query" value="Thanksgiving">
+                            <input type="submit" value="&nbsp;Search Archives&nbsp;">
+                        </form>
+                        <br>
+                        <form action="https://oldavista.com/search" method="get" id="oldavista-form">
+                            <input type="text" name="q" value="Thanksgiving">
+                            <input type="hidden" name="l" value="english">
+                            <input type="hidden" name="s" value="0">
+                            <input type="submit" name="search" value="Search Oldavista">
+                        </form>
+            
+            
+                        <br>
+            
+            
+
+            
+
+            <table bgcolor="grey" cellpadding=3 border=2>
+                <tr>
+                    <td bgcolor="black">
+                        <!--<font size=3 color="lime">0 Page Views from 7,949,784 Visitors</font>-->
+                        <font size=3 color="lime">7,949,784 Visitors</font>
+                    </td>
+                </tr>
+            </table>
+
+            <font color=grey><img src="f273554a6e82.gif">checkout out the <a href="/lite">lite</a> version for
+                low-memory systems</font>
+            <br>    
+                                    <img border=0 border="0" src="dad55b3a4907.gif"></img>
+                                    <br>
+                                    <table class="thanksgiving-funfact" bgcolor="maroon" border=0 cellpadding=8 cellspacing=0 width="532">
+                                        <tr>
+                                            <td bgcolor="maroon" align="center">
+                                                <img border=0 border="0" src="bb3cc8e7f84b.gif"></img>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td bgcolor="maroon">
+                                                <font color="yellow">Fun Fact: On November 12, 1990, Tim Berners-Lee and Robert Cailliau formally proposed the World Wide Web at CERN.</font>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td bgcolor="maroon">
+                                                <font color="yellow">Fun Fact: On November 21, 1969, the first permanent ARPANET link went into service between UCLA and the Stanford Research Institute. </font>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                        </tr>
+                                    </table>
+                                    <img border=0 border="0" src="c6270afc8b51.gif"></img>
+                                    <br>
+                                    <img border=0 border="0" src="3a925b507a8a.gif"></img>
+
+            <br>
+
+            <br>
+
+            <a href="/cgi-bin/guestbook">
+                            <img border=0 border="0" src="0a2e9a4e2a08.gif" width=75 height=75></img><br>Sign the Guestbook
+                        </a>
+
+            <br>
+            <br>
+
+            <a href="./irc.html">Enter Chat Room <img src="2fd4deb3b8c1.gif" border=0></img></a>
+
+            <br>
+            <br>
+
+            <img src="cfacab6c5a04.gif"> Today's <a href="/sponsors">Sponsor</a> is Tim Wiesemann! <img src="cfacab6c5a04.gif">
+
+            <br>
+                            <img border=0 src="3f325c5ee620.gif"></img>
+                            <br>
+                            HTTP Proxy now requires auth, see the docs link in our Apps section to get the password
+                            <br>
+                            Browsing from a vintage computer will be throttled by the Internet Archive :(
+                            <br>
+                            <img border=0 src="3f325c5ee620.gif"></img>
+                            <br>
+            <br>
+            <br>
+
+
+            <center>
+                        <a id="theoldnet-webring-href" href="//webring.theoldnet.com/widget/cf71ee03b4fc5888a26ef3c12fb373a1/navigate" data-website-id="cf71ee03b4fc5888a26ef3c12fb373a1"><img src="563619ddec36.img" alt="The Old Net" border="0" width="468" height="60"></a><br>
+                        <font size="-1">
+                            Proud member of TheOldNet <a href="//webring.theoldnet.com/"><b>Webring</b></a>! Check some other cool websites!<br>
+                            [<a href="//webring.theoldnet.com/member/cf71ee03b4fc5888a26ef3c12fb373a1/previous/navigate">Previous site</a>] -
+                            [<a href="//webring.theoldnet.com/member/cf71ee03b4fc5888a26ef3c12fb373a1/random/navigate">Random site</a>] -
+                            [<a href="//webring.theoldnet.com/member/cf71ee03b4fc5888a26ef3c12fb373a1/next/navigate">Next site</a>]
+                        </font>
+                        <script type="text/javascript" src="f82ba2d5c719.js"></script>
+                        </center>
+                        <br>
+                        <br>
+
+            <a href="http://oldavista.com"><img border=0 border="0" src="b80eafc64c8b.gif" alt="Oldavista"></a>
+            <a href="https://ucanet.net/"><img border=0 border="0" src="a69558d38402.gif" alt="ucanet"></a>
+            <a href="/get?url=inode.com"><img border=0 border="0" src="f620707cc7b5.gif" alt="Protoweb"></a>
+            <a href="https://retronetwork.net/"><img border=0 border="0" src="883e764226d5.gif" alt="Retro Network"></a><a href="https://theoldnet.nekoweb.org/"><img border=0 border="0" src="885d05986dcc.gif"></a>
+            <a href="https://theoldnet.neocities.org/"><img border=0 border="0" src="2b4bb7c39a50.gif"></a>
+            <a href="https://snesrandom.com"><img border=0 border="0" src="78f91309a784.gif"></a>
+            <br>
+                        <br>
+                        <table cellspacing=10 cellpadding=10 border=1 width=400>
+                            <tr>
+                                <td>
+                                    <center>
+                                        <font size="+1" color="red">
+                                            <b>
+                                                <a href="/geocities">
+                                                    <img border=0 border="0" src="70e4ecc12768.gif"></img>
+                                                </a>
+                                                <br>
+                                                Random Homepages of the Day
+                                                <br>
+                                                10 of 29188
+                                            </b>
+                                        </font>
+                                    </center>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                        <p>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://geocities.com/bourbonstreet/4924">Index of /BourbonStreet/4924</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://geocities.com/area51/station/2820">Gatchaman toys of all kinds.</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://geocities.com/Tokyo/Towers/2649">enlighten_&#x27;s Home Page</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://geocities.com/colosseum/loge/4818">Jarrod&#x27;s South Park and N64 Page</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://geocities.com/heartland/hills/1780">index.html</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://geocities.com/TheTropics/7795">Texas Wedding Photos</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://geocities.com/pipeline/halfpipe/5174">Fat Ed&#x27;s: Here you will find info. about music, wa</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://geocities.com/Heartland/Estates/7374">Viki&#x27;s House</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://geocities.com/WestHollywood/Club/2031">Artsex, the site</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://it.geocities.com/qlqcba/1056259803">Auskunft usa, Auskunft usa, Telefon auskunft inter</a>
+                                            <br>
+                                        </p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    <center>Click <a href="/geocities"><img border=0 src="23372534e625.gif"></img>HERE</a> to see the
+                                        full list</center>
+                                </td>
+                            </tr>
+                        </table>
+                        <br>
+                        <br>
+                        <table cellspacing=10 cellpadding=10 border=1 width=400>
+                            <tr>
+                                <td>
+                                    <center>
+                                        <font size="+1" color="blue"><b>
+                                                <a href="/aol"><img border=0 border="0" src="f8494e0bb5a3.gif"></a>
+                                                <br>10 random homepages of 5019
+                                                <br>
+                                            </b></font>
+                                    </center>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                        <p>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://members.aol.com/davade">DavAde&#x27;s Home Page</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://members.aol.com/scanwizard">ScanWizard&#x27;s Photography Web Page Index</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://members.aol.com/ANDYACTOR">Andy&#x27;s Trek &amp; Stuff</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://members.aol.com/bacorch">Battleground Arts Center Symphony Orchestra, Music</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://members.aol.com/caprepro">Capitol Graphics Home Page</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://members.aol.com/ckosinski">Classical Style Pet Portraits and Fine Art by Coll</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://members.aol.com/compsurg">CompSurg&#x27;s Home Page</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://members.aol.com/DianeIn98">Diane Trautman for Congress</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://members.aol.com/ladyzinnia">Lady Zinnia&#x27;s Home Page</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a href="/get?year=1996&scripts=false&decode=false&url=http://members.aol.com/oraction">Welcome to Oregon Action</a>
+                                            <br>
+                                        </p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    <center>Click <a href="/aol"><img border=0 src="23372534e625.gif"></img>HERE</a> to see the full
+                                        list</center>
+                                </td>
+                            </tr>
+                        </table>
+                        <br>
+                        <br>
+                        <table cellspacing=10 cellpadding=10 border=1 width=400>
+                            <tr>
+                                <td>
+                                    <center>
+                                        <font size="+1" color="blue"><b><a href="/angelfire"><img border=0 border="0"
+                                                        src="16216cf976ad.gif"></a>
+                                                <br>10 random homepages of 3635
+                                                <br>
+                                            </b>
+                                        </font>
+                                    </center>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                        <p>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a
+                                                href="/get?year=1996&scripts=false&decode=false&url=http://angelfire.com/ny/TJF/index.html">Welcome to Tom&#x27;s Page!!!!!!!!!!!!</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a
+                                                href="/get?year=1996&scripts=false&decode=false&url=http://angelfire.com/biz2/eazydreams/index.html">angelfire.com/biz2/eazydreams</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a
+                                                href="/get?year=1996&scripts=false&decode=false&url=http://angelfire.com/mn2/bjcohen/index.html">About ALLOFUS -- Breaking the Silence</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a
+                                                href="/get?year=1996&scripts=false&decode=false&url=http://angelfire.com/oh/lakecatholic/index.html">Erik&#x27;s Bootlegs</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a
+                                                href="/get?year=1996&scripts=false&decode=false&url=http://angelfire.com/me/Davidthegreat/index.html">Index of /me/Davidthegreat</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a
+                                                href="/get?year=1996&scripts=false&decode=false&url=http://angelfire.com/on/collector/index.html">Pink Floyd record collector</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a
+                                                href="/get?year=1996&scripts=false&decode=false&url=http://angelfire.com/ga/HeartbreakHunks/index.html">HEARTBREAK HUNKS</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a
+                                                href="/get?year=1996&scripts=false&decode=false&url=http://angelfire.com/ak2/tupacshakur/index.html">Tupac Amaru Shakur</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a
+                                                href="/get?year=1996&scripts=false&decode=false&url=http://angelfire.com/in/dominatrix1/index.html">Goin&#x27; Down to South Park</a>
+                                            <br>
+                                            <img border=0 src="339a08e6fe13.gif"></img>
+                                            <a
+                                                href="/get?year=1996&scripts=false&decode=false&url=http://angelfire.com/biz/DesignTech/index.html">DesignTech</a>
+                                            <br>
+                                        </p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    <center>Click <a href="/angelfire"><img border=0 src="23372534e625.gif"></img>HERE</a> to see the
+                                        full list</center>
+                                </td>
+                            </tr>
+                        </table>
+                  
+            
+                        <br>
+            <br>
+
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://netscape.com"><img border=0 border="0"
+                                src="08930e5e7485.gif"></img></a>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://microsoft.com//ie/ie.htm"><img border=0 border="0"
+                                src="787cc7349b45.gif"></img></a>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://rsac.org"><img border=0 border="0"
+                                src="eeb9228cbf65.gif"></img></a>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://linkexchange.com"><img border=0 border="0"
+                                src="8d1b8356b700.gif"></img></a>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://geocities.com"><img border=0 border="0"
+                                src="70e4ecc12768.gif"></img></a>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://microsoft.com"><img border=0 border="0"
+                                src="23661e4ab266.gif"></img></a>
+                        <br>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://www.kei.com/homepages/ckd/dns-loc/"><img border=0 border="0"
+                                src="a7b75c2c67c2.gif"></img></a>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://winzip.com/"><img border=0 border="0"
+                                src="29d29a594d52.gif"></img></a>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://tucows.iwebstudio.com"><img border=0 border="0"
+                                src="efef282a9f61.gif"></img></a>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://mirabilis.com/icqme.html"><img border=0 border="0"
+                                src="9d0b85750c5f.gif"></img></a>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://windows95.com"><img border=0 border="0"
+                                src="4541479e17f2.gif"></img></a>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://w3c.org"><img border=0 border="0"
+                                src="106055c69352.gif"></img></a>
+                        <br>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://frontpageworld.com/"><img border=0 border="0"
+                                src="0df46c4706ef.gif"></img></a>
+
+            <br>
+            <br>
+            <br>
+            <!--            <br>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://headlines.yahoo.com/zdnews/macweek/"><img border=0 border="0" src="91bc7ee88fa1.gif"></img></a>
+                        <br>-->
+            <a href="/get?year=1996&scripts=false&decode=false&url=http://zdnet.com"><img border=0 border="0"
+                    src="d2489f92aa6c.gif"></img></a>
+            <br>
+            <a href="/get?year=1996&scripts=false&decode=false&url=http://webcrawler.com"><img border=0 border="0"
+                    src="aa5c370abea2.gif"></img></a>
+            <br>
+            <br>
+
+            <br>
+                        <font size="+1" color="fuchsia"><b>Gaming</b></font>
+                        <p>
+                            <a href="/get?year=1996&scripts=false&decode=false&url=http://www.stomped.com">Stomped</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=http://bluesnews.com">Blues News</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=http://www.pcgamer.com">PC Gamer</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=http://www.macledge.com ">Mac Gamers Ledge</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=http://gamedemo.com">Game Demos</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=http://ign.com">IGN</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=http://n64.com/n64_ext_stan.html">N64.com</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=http://nth.simplenet.com/zelda/index/index.htm">Zelda HQ</a>
+                        </p>
+                        <table bgcolor="black" cellpadding=15>
+                            <tr>
+                                <td>
+                                    <center>
+                                        <a href="/get?year=1996&scripts=false&decode=false&url=http://idsoftware.com"><img border=0
+                                                border="0" src="1eb87208f634.gif"></img></a>
+                                        <a href="/get?year=1996&scripts=false&decode=false&url=http://www.dsclab.ntua.gr/~phib/doom1.htm"><img border=0
+                                                border="0" src="9c912b9db502.gif"></img></a>
+                                        <a href="/get?year=1996&scripts=false&decode=false&url=http://blizzard.com"><img border=0
+                                                border="0" src="137a0bb7253c.gif"></img></a>
+                                        <a href="/get?year=1996&scripts=false&decode=false&url=http://sierra.com"><img border=0
+                                                border="0" src="23a49933ec25.gif"></img></a>
+                                        <a href="/get?year=1996&scripts=false&decode=false&url=http://lucasarts.com/"><img border=0
+                                                border="0" src="142e1ba65808.jpg"></img></a>
+                                        <a href="/get?year=1996&scripts=false&decode=false&url=http://nintendo.com/home/index.html"><img border=0
+                                                border="0" src="30339fdea3ec.gif"></img></a>
+                                        <a href="/get?year=1996&scripts=false&decode=false&url=http://sega.com"><img border=0
+                                                border="0" src="aeae8497758c.gif"></img></a>
+                                        <a href="/get?year=1996&scripts=false&decode=false&url=http://epicgames.com"><img border=0
+                                                border="0" src="a82497d3ab26.jpeg"></img></a>
+                                    </center>
+                                </td>
+                            </tr>
+                        </table>
+                        <br>
+                        <font size="+1" color="green"><b>Staff Favs</b></font>
+                        <br>
+                        <p>
+                            <a href="/get?year=1996&scripts=false&decode=false&url=nytimes.com">New York Times</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=microsoft.com">Microsoft</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=apple.com">Apple</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=ibm.com">IBM</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=cybertown.com">Cybertown</a>
+                        </p>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://www.startrekker.net/index.shtml"><img
+                                src="d48972d681df.gif" border=0></img></a>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://lcarscom.net/database.htm"><img
+                                src="59ee7133f7cd.gif" border=0></img></a>
+                        <a href="/get?year=1996&scripts=false&decode=false&url=http://cybertown.com"><img
+                                src="ab62c26c3508.gif"></img></a>
+                        <br>
+                        <font size="+1" color="purple"><b>Search Engines</b></font>
+                        <p>
+                            <a href="/get?year=1996&scripts=false&decode=false&url=http://yahoo.com">Yahoo</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=http://altavista.com">Alta Vista</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=http://webcrawler.com">Web Crawler</a> - 
+                            <a href="/get?year=1996&scripts=false&decode=false&url=http://google.com">Google</a>
+                        </p>
+
+
+            <br>
+            <br>
+
+            <table cellspacing=10 cellpadding=10 border=1>
+                            <tr>
+                                <td colspan=3>
+                                    <center><img border=0 border="0" src="afbeaa39f0ff.gif"></img><br>
+                                    (this isn't the <a href="https://webring.theoldnet.com">REAL</a> webring, it's just a list of websites that I like)</center>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    <center>
+                                        <table width="100%">
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://vistaserv.net">Vista Serv</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.cameronsworld.net/">Cameron&#x27;s World</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://retro.hackaday.com">Hackaday Retro Edition</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://lynx.scramworks.net/">Telnet Web Browser</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.ericexperiment.com">The Eric Experiment</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://oldcomputer.info/">MCbx Old Computer Collection</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="https://skumsoft.ltd/">Skumsoft Ltd</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://68k.news/">68k.news Google News Proxy</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://frogfind.com/">Frog Find</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://theoldnet.com/get?url&#x3D;http://www.angelfire.com/ny/mez51/">Mark Zuckerbergs Webpage</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.effectgames.com/demos/canvascycle/">8bit Palette Shifting</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.webmaster-tool.co.uk/">Webmaster Tools</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://gopherpedia.com/">Gopherpedia</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.brow.sh/">Brow.sh</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.classiccmp.org/dunfield/">Daves Old Computers</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://cybertown.nz/">Cybertown Reloaded</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://mario-paint-guide.com/">Mario Paint Guide</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.graphics.stanford.edu/courses/cs248-98-fall/Assignments/Assignment3/VRML2_Specification/">VRML 2.0 Spec</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://rn10950.github.io/RetroZillaWeb/">RetroZilla</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://wiby.me">Wiby</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://neocities.org">Neocities</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://demlinks.com">DemLinks</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://home.mcom.com/archives/">Browser Archives</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.jwz.org/blog/2008/03/happy-run-some-old-web-browsers-day/">JWZ&#x27;s Blog</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://vps.techedison.net">Modern Website Proxy</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://tauceti.org/links.html">Macintosh Software Archive</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.thelegacypcproject.com">The Legacy Project</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.floodgap.com/">Gopher Archives</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://oldweb.today/">Old Web Today</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="https://www.windows93.net/">Windows 93</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="/get?url&#x3D;http://sentex.net">Sentex</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="/get?url&#x3D;http://barefootinc.com">Barefoot Inc</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="/get?url&#x3D;http://www.year2000.com/">Year 2000</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://worldwideweb.cern.ch/browser/#http://theoldnet.com/noframes.html">Cern&#x27;s 1st Browser Replica</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://vlib.org/">Virtual Library</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://gifcities.org/?q&#x3D;birthday">GIF Cities</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.textfiles.com/directory.html">Text Files</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://experiments.archivelab.org/">Archive Labs</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.webdesignmuseum.org/exhibitions/web-design-in-the-90s">Web Design Museum</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://spacejam.com/">Space Jam</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://olatheskunk.pl">Ola&#x27;s Homepage</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://classic.jonandnic.com/">John&#x27;s Site</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.rhyal.com">Welcome to Macintosh</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://oldcomputers.net/">OldComputers.net</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.livier.ca">Livier</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://ronaldsnoeck.com">Ronald Snoeck</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://digitaldial.us/">Digital Dial</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://1x-upon.com/">1X-Upon</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.telnetbbsguide.com/bbs/list/brief/">Telnet BBS Guide</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.oocities.org/">Oo Cities</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.geocities.ws/oldternet/files.htm">Oldternet</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://dogemicrosystems.ca/wiki/Dial_up_server">DIY Dialup Server</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.retroarchive.org/">Retro Archive</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://myretrogamingroom.website">My Retro Gaming Room</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://classic.jonandnic.com/">Jon and Nic Classic</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://bylenga.ddns.net/">Eric Bylenga</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.digitalspace.com/avatars/">Avatars - Virtual Worlds</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="https://simone.computer">Simone&#x27;s Computer</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://www.steptail.com/retroweb">Protoweb</a>
+                                                </td>
+                                                <td>
+                                                    <img border=0 src="339a08e6fe13.gif"></img>
+                                                    <a href="http://minicromp.rf.gd/">MiniCromp</a>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                            </tr>
+                                        </table>
+                                        these sites are not guaranteed to work on old browsers
+                                    </center>
+                                </td>
+                            </tr>
+                        </table>
+
+            <br>
+            <br>
+            <br>
+
+            <a href="//webring.theoldnet.com"><img border=0 src="c02aac7767ae.gif"></img></a>
+
+            <br>
+            <br>
+            <br>
+
+            <img src="b051be5cc9c0.gif" alt="geekring.net navigation"
+                                            usemap="#geekringmap" border=0>
+                                        <map name="geekringmap">
+                                            <area shape="rect" coords="9,28,111,53" alt="Previous geekring site"
+                                                href="http://geekring.net/site/21/previous">
+                                            <area shape="rect" coords="248,28,350,53" alt="Random geekring site"
+                                                href="http://geekring.net/site/21/random">
+                                            <area shape="rect" coords="490,28,592,53" alt="Next geekring site"
+                                                href="http://geekring.net/site/21/next">
+                                            <area shape="rect" coords="465,6,566,22" alt="Main geekring site"
+                                                href="http://geekring.net/">
+                                        </map>
+
+            <br>
+            <br>
+
+            <center>
+                <font size=2 color="black">
+                    <table bgcolor="silver" cellpadding=3 border=2>
+                        <tr>
+                            <td colspan=3 bgcolor="white">
+                                <center>
+                                    <font color="purple">
+                                        TRY OUR APPS!
+                                    </font>
+                                </center>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td bgcolor="white">
+                                <a href="https://snesrandom.com"><img border=0 border="0" src="78f91309a784.gif"></a>
+                            </td>
+                            <td bgcolor="white">
+                                <a href="https://snesrandom.com">
+                                    <code>SNES Random</code>
+                                </a>
+                            </td>
+                            <td bgcolor="white">
+                                modern systems
+                            </td>
+                        </tr>
+                        <tr>
+                            <td bgcolor="white">
+                                <a href="http://theoldnet.com/desktop">
+                                    <img src="94b658b26de6.png" border=0></img></a>
+                            </td>
+                            <td bgcolor="white">
+                                <a href="http://theoldnet.com/desktop">
+                                    <code>Vintage Desktop Simulator!</code>
+                                </a>
+                            </td>
+                            <td bgcolor="white">
+                                modern systems
+                            </td>
+                        </tr>
+                        <tr>
+                            <td bgcolor="white">
+                                <a href="http://theoldnet.com/resources">
+                                    <img src="fc5b7bd0b087.gif" border=0></img></a>
+                            </td>
+                            <td bgcolor="white">
+                                <a href="http://theoldnet.com/resources">
+                                    <code>Retro Computing Internet Services List</code>
+                                </a>
+                            </td>
+                            <td bgcolor="white">
+                                modern systems
+                            </td>
+                        </tr>
+                        <tr>
+                            <td bgcolor="white">
+                                <a href="/get?decode=false&scripts=false&year=current&url=http://en.wikipedia.org">
+                                    <img src="021d276beed4.gif" border=0></img></a>
+                            </td>
+                            <td bgcolor="white">
+                                <a href="/get?decode=false&scripts=false&year=current&url=http://en.wikipedia.org">
+                                    <code>Wikipedia Proxy</code>
+                                </a>
+                            </td>
+                            <td bgcolor="white">
+                                retro systems
+                            </td>
+                        </tr>
+            
+                        <tr>
+                            <td bgcolor="white">
+                                <a href="/docs/httpproxy/index.html">
+                                    <img src="a91077ee7926.gif" border=0></img></a>
+                            </td>
+                            <td bgcolor="white">
+                                <a href="/docs/httpproxy/index.html">
+                                    <code>HTTP Browser Proxy</code>
+                                </a>
+                            </td>
+                            <td bgcolor="white">
+                                all
+                            </td>
+                        </tr>
+                        <tr>
+                            <td bgcolor="white">
+                                <a href="/navbar?url=w3c.org&decode=false&scripts=false" target="_top">
+                                    <img src="23372534e625.gif" border=0></img></a>
+                            </td>
+                            <td bgcolor="white">
+                                <a href="/navbar?url=w3c.org&decode=false&scripts=false" target="_top">
+                                    <code>Search Toolbar</code>
+                                </a>
+                            </td>
+                            <td bgcolor="white">
+                                retro systems
+                            </td>
+                        </tr>
+                        <tr>
+                            <td bgcolor="white">
+                                <a href="http://theoldnet.com/browser/" target="_top">
+                                    <img src="417a2398233f.gif" border=0></img></a>
+                            </td>
+                            <td bgcolor="white">
+                                <a href="http://theoldnet.com/browser/" target="_top">
+                                    <code>Netscape Simulator</code>
+                                </a>
+                            </td>
+                            <td bgcolor="white">
+                                modern systems
+                            </td>
+                        </tr>
+                        <tr>
+                            <td bgcolor="white">
+                                <a href="./bbs.html">
+                                    <img src="6bb69520ce37.gif" width="30" height="30" border=0></img></a>
+                            </td>
+                            <td bgcolor="white">
+                                <a href="./bbs.html">
+                                    <code>Bulletin Board System</code>
+                                </a>
+                            </td>
+                            <td bgcolor="white">
+                                commodore 64
+                            </td>
+                        </tr>
+                        <tr>
+                            <td bgcolor="white">
+                                <a href="http://vrml.theoldnet.com">
+                                    <img src="b61e7e12944a.gif" width="30" height="30" border=0></img></a>
+                            </td>
+                            <td bgcolor="white">
+                                <a href="http://vrml.theoldnet.com">
+                                    <code>VRML 3D Gallery</code>
+                                </a>
+                            </td>
+                            <td bgcolor="white">
+                                modern systems
+                            </td>
+                        </tr>
+                        <tr>
+                            <td bgcolor="white">
+                                <a href="https://github.com/ssshake/pi-uhf-tv-station">
+                                    <img src="35b98aa5a8ac.gif" width="30" height="30" border=0></img></a>
+                            </td>
+                            <td bgcolor="white">
+                                <a href="https://github.com/ssshake/pi-uhf-tv-station">
+                                    <code>UHF Television Station</code></a>
+                            </td>
+                            <td bgcolor="white">
+                                raspberry pi
+                            </td>
+                        </tr>
+                    </table>
+                </font>
+            </center>
+
+            <table cellspacing=5 cellpadding=10 border=1>
+                <tr>
+                    <td>
+                        <center>
+                            <img border=0 border="0" src="df9a8c192a9b.gif"></img>
+                        </center>
+                        <br><br>
+            
+                        <img border=0 src="339a08e6fe13.gif"></img>
+                        Because of large bot traffic we now deny clients that do not have a valid User Agent set. May cause issues with certain vintage browsers
+                        <br>
+                        <br>
+            
+                        <img border=0 src="339a08e6fe13.gif"></img>
+                        Massive updates to the Web Ring including auto-banner generation. Sign up today!
+                        <br>
+                        <br>
+            
+                        <img border=0 src="339a08e6fe13.gif"></img>
+                        We now support integration with Protoweb! Sites from their service are automatically preferred, or it will fallback to the Internet Archive!
+                        <br>
+                        <br>
+            
+                        <img border=0 src="339a08e6fe13.gif"></img>
+                        The Internet Archive aggressively throttles their site, we have taken measure to help but only so much can be done :(
+                        <br>
+                        <br>
+            
+                        <img border=0 src="339a08e6fe13.gif"></img>
+                        Performance optimizations for home page and sub sections
+                        <br>
+                        <br>
+            
+                        <img border=0 src="339a08e6fe13.gif"></img>
+                        The Webring is Live! @ http://webring.theoldnet.com
+                        <br>
+                        <br>
+            
+                        <img border=0 src="339a08e6fe13.gif"></img>
+                        Added a lite version of the home page for low-memory systems. theoldnet.com/lite
+                        <br>
+                        <br>
+            
+                        <img border=0 src="339a08e6fe13.gif"></img>
+                        Patreon sponsors are now listed on the homepage and have been updated to the latest list
+                        <br>
+                        <br>
+            
+                        <img border=0 src="339a08e6fe13.gif"></img>
+                        We now offer a HTTP Browser Proxy in the Apps section! It requires a password found in the docs
+                        <br>
+                        <br>
+            
+                        <img border=0 src="339a08e6fe13.gif"></img>
+                        SSL is automatically turned on for modern computers and left off for old computers.
+                        <br>
+                        <br>
+                    </td>
+                </tr>
+            </table>
+
+            <br>
+            <br>
+
+
+            <table border="0" cellpadding="3" cellspacing="3">
+                            <tbody>
+                                <tr>
+                                    <td align="middle"><a
+                                            href="http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://www.netutopia.com/award/">
+                                            <img border=0 border="0" src="fdff2175fe5a.gif" alt="RaviPick Award" align="left"
+                                                border="none&quot;"></a>
+                                    </td>
+                                    <td align="middle"><a
+                                            href="http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://astrology.net/goldstar.html">
+                                            <img border=0 border="0" src="b5ca0045ded1.gif" width="80" height="88"></a>
+                                    </td>
+                                    <td align="middle"><a
+                                            href="http://theoldnet.com/get?year=1996&scripts=false&decode=false&url=http://www.geocities.com/Athens/7556/award.html">
+                                            <img border=0 border="0" src="8348f9aff88d.gif"></a>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+
+            <p>Add this badge to your website!</p>
+            
+                        <!-- The Old Net Embed Code -->
+                        <p>
+                            <a href="http://www.theoldnet.com/#frombadge"
+                                title="Are you tired of this new Internet yet? Time to Get TheOldNet!">
+                                <img src="7ed00280c977.gif" width="88" height="31" border=0>
+                            </a>
+                        </p>
+                        <!-- End The Old Net Embed Code -->
+            
+                        <p>Just copy and paste this code into your HTML!</p>
+            
+                        <font color="purple">
+                            <textarea cols=50 rows=12>
+                                <!-- The Old Net Embed Code -->
+                                <p>
+                                <a href="http://www.theoldnet.com/#frombadge" title="Are you tired of this new Internet yet? Time to Get TheOldNet!">
+                                <img src="7ed00280c977.gif" width="88" height="31" border=0>
+                                </a>
+                                </p>
+                                <!-- End The Old Net Embed Code -->
+                            </textarea>
+                        </font>
+
+            <br>
+            <br>
+            <br>
+
+            <p>
+
+                The Old Net is an attempt to restore vintage web browsing on vintage computers.
+                                <br>
+                                It uses the <a href="https://archive.org/web/">Internet Archive: Wayback Machine</a> API and a proxy that
+                                strips out any
+                                <br>
+                                incompatible javascript and stitches together as many links as it can.
+                                <br>
+                                <br>
+                                <br>
+                                <img src="317410b9b5ee.gif">
+                                <br>
+                                Please <a href="https://archive.org/donate/">donate</a> to the Internet Archive!
+                                <br>
+
+                <br>
+                <br>
+
+                <table border="2" cellpadding="10" cellspacing="5">
+                                    <tr>
+                                        <td colspan=2>
+                                            <center><img src="be1d248c0fd4.gif">Social Links<img src="be1d248c0fd4.gif"></center>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td colspan=2>
+                                            <center>
+                                                <a href="https://www.instagram.com/theoldnet/"><img
+                                                        src="9e38dde843b9.jpg" alt="Follow TheOldNet on Instagram" border=0><br>Follow
+                                                    TheOldNet on Instagram!</a>
+                                            </center>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td>
+                                            <center>
+                                                <a href="https://www.patreon.com/theoldnet" target="top"><img
+                                                        src="32b401ed5a62.jpg" alt="Support TheOldNet on Patreon" border=0><br>Support
+                                                    TheOldNet on Patreon!</a>
+                                            </center>
+                                        </td>
+                                        <td>
+                                            <center>
+                                                <a href="https://twitter.com/theoldnet"><img src="143c7e091fba.jpg" border=0><br>Follow
+                                                    TheOldNet on Twitter!</a>
+                                            </center>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td>
+                                            <center>
+                                                <a href="https://www.youtube.com/channel/UCdm9iWR8uZVr6qm7P3uzYBQ" border=0><img
+                                                        src="1a5e31f0f7d2.jpg" border=0><br>Subscribe to our Youtube Channel!</a>
+                                            </center>
+                
+                                        </td>
+                                        <td>
+                                            <center>
+                                                <a href="https://www.facebook.com/groups/theoldnet"><img
+                                                        src="d97906ba372d.jpg" border=0><br>Join TheOldNet Facebook Group!</a>
+                                            </center>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td>
+                                            <center>
+                                                <a href="https://discord.gg/5xE6NEGkNK" border=0><img
+                                                        src="a1cff113fe42.jpg" border=0><br>Join TheOldNet Discord!</a>
+                                            </center>
+                                        </td>
+                                        <td>
+                                            <center>
+                                                <a href="https://www.reddit.com/r/Theoldnet/" border=0><img
+                                                        src="e09c963b9538.jpg" border=0><br>Join TheOldNet Reddit Community!</a>
+                                            </center>
+                                        </td>
+                                    </tr>
+                                </table>
+
+
+                <br>
+                <br>
+
+                <a href="mailto:webmaster@theoldnet.com"><img border=0
+                                        src="10376d24a839.gif"><br></img>webmaster@theoldnet.com</a>
+                                <br>
+                                <a href="http://theoldnet.com/~rich/">theoldnet.com/~rich</a>
+                                <br>
+                                <a href="http://richardbettridge.com">richardbettridge.com</a>
+
+            </p>
+
+            <br>
+
+            <img border=0 border="0" src="01a0a13960e1.gif"></img>
+
+            <br>
+
+            Under Construction
+
+            <br>
+
+            <br>
+
+            <a href="/documentation.html">Documentation</a>
+
+        </center>
+    </body>
+</html>

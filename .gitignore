@@ -4,3 +4,5 @@
 /tests/reftests/out/
 *.log
 /out*.png
+/tests/pages/snapshots/out/
+/dist/

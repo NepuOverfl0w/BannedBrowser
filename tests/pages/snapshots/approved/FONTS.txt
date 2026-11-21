@@ -1,0 +1,4 @@
+serif=Liberation Serif
+sans-serif=Liberation Sans
+monospace=Liberation Mono
+system-ui=Inter

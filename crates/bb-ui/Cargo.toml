@@ -14,4 +14,3 @@ workspace = true
 [dependencies]
 bb-paint.workspace = true
 bb-text.workspace = true
-log.workspace = true

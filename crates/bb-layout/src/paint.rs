@@ -606,6 +606,7 @@ impl<'a> Painter<'a> {
                 }
             }
             Replaced::Control(c) => self.paint_control(c, content, &s),
+            Replaced::Svg { .. } => {}
             Replaced::Placeholder { label, .. } => {
                 self.dl.push(Item::Rect { rect: content, color: Color::rgba(128, 128, 128, 30) });
                 if !label.is_empty() {

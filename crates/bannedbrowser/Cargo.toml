@@ -25,13 +25,12 @@ bb-layout.workspace = true
 winit.workspace = true
 softbuffer.workspace = true
 png.workspace = true
-dirs.workspace = true
+bb-image.workspace = true
 log.workspace = true
 env_logger.workspace = true
 anyhow.workspace = true
 crossbeam-channel.workspace = true
 arboard.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 
 [[bin]]

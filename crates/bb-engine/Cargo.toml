@@ -23,5 +23,7 @@ bb-image.workspace = true
 bb-paint.workspace = true
 bb-layout.workspace = true
 log.workspace = true
-crossbeam-channel.workspace = true
 encoding_rs.workspace = true
+
+[dev-dependencies]
+bb-image.workspace = true

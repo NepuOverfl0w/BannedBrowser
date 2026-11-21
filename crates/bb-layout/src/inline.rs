@@ -29,11 +29,12 @@ pub enum Item {
 pub fn collect_items(l: &Layout, id: BoxId, out: &mut Vec<Item>) {
     for &c in &l.tree.boxes[id].children {
         let b = &l.tree.boxes[c];
-        if matches!(b.style.position, Position::Absolute | Position::Fixed) {
+        let text_like = matches!(b.kind, BoxKind::Text(_) | BoxKind::LineBreak);
+        if !text_like && matches!(b.style.position, Position::Absolute | Position::Fixed) {
             out.push(Item::Abs(c));
             continue;
         }
-        if b.style.float != Float::None {
+        if !text_like && b.style.float != Float::None {
             out.push(Item::Float(c));
             continue;
         }
@@ -530,6 +531,75 @@ pub fn layout_inline(l: &mut Layout, id: BoxId, cx: f32, cy: f32, cw: f32, bfc: 
     h
 }
 
+/// Visual x offsets for text pieces on a line when it contains right-to-left
+/// text. Returns piece index → x. Empty when the line is purely LTR.
+fn bidi_positions(lb: &LineBuilder, pieces: &[Piece], base_rtl: bool) -> rustc_hash::FxHashMap<usize, f32> {
+    let mut map = rustc_hash::FxHashMap::default();
+    let texts: Vec<(usize, f32, f32)> = lb
+        .placed
+        .iter()
+        .filter_map(|p| match p {
+            Placed::Text { piece, x, width } => Some((*piece, *x, *width)),
+            _ => None,
+        })
+        .collect();
+    let any_rtl = texts.iter().any(|(p, _, _)| pieces[*p].glyphs.rtl == Some(true));
+    if !any_rtl || texts.len() != lb.placed.iter().filter(|p| !matches!(p, Placed::SpanEdge { .. })).count() {
+        // Mixed atomics + RTL: TODO(UAX #9 L2) full reordering with atomics.
+        if !any_rtl {
+            return map;
+        }
+    }
+    let base = if base_rtl { 1u8 } else { 0u8 };
+    let mut levels: Vec<u8> = texts
+        .iter()
+        .map(|(p, _, _)| match pieces[*p].glyphs.rtl {
+            Some(true) => 1,
+            Some(false) => {
+                if base == 1 {
+                    2
+                } else {
+                    0
+                }
+            }
+            None => base,
+        })
+        .collect();
+    // Neutral pieces between two RTL pieces take RTL (W/N rules, approximated).
+    for i in 1..levels.len().saturating_sub(1) {
+        if pieces[texts[i].0].glyphs.rtl.is_none() && levels[i - 1] % 2 == 1 && levels[i + 1] % 2 == 1 {
+            levels[i] = 1;
+        }
+    }
+    let mut order: Vec<usize> = (0..texts.len()).collect();
+    let max = levels.iter().copied().max().unwrap_or(0);
+    let min_odd = levels.iter().copied().filter(|l| l % 2 == 1).min().unwrap_or(1);
+    let mut lvl = max;
+    while lvl >= min_odd && lvl > 0 {
+        let mut i = 0;
+        while i < order.len() {
+            if levels[order[i]] >= lvl {
+                let start = i;
+                while i < order.len() && levels[order[i]] >= lvl {
+                    i += 1;
+                }
+                order[start..i].reverse();
+            } else {
+                i += 1;
+            }
+        }
+        lvl -= 1;
+    }
+    let start_x = texts.iter().map(|t| t.1).fold(f32::MAX, f32::min);
+    let mut x = start_x;
+    for &i in &order {
+        let (p, _, w) = texts[i];
+        map.insert(p, x);
+        x += w;
+    }
+    map
+}
+
 fn piece_at(pieces: &[Piece], idx: usize) -> &Piece {
     &pieces[idx]
 }
@@ -653,6 +723,9 @@ fn build_line(
     };
     let per_space = justify_extra / spaces as f32;
 
+    // UAX #9 L2 (approximated per piece): reorder RTL runs visually.
+    let visual_x = bidi_positions(lb, pieces, block_style.direction_rtl);
+
     // Vertical metrics: each item's (above, below) relative to the line baseline.
     let mut has_text = false;
     let mut above: f32 = 0.0;
@@ -743,6 +816,7 @@ fn build_line(
             Placed::Text { piece, x, width } => {
                 let pc = piece_at(pieces, *piece);
                 let Item::Text { style, node, owner, .. } = &items[pc.item] else { unreachable!() };
+                let x = visual_x.get(piece).copied().unwrap_or(*x);
                 let px = x0 + shift + x + extra_x;
                 out.push(LineItem::Text {
                     x: px,

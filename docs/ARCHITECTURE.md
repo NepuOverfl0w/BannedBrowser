@@ -1,0 +1,61 @@
+# BannedBrowser architecture
+
+BannedBrowser is a Cargo workspace. Data flows one way through pure-ish stages,
+each with a debug dump:
+
+```
+bytes ─▶ bb-net ─▶ encoding sniff ─▶ bb-html tokenizer ─▶ tree builder ─▶ bb-dom Document   (--dump-dom)
+                                                                              │
+     bb-css (stylesheets, selectors, media) ─▶ bb-style cascade ─▶ StyleMap   (--dump-style)
+                                                                              │
+                          bb-layout box tree ─▶ layout ─▶ fragments/lines   (--dump-layout)
+                                                                              │
+                         bb-layout paint ─▶ bb-paint DisplayList ─▶ Canvas (SoftwareCanvas) ─▶ PNG / window
+```
+
+## Crates
+
+| Crate | Responsibility |
+|---|---|
+| `bb-url` | WHATWG URL parser/serializer, hosts (IPv4/IPv6/IDNA), percent-encoding, form encoding |
+| `bb-net` | HTTP/1.1 client with keep-alive pool, TLS (rustls), CONNECT proxies, content codings, redirects, `data:`/`file:`/`about:`, encoding sniffing |
+| `bb-dom` | Arena DOM (`NodeId` indices), dirty flags, html5lib dump, serializer |
+| `bb-html` | HTML tokenizer (full state machine + entity table) and tree builder (all insertion modes) |
+| `bb-css` | CSS Syntax 3 tokenizer/parser, Selectors 4 matching, media queries, `@supports`, colors, `calc()` |
+| `bb-style` | Cascade, custom properties, computed values, UA stylesheet, HTML presentational hints |
+| `bb-text` | Font discovery (fontdb), CSS font matching + aliases, per-character fallback, shaping (rustybuzz), outlines, UAX #14/#9 helpers |
+| `bb-image` | PNG/JPEG/GIF/WebP via allowed codecs; own BMP/ICO decoders; premultiplied RGBA |
+| `bb-paint` | Paths, exact-area anti-aliased rasterizer, gradients, clips, layers, blur shadows, glyph cache, display list renderer |
+| `bb-layout` | Box tree, block/inline/float/table/flex/positioned layout, list markers, replaced elements, display-list generation, hit testing |
+| `bb-engine` | Page pipeline (fetch → … → display list), parallel subresources, internal `about:` pages, error pages |
+| `bb-ui` | Chrome toolkit: theme, original vector icons, text helpers, text-field model |
+| `bb-js` | JavaScript engine (milestone M10; empty for now) |
+| `bannedbrowser` | Binary: CLI, headless mode, winit/softbuffer shell, tab worker threads |
+
+## Threads
+
+```
+UI thread (winit event loop) ──── chrome painting (bb-ui → bb-paint), input, URL bar
+   │  ▲  crossbeam channels + EventLoopProxy user events
+   ▼  │
+Tab worker thread × N ──── owns its Page (DOM/styles/layout are !Send), loads, restyles, renders viewport frames
+   │
+Scoped fetch workers (≤ 6 per page) ──── stylesheets, @imports, images in parallel
+```
+
+The UI thread never blocks on network, parsing or layout: it sends `Navigate`,
+`Render`, `Hover`, `Click` messages and receives `Loaded`, `Frame`, `Hover`,
+`Clicked` events. Render requests are coalesced. Panics in a page pipeline are
+caught and replaced with the "BannedBrowser hit a snag" page.
+
+## Key decisions
+
+* **One paint path.** Chrome and content both paint through `bb-paint`; the
+  `SoftwareCanvas` is the reference renderer used by all tests. A `wgpu`
+  canvas may come later behind a `gpu` feature.
+* **Coordinates.** Layout runs in absolute CSS px; relative offsets are applied
+  at paint/hit-test time; the renderer applies scroll and device scale.
+* **Spec fidelity.** Algorithms cite their spec sections in comments. Partial
+  implementations carry `TODO(spec §x)` comments and are listed in `PROGRESS.md`.
+* **Incremental later.** DOM nodes carry style/layout dirty flags; today every
+  change restyles and relayouts the whole page (fast enough for v0.1).

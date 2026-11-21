@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=BannedBrowser
+GenericName=Web Browser
+Comment=A web browser written from scratch in Rust
+Exec=bannedbrowser %U
+Icon=bannedbrowser
+Terminal=false
+Categories=Network;WebBrowser;
+MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
+StartupWMClass=bannedbrowser

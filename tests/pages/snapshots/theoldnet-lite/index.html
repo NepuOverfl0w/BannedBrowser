@@ -1,0 +1,91 @@
+<!-- Snapshot of http://theoldnet.com/lite taken 2026-11-21 for offline regression tests. Images saved alongside. -->
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>The Old Net</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+        <meta property="og:title" content="The Old Net" />
+        <meta property="og:url" content="http://theoldnet.com" />
+        <meta property="og:image:type" content="image/jpeg" />
+        <meta property="og:type" content="website" />
+        <meta property="og:description" content="Welcome to the Old Internet Again!" />
+        <meta property="og:image" content="//theoldnet.com/images/theoldnet-square.png" />
+        <link rel="icon" type="image/gif" href="favicon.gif">
+    </head>
+
+    <body>
+        <center>
+
+            <p>
+                <font size=6 color="blue">Welcome</font>
+                <font size=6 color="red">To</font>
+                <font size=6 color="orange">The</font>
+                <font size=6 color="blue">Old</font>
+                <font size=6 color="green">Internet</font>
+                <font size=6 color="red">Again!</font>
+            </p>
+
+            <br>
+            <br>
+            <form action="/get" id="search-form">
+                http://<input type="text" name="url" value="nintendo.com">
+                <select name="year">
+                    <option>1994</option>
+                    <option>1995</option>
+                    <option selected>1996</option>
+                    <option>1997</option>
+                    <option>1998</option>
+                    <option>1999</option>
+                    <option>2000</option>
+                    <option>2001</option>
+                    <option>2002</option>
+                    <option>2003</option>
+                    <option>2004</option>
+                    <option>2005</option>
+                    <option>2006</option>
+                    <option>2007</option>
+                    <option>2008</option>
+                    <option>2009</option>
+                    <option>2010</option>
+                </select>
+                <input type="hidden" value="false" name="scripts">
+                <input type="hidden" value="false" name="decode">
+                <input type="submit" value="Go">
+            </form>
+            <br>
+            <form action="/find" id="search-form">
+                <input type="text" placeholder="Search Archives" name="query" value="the">
+                <input type="submit" value="&nbsp;Search Archives&nbsp;">
+            </form>
+            <br>
+            <form action="https://oldavista.com/search" method="get" id="oldavista-form">
+                <input type="text" name="q" value="the">
+                <input type="hidden" name="l" value="english">
+                <input type="hidden" name="s" value="0">
+                <input type="submit" name="search" value="Search Oldavista">
+            </form>
+
+
+
+	    <font color=grey><img src="f273554a6e82.gif">This is the lite homepage for systems with limited RAM. <br>For the full webpage click <a href="/">here</a></font>.
+
+            <br>
+            <br>
+            <a href="/cgi-bin/guestbook">
+                <br>Sign the Guestbook!
+            </a>
+            <br>
+            <br>
+            <br>
+            <p>
+                The Old Net is an attempt to restore vintage web browsing on vintage computers.
+                <br>
+                It uses the <a href="https://archive.org/web/">Internet Archive: Wayback Machine</a> API and a proxy that
+                strips out any
+                <br>
+                incompatible javascript and stitches together as many links as it can.
+            </p>
+            <p>&#169; <a href="http://richardbettridge.com">Richard Bettridge</a></p>
+        </center>
+    </body>
+</html>

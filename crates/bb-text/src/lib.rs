@@ -64,6 +64,8 @@ pub struct Glyph {
 pub struct ShapedText {
     pub glyphs: Vec<Glyph>,
     pub width: f32,
+    /// Strong direction of the text: Some(true) = right-to-left, None = neutral only.
+    pub rtl: Option<bool>,
     /// Synthesize bold (font lacks the requested weight).
     pub synthetic_bold: bool,
     /// Synthesize oblique (font lacks an italic face).
@@ -485,24 +487,29 @@ impl FontSystem {
             }
         }
         if found.is_none() {
-            // Loaded faces first (cheap), then scan the database.
-            for i in 0..self.faces.len() {
-                let f = FontId(i as u32);
-                if self.has_glyph(f, c) {
-                    found = Some(f);
-                    break;
-                }
-            }
-        }
-        if found.is_none() {
-            let ids: Vec<(fontdb::ID, u16, bool)> =
-                self.db.faces().map(|f| (f.id, f.weight.0, f.style != fontdb::Style::Normal)).collect();
-            // Prefer regular-ish faces close to the requested weight/style.
-            let mut ordered = ids;
-            ordered.sort_by_key(|(_, w, it)| {
-                ((*it != italic) as i32) * 1000 + (*w as i32 - weight as i32).abs()
-            });
-            for (id, _, _) in ordered {
+            // Scan the database, preferring proportional (non-monospace) faces
+            // close to the requested weight/style, and regular "Sans" families.
+            let mut ordered: Vec<(fontdb::ID, i32)> = self
+                .db
+                .faces()
+                .map(|f| {
+                    let fam = f.families.first().map(|x| x.0.to_ascii_lowercase()).unwrap_or_default();
+                    let italic_mismatch = (f.style != fontdb::Style::Normal) != italic;
+                    let mut score = (f.weight.0 as i32 - weight as i32).abs();
+                    score += if italic_mismatch { 1000 } else { 0 };
+                    score += if f.monospaced || fam.contains("mono") { 5000 } else { 0 };
+                    score += if fam.contains("sans") { 0 } else { 50 };
+                    score += if fam.contains("looped") || fam.contains("unjoined") || fam.contains("display")
+                    {
+                        300
+                    } else {
+                        0
+                    };
+                    (f.id, score)
+                })
+                .collect();
+            ordered.sort_by_key(|(_, sc)| *sc);
+            for (id, _) in ordered {
                 let covers = self.db.with_face_data(id, |data, index| {
                     ttf_parser::Face::parse(data, index)
                         .ok()
@@ -540,6 +547,7 @@ impl FontSystem {
         if text.is_empty() || list.faces.is_empty() {
             return out;
         }
+        out.rtl = strong_direction(text);
         // Segment by font.
         let mut segments: Vec<(usize, usize, FontId)> = Vec::new();
         let mut cur: Option<(usize, FontId)> = None;
@@ -660,6 +668,19 @@ impl FontSystem {
         let mut b = [0u8; 4];
         self.shape(c.encode_utf8(&mut b), list, size).width
     }
+}
+
+/// The first strong bidi direction in `text` (UAX #9 P2): Some(true) for RTL.
+pub fn strong_direction(text: &str) -> Option<bool> {
+    use unicode_bidi::{bidi_class, BidiClass};
+    for c in text.chars() {
+        match bidi_class(c) {
+            BidiClass::L => return Some(false),
+            BidiClass::R | BidiClass::AL => return Some(true),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// UAX #14 line-break opportunities: byte offsets *after which* a break may

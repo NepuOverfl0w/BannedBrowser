@@ -48,6 +48,10 @@ pub enum Replaced {
         broken: bool,
     },
     Control(Control),
+    /// Inline `<svg>`: space is reserved, nothing is drawn yet (TODO(SVG 2)).
+    Svg {
+        default: (f32, f32),
+    },
     /// iframe / embed / object / canvas / video placeholders.
     Placeholder {
         label: String,
@@ -184,6 +188,10 @@ impl LBox {
     }
 
     pub fn is_out_of_flow(&self) -> bool {
+        // Text boxes share their parent's style but are never floated/positioned themselves.
+        if matches!(self.kind, BoxKind::Text(_) | BoxKind::LineBreak) {
+            return false;
+        }
         matches!(self.style.position, Position::Absolute | Position::Fixed) || self.style.float != Float::None
     }
 
@@ -577,7 +585,7 @@ impl<'a> Builder<'a> {
                     // TODO(SVG): render SVG; reserve its box for now.
                     let w = attr_px(doc, node, "width").unwrap_or(300.0);
                     let h = attr_px(doc, node, "height").unwrap_or(150.0);
-                    Some(Replaced::Placeholder { label: String::new(), default: (w, h) })
+                    Some(Replaced::Svg { default: (w, h) })
                 } else {
                     None
                 };

@@ -12,6 +12,7 @@ dialog:not([open]) { display: none; }
 
 /* §15.3.2 The page */
 html, body { display: block; }
+body { margin: 8px; }
 html { color-scheme: normal; }
 
 /* §15.3.3 Flow content */

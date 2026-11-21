@@ -2,7 +2,9 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod gui;
 mod headless;
+mod tab;
 
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
@@ -24,5 +26,8 @@ fn main() {
         }
         return;
     }
-    eprintln!("GUI mode is not built yet in this revision; use --headless --screenshot out.png");
+    if let Err(e) = gui::run(args) {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
 }
