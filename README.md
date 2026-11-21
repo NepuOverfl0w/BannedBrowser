@@ -54,6 +54,7 @@
 | ![New tab, light](docs/screenshots/newtab-light.png) <br> New-tab page (rendered by our engine) | ![New tab, dark](docs/screenshots/newtab-dark.png) <br> New-tab page, dark theme |
 | ![Private window](docs/screenshots/private-window.png) <br> Private window (dark-violet frame) | ![myip.wtf headers](docs/screenshots/myip-headers.png) <br> https://myip.wtf/headers — what we send |
 | ![Frameset](docs/screenshots/frameset.png) <br> A `<frameset>` page after clicking a `target="main"` link | ![Retro test page](docs/screenshots/retro-page.png) <br> Our own 1990s-style test page (original artwork) |
+| ![Netscape, 1996](docs/screenshots/archived-netscape-1996.png) <br> netscape.com as archived in Oct 1996 (via theoldnet.com) | ![GeoCities, 1996](docs/screenshots/archived-geocities-1996.png) <br> geocities.com as archived in Oct 1996 (via theoldnet.com) |
 
 <details>
 <summary>More: example.com with its JavaScript-inserted translations applied by hand (Arabic RTL, CJK, Cyrillic)</summary>
@@ -168,7 +169,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | example.com | ✅ (static HTML; its JS-added translations need M10) |
 | theoldnet.com (start page + lite) | ✅ |
 | myip.wtf, myip.wtf/headers | ✅ |
-| Archived GeoCities sites via theoldnet | 🚧 layout ✅, images blocked in the dev sandbox |
+| Archived 1996–99 sites via theoldnet: GeoCities (home + a fan page), Netscape, WinZip, Microsoft IE | ✅ live + offline snapshots |
 | Wikipedia, Hacker News | 📋 not tested yet |
 
 | Test suite | Pass rate |
@@ -176,7 +177,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | WPT urltestdata | **904 / 904 (100 %)** |
 | html5lib tokenizer | **7014 / 7042 (99.60 %)** |
 | html5lib tree construction | **1779 / 1784 (99.72 %)** |
-| Reftests | **47 / 47** |
+| Reftests | **48 / 48** |
 | test262 | 📋 (M10) |
 
 ## 🏗 Architecture
@@ -319,13 +320,13 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 
 ## 🗺 Roadmap
 
-- [ ] **v0.1 "Hello, Old Web"** — example.com ✅, theoldnet.com ✅, archived sites 🚧, CI + release artifacts 🚧
+- [x] **v0.1 "Hello, Old Web"** — example.com ✅, theoldnet.com ✅, 5 archived sites ✅, CI on 3 OSes ✅, release packages ✅
 - [x] M0 Scaffold
 - [x] M1 URL & networking
 - [x] M2 HTML
 - [ ] M3 CSS & style (mostly done)
 - [ ] M4 Layout I (mostly done)
-- [ ] M5 Paint (mostly done; 47 reftests)
+- [ ] M5 Paint (mostly done; 48 reftests)
 - [ ] M6 GUI shell core (started)
 - [ ] M7 Layout II (grid, transforms, `@font-face`, …)
 - [ ] M8 Forms, cookies, cache, profile storage

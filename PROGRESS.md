@@ -11,10 +11,10 @@ _Last updated: 2026-11-21 (session 1)._
 | M2 HTML | ✅ done | tokenizer 99.60 %, tree construction 99.72 % (html5lib-tests) |
 | M3 CSS + style | 🚧 mostly | parser, selectors, cascade, var(), calc(), media, UA sheet, presentational hints; see gaps |
 | M4 Layout I | 🚧 mostly | block/inline/floats/tables/flex(basic)/positioned/replaced; see gaps |
-| M5 Paint | 🚧 mostly | AA rasterizer, borders, gradients, shadows, clips, opacity, glyph cache; 46 reftests |
-| M6 GUI shell core | 🚧 started | tabs, toolbar, URL bar, scrolling, links, multiple + private windows, test-state hook |
+| M5 Paint | 🚧 mostly | AA rasterizer, borders, gradients, shadows, clips, opacity, glyph cache; 48 reftests |
+| M6 GUI shell core | 🚧 started | tabs, toolbar, URL bar, overlay scrollbar, find bar, frames, links, multiple + private windows, test-state hook; menus 📋 |
 | M7–M11 | 📋 planned | |
-| **v0.1 "Hello, Old Web"** | 🚧 in progress | example.com ✅, theoldnet.com ✅ (start + lite), see checklist |
+| **v0.1 "Hello, Old Web"** | ✅ ready to tag | example.com, theoldnet.com, 5 archived sites, snapshots, CI green on 3 OSes, packages; see checklist |
 
 ## Test numbers (session 1)
 
@@ -23,8 +23,8 @@ _Last updated: 2026-11-21 (session 1)._
 | WPT `url/resources/urltestdata.json` | **904 / 904 (100.0 %)** |
 | html5lib tokenizer (HEAD `c5495c5`) | **7014 / 7042 (99.60 %)**, 4 skipped (lone surrogates can't be Rust strings) |
 | html5lib tree-construction (pinned `224991e~1`) | **1779 / 1784 (99.72 %)**, 8 `#script-on` cases excluded |
-| Reftests (`tests/reftests`) | **47 / 47** |
-| Snapshot regressions (`tests/pages/snapshots`) | 5 pages, pass on the approved font set |
+| Reftests (`tests/reftests`) | **48 / 48** |
+| Snapshot regressions (`tests/pages/snapshots`) | 12 pages (example.com ×2, theoldnet ×2, myip.wtf, 5 archived sites, retro, frames), pass on the approved font set |
 | `cargo test --workspace` | 116 test functions, 0 failures |
 | GUI smoke (`scripts/gui-smoke.sh`) | `basic.sh` (open, link click, back, wheel scroll, scrollbar track click + thumb drag, URL bar, new/close/reopen tab, resize, maximize, new window, private window), `frames.sh` (frameset render, wheel scrolls the frame under the pointer, targeted link loads into the named frame) and `find.sh` (incremental find, stepping, scroll to match, not found, close) pass |
 | `scripts/check-deps.sh` | OK — 162 crates, none banned |
@@ -42,7 +42,7 @@ _Last updated: 2026-11-21 (session 1)._
 | http(s)://theoldnet.com/ | ✅ GIFs, `<font>` sizes/colors, `<center>`, bordered/nested tables with cellspacing/cellpadding, form controls, link colors, favicon. Full page (6889 px) in ~0.8 s. |
 | http://theoldnet.com/lite | ✅ |
 | https://myip.wtf and https://myip.wtf/headers | ✅ (HTTPS through the sandbox's CONNECT proxy; `/headers` shows exactly what we send: `Accept`, `Accept-Encoding: gzip, deflate, br`, `Accept-Language`, keep-alive, `User-Agent: Mozilla/5.0 (X11; Linux x86_64) BannedBrowser/0.1.0-dev`) |
-| Archived sites via theoldnet `/get?...` | 🚧 pages load and lay out, but their images come from **web.archive.org, which is blocked by this environment's egress policy** — images show alt text/placeholders. Please allow `web.archive.org` to complete v0.1 criterion 2. |
+| Archived sites via theoldnet `/get?...` | ✅ checked on GitHub runners (the dev sandbox can't reach web.archive.org): CI workflow "Archived sites" renders them live with our real UA (theoldnet redirects modern browsers to web.archive.org) and snapshots them with images. 9 of 12 candidates rendered live; 3 failed on web.archive.org timeouts / "Temporarily Offline". Kept as regression snapshots: **GeoCities Area51 fan page (1999), GeoCities home (Oct 1996), Netscape home (Oct 1996), WinZip home (1996), Microsoft IE download page (1996)**. Missing images are genuine archive 404s (geocities 2, netscape 1, microsoft-ie 1). Found and fixed a line-breaking bug on netscape.com (a word split across `<font>` elements overflowed its cell). |
 
 ## v0.1 checklist
 
@@ -62,9 +62,9 @@ _Last updated: 2026-11-21 (session 1)._
 - [ ] GUI: ≡ menu and context menus
 - [x] Robustness: unknown tags, broken markup, missing images, `<script>` ignored, `<noscript>` shown
 - [x] Local snapshots + regression tests (example.com, theoldnet.com + lite, myip.wtf)
-- [ ] 5 archived sites via theoldnet (blocked: web.archive.org)
-- [ ] CI green on all three OSes (workflow written; first run pending push)
-- [ ] Release artifacts (`scripts/package.sh` written; Windows `.exe` cross-build verified locally)
+- [x] 5 archived sites via theoldnet (GeoCities Area51, GeoCities home, Netscape, WinZip, Microsoft IE; live renders + offline snapshots)
+- [x] CI green on all three OSes (build, clippy, tests, reftests, snapshots; GUI tests on Linux)
+- [x] Release artifacts built in CI on all three OSes: Linux `.tar.gz` (3.9 MB, binary + .desktop + icons), Windows `.zip` (2.9 MB), macOS `.app` zip (2.9 MB); stripped `dist` profile. Unsigned/not notarized.
 - [x] README with real screenshots
 
 ## Known gaps and bugs (honest list)
@@ -78,13 +78,14 @@ _Last updated: 2026-11-21 (session 1)._
 * **Find:** top-level document only (not inside frames); RTL runs highlight approximately; the counter is per tab but isn't refreshed when switching tabs with the bar open.
 * **GUI:** no ≡ menu / context menus / bookmarks; no session restore; private windows share the network client (no cookies exist yet, so nothing leaks); screenshots of overlapping windows in GUI tests can be stale.
 * **macOS cross-check:** `ring`'s build script needs the macOS SDK headers to compile its C/asm, which the Linux VM doesn't have; the macOS CI job covers it. Two attempts (clang + generic headers) failed; not retried further.
-* **Environment:** `web.archive.org` blocked by egress policy; theoldnet.com serves "Hello World" to non-browser user agents (our UA is fine).
+* **Packages:** not code-signed or notarized (macOS Gatekeeper / Windows SmartScreen will warn); no Windows icon resource embedded in the `.exe` yet.
+* **Environment:** `web.archive.org` blocked by the dev sandbox's egress policy (archived-site checks run on GitHub runners); theoldnet.com serves "Hello World" to non-browser user agents (our UA is fine).
 
 ## Next steps (in order)
 
-1. Push, watch the first CI run on Linux/Windows/macOS and fix platform issues.
-2. Ask for `web.archive.org` on the allowlist; check 5 archived GeoCities-era sites and add them as snapshots.
-3. GUI: ≡ app menu, page/link/tab context menus, find bar (Ctrl+F), history dropdown, session restore.
+1. Tag v0.1.0 (version bump done in the release commit); after the release, this branch becomes `main`.
+2. v0.2 (not started; see scope below): GUI ≡ app menu, page/link/tab context menus, history dropdown, session restore.
+3. Settle the v0.2 dependency questions (GPU backend, codecs/audio) before starting that work.
 4. Frames: session history for frame navigations, border dragging.
 5. Reftests to ≥150 (M7), real WPT CSS subset; fix `border-collapse`, captions, inline-block baseline.
 6. `@font-face` (TTF/OTF first, WOFF/WOFF2 decoders), GIF animation, SVG basics for icons.

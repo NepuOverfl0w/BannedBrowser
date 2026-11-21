@@ -17,6 +17,12 @@ const PAGES: &[(&str, &str)] = &[
     ("theoldnet", "theoldnet/index.html"),
     ("theoldnet-lite", "theoldnet-lite/index.html"),
     ("myip.wtf", "myip.wtf/index.html"),
+    // Archived 1996-1999 sites via theoldnet.com (scripts/archived-sites.sh).
+    ("archived-gc-area51", "archived-gc-area51/index.html"),
+    ("archived-geocities", "archived-geocities/index.html"),
+    ("archived-netscape", "archived-netscape/index.html"),
+    ("archived-winzip", "archived-winzip/index.html"),
+    ("archived-microsoft-ie", "archived-microsoft-ie/index.html"),
     // Our own pages (original artwork): 1990s-style layout and a frameset.
     ("retro", "../retro/index.html"),
     ("frames", "../frames/index.html"),
