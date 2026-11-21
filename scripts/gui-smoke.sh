@@ -20,9 +20,14 @@ mkdir -p tests/gui/out
 SERVER_OUT=tests/gui/out/server.out
 rm -f "$SERVER_OUT"
 # The server exits when fd 3 (its stdin) closes, i.e. when this script ends.
-exec 3> >("$PY" tests/server/testserver.py --port 0 --exit-on-stdin-eof > "$SERVER_OUT" 2>/dev/null)
-for _ in $(seq 1 100); do grep -q '^PORT' "$SERVER_OUT" 2>/dev/null && break; sleep 0.1; done
-grep -q '^PORT' "$SERVER_OUT" || { echo "test server did not start" >&2; exit 1; }
+exec 3> >("$PY" tests/server/testserver.py --port 0 --exit-on-stdin-eof > "$SERVER_OUT" 2>tests/gui/out/server.err)
+# Python can take a while to start on a cold CI runner: allow up to 60 s.
+for _ in $(seq 1 600); do grep -q '^PORT' "$SERVER_OUT" 2>/dev/null && break; sleep 0.1; done
+grep -q '^PORT' "$SERVER_OUT" || {
+  echo "test server did not start; its stderr:" >&2
+  cat tests/gui/out/server.err >&2 || true
+  exit 1
+}
 export BASE="http://127.0.0.1:$(awk '/^PORT/{print $2}' "$SERVER_OUT" | tr -d '\r')"
 status=0
 for t in tests/gui/*.sh; do
