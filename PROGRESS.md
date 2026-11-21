@@ -115,6 +115,13 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
 * **Hardware acceleration** — GPU compositing/rasterization and hardware
   video decode.
 
+* **No excluded test cases** (maintainer, 2026-11-21). Every suite runs in full on every OS. Today's exclusions, each to be removed:
+  - **html5lib tokenizer, 4 lone-surrogate cases skipped.** The tokenizer must take input as code points including lone surrogates, not a Rust `String`; `document.write` from JS needs the same.
+  - **html5lib tree construction, 8 `#script-on` cases excluded.** Run them with the scripting flag on once our JS engine (M10) exists.
+  - **Tree construction is pinned to html5lib-tests `224991e~1`.** Switch to the current tests (they now live in WPT). That brings in processing instructions and `<selectedcontent>`, both of which fail today.
+  - **Snapshot regressions are skipped when the font set differs** (every non-Linux runner). Bundle open-licensed test fonts so snapshots render identically on Linux, Windows and macOS.
+  - **GUI tests run only on Linux.** Add a GUI test driver for Windows and macOS.
+  - The suites' pass-rate floors (URL 95 %, tokenizer 98 %, tree 90 %) become 100 %, so a failing case can't hide behind a threshold either.
 * **Certificate error page** (requested by the maintainer):
   - Two buttons: **Go Back** (recommended; goes home if there is no history) and **Advanced…**.
   - Advanced reveals the warning, the readable reason and an error code, plus **Accept the Risk and Continue**.
