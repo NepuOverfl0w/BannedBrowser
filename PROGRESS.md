@@ -93,8 +93,8 @@ _Last updated: 2026-11-21 (session 1)._
 
 ## v0.2 scope (agreed with the maintainer)
 
-v0.2 will be developed by another coding agent (Codex). The shared rules for all agents
-are in `AGENTS.md`.
+v0.2 may be developed by Claude and/or Codex. Every coding agent follows `AGENTS.md`;
+Claude also reads `CLAUDE.md` for notes about its cloud VM.
 
 v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
 
