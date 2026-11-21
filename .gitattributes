@@ -1,0 +1,7 @@
+# Never convert line endings in binary test data (Windows checkouts use CRLF for text).
+*.ttf binary
+*.otf binary
+*.png binary
+*.gif binary
+*.jpg binary
+*.ico binary

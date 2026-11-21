@@ -55,8 +55,10 @@ fn snapshot_regressions() {
         std::fs::create_dir_all(&approved).unwrap();
         std::fs::write(&fp_file, &fp).unwrap();
     } else {
+        // Compare line by line: a Windows checkout may have turned the file's LFs into CRLFs.
         let want = std::fs::read_to_string(&fp_file).unwrap_or_default();
-        assert_eq!(want.trim(), fp.trim(), "bundled fonts resolve differently from approved/FONTS.txt");
+        let (want, got): (Vec<&str>, Vec<&str>) = (want.lines().collect(), fp.lines().collect());
+        assert_eq!(want, got, "bundled fonts resolve differently from approved/FONTS.txt");
     }
     let client = bb_engine::new_client(Vec::new());
     let mut failures = Vec::new();
