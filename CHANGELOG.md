@@ -8,6 +8,17 @@ the format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 Everything on `main` after the 0.1.0 release commit counts toward v0.2.
 The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 
+### Added
+- **≡ app menu:** New Tab, New Window, New Private Window, Find in Page…, About BannedBrowser, Exit/Quit.
+- **Context menus:**
+  - Page: Back, Forward, Reload, Find in Page….
+  - Link: open in new tab, window or private window; Copy Link.
+  - Image: Open Image in New Tab, Copy Image Link.
+  - Tab: New, Reload, Duplicate, Close, Close Other Tabs, Reopen Closed Tab.
+  - URL bar: Undo, Cut, Copy, Paste, Paste & Go, Delete, Select All.
+- Menus work with the mouse (click, or press-drag-release) and keyboard (arrows, Enter, Esc, the
+  context-menu key or Shift+F10). The last v0.1 checklist item, finished after the 0.1.0 release.
+
 ### Changed
 - `about:bannedbrowser` matches the README: tagline, what we wrote ourselves, the name's origin
   (Silver Wolf's handle `@Banned_Player`, replacing the old "nickname" claim) with the

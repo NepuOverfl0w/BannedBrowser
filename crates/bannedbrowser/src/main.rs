@@ -4,6 +4,7 @@
 mod cli;
 mod gui;
 mod headless;
+mod menu;
 mod tab;
 
 fn main() {

@@ -351,6 +351,22 @@ impl Page {
         Some((idx, x - f.rect.x, y - f.rect.y + f.scroll_y))
     }
 
+    /// The image (`<img src>`) at a page point, descending into frames.
+    pub fn image_at(&self, x: f32, y: f32) -> Option<Url> {
+        if let Some((i, lx, ly)) = self.frame_at(x, y) {
+            return self.frames[i].page.image_at(lx, ly);
+        }
+        let node = bb_layout::hit_test(&self.layout, x, y).node?;
+        if !self.doc.is_html(node, "img") {
+            return None;
+        }
+        let src = self.doc.attr(node, "src")?.trim();
+        if src.is_empty() {
+            return None;
+        }
+        self.base_url.join(src).ok()
+    }
+
     /// Rects (page coordinates) of the top-level child frames.
     pub fn frame_rects(&self) -> Vec<Rect> {
         self.frames.iter().map(|f| f.rect).filter(|r| r.w > 0.0 && r.h > 0.0).collect()

@@ -136,3 +136,24 @@ fn self_framing_page_stops_at_depth_limit() {
     }
     assert_eq!(depth(&p), MAX_FRAME_DEPTH);
 }
+
+#[test]
+fn image_at_finds_images_including_inside_frames() {
+    let client = new_client(Vec::new());
+    let html = "<body style='margin:0'><img src='pic.gif' width=50 height=40><iframe srcdoc=\"<body style='margin:0'><img src='in.png' width=30 height=30>\" width=100 height=100 style='border:0'></iframe>";
+    let url = page_url("index.html");
+    let p = Page::from_html(
+        &client,
+        html,
+        &url,
+        PageConfig { viewport: (400.0, 300.0), ..Default::default() },
+        200,
+        false,
+    );
+    // The 40px image sits on the baseline of a line made 100px tall by the iframe.
+    assert_eq!(p.image_at(10.0, 10.0), None, "above the image");
+    assert!(p.image_at(10.0, 80.0).unwrap().href().ends_with("/frames/pic.gif"));
+    let f = p.frames[0].rect;
+    assert!(p.image_at(f.x + 5.0, f.y + 5.0).unwrap().href().ends_with("/frames/in.png"));
+    assert_eq!(p.image_at(f.x + 80.0, f.y + 80.0), None, "iframe background, no image");
+}

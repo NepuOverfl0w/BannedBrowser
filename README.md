@@ -118,7 +118,8 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Favicons, loading throbber + progress line, page title in tab and window | ✅ |
 | Light / dark theme following the OS (`--dark` / `--light` override) | ✅ |
 | Find in page (Ctrl+F) with highlights and match counter | ✅ |
-| ≡ app menu, context menus, sidebars | 📋 |
+| ≡ app menu; context menus for pages, links, images, tabs and the URL bar | ✅ |
+| Sidebars | 📋 |
 | Session restore, pinned tabs, drag to reorder | 📋 |
 
 </details>

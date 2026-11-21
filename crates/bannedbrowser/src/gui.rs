@@ -2,6 +2,7 @@
 //! Proton-style chrome drawn with bb-ui, tabs backed by worker threads.
 
 use crate::cli::{fixup_url, Args};
+use crate::menu::{primary_label, Action, Entry, Menu};
 use crate::tab::{self, Frame, LinkOpen, TabCmd, TabEvent};
 use bb_paint::{Canvas, Color, DisplayList, ImageData, Item, Rect, SoftwareCanvas};
 use bb_ui::icons::Icon;
@@ -46,6 +47,8 @@ struct Tab {
     favicon: Option<ImageData>,
     secure: bool,
     hover_link: Option<String>,
+    /// Image (`<img src>`) under the pointer, for the image context menu.
+    hover_image: Option<String>,
     pointer: bool,
     /// Frames received from the worker (test hook for frame scrolling/navigation).
     frame_renders: u64,
@@ -103,6 +106,8 @@ struct BrowserWindow {
     /// Links to open in background tabs (Ctrl/Cmd+click, middle-click).
     /// The find bar (Ctrl+F), when open.
     find: Option<FindBar>,
+    /// The open popup menu (≡ app menu or a context menu).
+    menu: Option<Menu>,
     /// Tabs requested by link clicks: (url, open in foreground).
     pending_background: Vec<(Url, bool)>,
     /// When the page was last scrolled (scrollbar visibility).
@@ -214,6 +219,7 @@ impl App {
             dirty: true,
             pending_background: Vec::new(),
             find: None,
+            menu: None,
             last_scroll: Instant::now() - Duration::from_secs(10),
             drag_thumb: None,
         };
@@ -258,6 +264,7 @@ impl App {
             favicon: None,
             secure: false,
             hover_link: None,
+            hover_image: None,
             pointer: false,
             frame_renders: 0,
             frame_titles: Vec::new(),
@@ -306,6 +313,11 @@ impl App {
                 v["private"] = serde_json::json!(w.private);
                 v["hover_link"] = serde_json::json!(t.hover_link);
                 v["url_text"] = serde_json::json!(w.url.text);
+                v["menu"] = match &w.menu {
+                    Some(m) => serde_json::json!({ "kind": m.kind, "items": m.labels(), "hover": m.hover }),
+                    None => serde_json::Value::Null,
+                };
+                v["hover_image"] = serde_json::json!(t.hover_image);
                 v["find_open"] = serde_json::json!(w.find.is_some());
                 v["find_total"] = serde_json::json!(w.find.as_ref().map_or(0, |f| f.total));
                 v["find_active"] = serde_json::json!(w.find.as_ref().and_then(|f| f.active));
@@ -454,6 +466,18 @@ impl BrowserWindow {
                 let _ = t.tx.send(TabCmd::Wheel { x, y, dy });
             }
             None => self.scroll_by(dy),
+        }
+    }
+
+    /// Re-evaluate what's under the pointer without a mouse move (e.g. after a
+    /// popup menu closes, since moves aren't passed to the page while it's open).
+    fn refresh_hover(&mut self) {
+        let (x, y) = self.mouse;
+        self.hover = self.target_at(x, y);
+        if self.hover == Target::Content {
+            if let Some(t) = self.tab() {
+                let _ = t.tx.send(TabCmd::Hover { x, y: y - CHROME_H + t.scroll_y });
+            }
         }
     }
 
@@ -906,6 +930,10 @@ impl BrowserWindow {
             let base = bb_ui::text::centered_baseline(r.y, r.h, 12.0);
             p.text_faded(&link, r.x + 8.0, base, 12.0, tw, th.text, th.popup);
         }
+        // Popup menu on top of everything.
+        if let Some(m) = &self.menu {
+            m.paint(&mut p, th);
+        }
         dl
     }
 
@@ -1060,12 +1088,13 @@ impl ApplicationHandler<UserEvent> for App {
                     t.frame_renders += 1;
                     state_changed = true;
                 }
-                TabEvent::Hover { link, pointer } => {
+                TabEvent::Hover { link, image, pointer } => {
                     let t = &mut bw.tabs[ti];
-                    if t.hover_link != link {
+                    if t.hover_link != link || t.hover_image != image {
                         state_changed = true;
                     }
                     t.hover_link = link;
+                    t.hover_image = image;
                     t.pointer = pointer;
                     if is_active {
                         bw.window.set_cursor(if pointer { CursorIcon::Pointer } else { CursorIcon::Default });
@@ -1164,6 +1193,18 @@ impl ApplicationHandler<UserEvent> for App {
                 let k = bw.scale();
                 let (x, y) = (position.x as f32 / k, position.y as f32 / k);
                 bw.mouse = (x, y);
+                if let Some(m) = bw.menu.as_mut() {
+                    let h = if m.contains(x, y) { m.item_at(x, y) } else { m.hover };
+                    if h != m.hover {
+                        m.hover = h;
+                        bw.window.request_redraw();
+                        self.windows.insert(id, bw);
+                        self.write_state();
+                        return;
+                    }
+                    self.windows.insert(id, bw);
+                    return;
+                }
                 if let Some(grab) = bw.drag_thumb {
                     if let (Some((track, thumb)), Some(t)) = (bw.scrollbar(), bw.tab()) {
                         let max = (t.content_height - bw.content_rect().h).max(0.0);
@@ -1198,10 +1239,51 @@ impl ApplicationHandler<UserEvent> for App {
                 bw.hover = Target::None;
                 bw.dirty = true;
             }
+            WindowEvent::MouseInput { state, .. } if bw.menu.is_some() => {
+                let (x, y) = bw.mouse;
+                let inside = bw.menu.as_ref().is_some_and(|m| m.contains(x, y));
+                match (state, inside) {
+                    // Choose an item on release (Firefox-style: press-drag-release works too).
+                    (ElementState::Released, true) => {
+                        let action = bw
+                            .menu
+                            .as_ref()
+                            .and_then(|m| m.item_at(x, y))
+                            .and_then(|i| bw.menu.as_ref().and_then(|m| m.action(i)));
+                        if let Some(a) = action {
+                            bw.menu = None;
+                            self.run_action(&mut bw, el, a);
+                        }
+                    }
+                    // A press outside closes the menu and is not passed on.
+                    (ElementState::Pressed, false) => bw.menu = None,
+                    _ => {}
+                }
+                bw.pressed = Target::None;
+                if bw.menu.is_none() {
+                    bw.refresh_hover();
+                }
+                bw.dirty = true;
+                state_changed = true;
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 let (x, y) = bw.mouse;
                 let tgt = bw.target_at(x, y);
                 match (state, button) {
+                    (ElementState::Pressed, MouseButton::Right) => {
+                        // Like Firefox: right-clicking an unfocused URL bar focuses it
+                        // and selects the address, so Cut/Copy/Delete apply to it.
+                        if tgt == Target::UrlBar && !bw.url_focused {
+                            if let Some(f) = bw.find.as_mut() {
+                                f.focused = false;
+                            }
+                            bw.url_focused = true;
+                            bw.url.select_all();
+                        }
+                        bw.menu = self.context_menu(&bw, tgt, (x, y));
+                        bw.dirty = true;
+                        state_changed = true;
+                    }
                     (ElementState::Pressed, MouseButton::Left) if tgt == Target::Scrollbar => {
                         if let Some((_, thumb)) = bw.scrollbar() {
                             if y >= thumb.y && y < thumb.bottom() {
@@ -1272,6 +1354,12 @@ impl ApplicationHandler<UserEvent> for App {
                     (ElementState::Released, MouseButton::Forward) => bw.go_history(1),
                     _ => {}
                 }
+            }
+            WindowEvent::MouseWheel { .. } if bw.menu.is_some() => {
+                bw.menu = None;
+                bw.refresh_hover();
+                bw.dirty = true;
+                state_changed = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -1405,9 +1493,9 @@ impl App {
                 true
             }
             Target::Menu => {
-                // TODO(M6): ≡ app menu panel. For now: open a new window.
                 let _ = el;
-                false
+                bw.menu = Some(self.app_menu(bw));
+                true
             }
             Target::Content => {
                 let (x, y) = bw.mouse;
@@ -1420,6 +1508,216 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// The ≡ app menu, right-aligned under the menu button.
+    fn app_menu(&self, bw: &BrowserWindow) -> Menu {
+        let pk = primary_label();
+        let sc = |k: &str| format!("{pk}+{k}");
+        let entries = vec![
+            Entry::item("New Tab", Some(&sc("T")), Action::NewTab, true),
+            Entry::item("New Window", Some(&sc("N")), Action::NewWindow, true),
+            Entry::item("New Private Window", Some(&sc("Shift+P")), Action::NewPrivateWindow, true),
+            Entry::Separator,
+            Entry::item("Find in Page…", Some(&sc("F")), Action::FindInPage, true),
+            Entry::Separator,
+            Entry::item("About BannedBrowser", None, Action::About, true),
+            Entry::item(
+                if cfg!(target_os = "macos") { "Quit" } else { "Exit" },
+                Some(&sc("Q")),
+                Action::Quit,
+                true,
+            ),
+        ];
+        let mr = bw.menu_rect();
+        let mut m = Menu::new("app", entries, (0.0, mr.bottom() + 4.0), bw.logical_size());
+        m.rect.x = (mr.right() - m.rect.w).max(4.0);
+        m
+    }
+
+    /// Context menu for what's under the pointer (`None` if nothing applies).
+    fn context_menu(&self, bw: &BrowserWindow, tgt: Target, at: (f32, f32)) -> Option<Menu> {
+        let pk = primary_label();
+        let win = bw.logical_size();
+        let (kind, entries) = match tgt {
+            Target::Tab(i) | Target::TabClose(i) => (
+                "tab",
+                vec![
+                    Entry::item("New Tab", Some(&format!("{pk}+T")), Action::NewTab, true),
+                    Entry::item("Reload Tab", None, Action::TabReload(i), bw.tabs[i].url.is_some()),
+                    Entry::item("Duplicate Tab", None, Action::TabDuplicate(i), bw.tabs[i].url.is_some()),
+                    Entry::Separator,
+                    Entry::item("Close Tab", Some(&format!("{pk}+W")), Action::TabClose(i), true),
+                    Entry::item("Close Other Tabs", None, Action::TabCloseOthers(i), bw.tabs.len() > 1),
+                    Entry::item(
+                        "Reopen Closed Tab",
+                        Some(&format!("{pk}+Shift+T")),
+                        Action::TabReopen,
+                        !self.closed.is_empty(),
+                    ),
+                ],
+            ),
+            Target::UrlBar => {
+                let sel = bw.url.selection().is_some_and(|(a, b)| b > a);
+                (
+                    "urlbar",
+                    vec![
+                        Entry::item("Undo", Some(&format!("{pk}+Z")), Action::UrlUndo, true),
+                        Entry::Separator,
+                        Entry::item("Cut", Some(&format!("{pk}+X")), Action::UrlCut, sel),
+                        Entry::item("Copy", Some(&format!("{pk}+C")), Action::UrlCopy, sel),
+                        Entry::item("Paste", Some(&format!("{pk}+V")), Action::UrlPaste, true),
+                        Entry::item("Paste & Go", None, Action::UrlPasteAndGo, true),
+                        Entry::item("Delete", None, Action::UrlDelete, sel),
+                        Entry::Separator,
+                        Entry::item("Select All", Some(&format!("{pk}+A")), Action::UrlSelectAll, true),
+                    ],
+                )
+            }
+            Target::Content => {
+                let t = bw.tab()?;
+                let link = t.hover_link.as_deref().and_then(|l| Url::parse(l).ok());
+                let image = t.hover_image.as_deref().and_then(|l| Url::parse(l).ok());
+                let mut e = Vec::new();
+                if let Some(u) = &link {
+                    e.push(Entry::item("Open Link in New Tab", None, Action::OpenInNewTab(u.clone()), true));
+                    if !bw.private {
+                        e.push(Entry::item(
+                            "Open Link in New Window",
+                            None,
+                            Action::OpenInNewWindow(u.clone()),
+                            true,
+                        ));
+                    }
+                    e.push(Entry::item(
+                        "Open Link in New Private Window",
+                        None,
+                        Action::OpenInPrivateWindow(u.clone()),
+                        true,
+                    ));
+                    e.push(Entry::Separator);
+                    e.push(Entry::item("Copy Link", None, Action::CopyText(u.href()), true));
+                }
+                if let Some(u) = &image {
+                    if !e.is_empty() {
+                        e.push(Entry::Separator);
+                    }
+                    e.push(Entry::item("Open Image in New Tab", None, Action::OpenInNewTab(u.clone()), true));
+                    e.push(Entry::item("Copy Image Link", None, Action::CopyText(u.href()), true));
+                }
+                if !e.is_empty() {
+                    (if link.is_some() { "link" } else { "image" }, e)
+                } else {
+                    (
+                        "page",
+                        vec![
+                            Entry::item("Back", None, Action::Back, t.index > 0),
+                            Entry::item("Forward", None, Action::Forward, t.index + 1 < t.history.len()),
+                            Entry::item("Reload", Some(&format!("{pk}+R")), Action::Reload, t.url.is_some()),
+                            Entry::Separator,
+                            Entry::item("Find in Page…", Some(&format!("{pk}+F")), Action::FindInPage, true),
+                        ],
+                    )
+                }
+            }
+            _ => return None,
+        };
+        Some(Menu::new(kind, entries, at, win))
+    }
+
+    /// Carry out a menu action.
+    fn run_action(&mut self, bw: &mut BrowserWindow, el: &ActiveEventLoop, action: Action) {
+        let home = || Url::parse(HOME).ok();
+        match action {
+            Action::NewTab => self.open_tab(bw, home()),
+            Action::NewWindow => {
+                self.open_window(el, home().into_iter().collect(), false);
+            }
+            Action::NewPrivateWindow => {
+                self.open_window(el, home().into_iter().collect(), true);
+            }
+            Action::FindInPage => bw.open_find(),
+            // TODO(v0.2): a Firefox-style About window (see PROGRESS.md); the page for now.
+            Action::About => self.open_tab(bw, Url::parse("about:bannedbrowser").ok()),
+            Action::Quit => el.exit(),
+            Action::Back => bw.go_history(-1),
+            Action::Forward => bw.go_history(1),
+            Action::Reload => bw.reload(),
+            Action::OpenInNewTab(u) => {
+                // Background tab right after the current one (Firefox's default).
+                let t = self.new_tab(bw, Some(u));
+                bw.tabs.insert(bw.active + 1, t);
+            }
+            Action::OpenInNewWindow(u) => {
+                self.open_window(el, vec![u], false);
+            }
+            Action::OpenInPrivateWindow(u) => {
+                self.open_window(el, vec![u], true);
+            }
+            Action::CopyText(s) => {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(s);
+                }
+            }
+            Action::TabReload(i) => {
+                if let Some(t) = bw.tabs.get_mut(i) {
+                    if let Some(u) = t.url.clone() {
+                        t.loading = true;
+                        t.load_started = Instant::now();
+                        let _ = t.tx.send(TabCmd::Navigate(u));
+                    }
+                }
+            }
+            Action::TabDuplicate(i) => {
+                if let Some((history, index)) = bw.tabs.get(i).map(|t| (t.history.clone(), t.index)) {
+                    let mut t = self.new_tab(bw, history.get(index).cloned());
+                    t.history = history;
+                    t.index = index;
+                    bw.tabs.insert(i + 1, t);
+                    bw.active = i + 1;
+                    bw.sync_url_field();
+                    bw.update_title();
+                }
+            }
+            Action::TabClose(i) => self.close_tab(bw, i),
+            Action::TabCloseOthers(i) => {
+                for j in (0..bw.tabs.len()).rev() {
+                    if j != i {
+                        self.close_tab(bw, j);
+                    }
+                }
+                bw.active = 0;
+                bw.sync_url_field();
+                bw.request_render();
+                bw.update_title();
+            }
+            Action::TabReopen => self.reopen_tab(bw),
+            Action::UrlUndo => bw.url.undo(),
+            Action::UrlCut | Action::UrlCopy => {
+                if let Some(sel) = bw.url.selected_text().map(str::to_string) {
+                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                        let _ = cb.set_text(sel);
+                    }
+                    if action == Action::UrlCut {
+                        bw.url.backspace();
+                    }
+                }
+            }
+            Action::UrlPaste | Action::UrlPasteAndGo => {
+                let text = arboard::Clipboard::new().ok().and_then(|mut cb| cb.get_text().ok());
+                if let Some(t) = text {
+                    bw.url.insert(&t.replace(['\n', '\r'], " "));
+                    if action == Action::UrlPasteAndGo {
+                        if let Some(u) = fixup_url(&bw.url.text.clone()) {
+                            bw.navigate(u);
+                        }
+                    }
+                }
+            }
+            Action::UrlDelete => bw.url.delete(),
+            Action::UrlSelectAll => bw.url.select_all(),
+        }
+        bw.dirty = true;
     }
 
     fn open_tab(&mut self, bw: &mut BrowserWindow, url: Option<Url>) {
@@ -1475,6 +1773,38 @@ impl App {
         let shift = m.shift_key();
         let alt = m.alt_key();
         let ch = |s: &str| matches!(key, Key::Character(c) if c.eq_ignore_ascii_case(s));
+        if let Some(m) = bw.menu.as_mut() {
+            match key {
+                Key::Named(NamedKey::ArrowDown) => m.step(true),
+                Key::Named(NamedKey::ArrowUp) => m.step(false),
+                Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                    if let Some(a) = m.hover.and_then(|i| m.action(i)) {
+                        bw.menu = None;
+                        self.run_action(bw, el, a);
+                    }
+                }
+                Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Tab) | Key::Named(NamedKey::Alt) => {
+                    bw.menu = None
+                }
+                _ => {}
+            }
+            if bw.menu.is_none() {
+                bw.refresh_hover();
+            }
+            return true;
+        }
+        // Context-menu key / Shift+F10: page context menu at the pointer.
+        if matches!(key, Key::Named(NamedKey::ContextMenu))
+            || (shift && matches!(key, Key::Named(NamedKey::F10)))
+        {
+            let at = bw.mouse;
+            let tgt = if bw.url_focused { Target::UrlBar } else { Target::Content };
+            bw.menu = self.context_menu(bw, tgt, at);
+            if let Some(m) = bw.menu.as_mut() {
+                m.step(true);
+            }
+            return true;
+        }
         // Global shortcuts (Firefox-style; Cmd on macOS, Ctrl elsewhere).
         if (p && ch("l")) || (alt && ch("d")) || matches!(key, Key::Named(NamedKey::F6)) {
             if let Some(f) = bw.find.as_mut() {

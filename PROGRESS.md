@@ -25,8 +25,8 @@ _Last updated: 2026-11-21 (session 1)._
 | html5lib tree-construction (pinned `224991e~1`) | **1779 / 1784 (99.72 %)**, 8 `#script-on` cases excluded |
 | Reftests (`tests/reftests`) | **48 / 48** |
 | Snapshot regressions (`tests/pages/snapshots`) | 12 pages (example.com ×2, theoldnet ×2, myip.wtf, 5 archived sites, retro, frames), pass on the approved font set |
-| `cargo test --workspace` | 116 test functions, 0 failures |
-| GUI smoke (`scripts/gui-smoke.sh`) | `basic.sh` (open, link click, back, wheel scroll, scrollbar track click + thumb drag, URL bar, new/close/reopen tab, resize, maximize, new window, private window), `frames.sh` (frameset render, wheel scrolls the frame under the pointer, targeted link loads into the named frame) and `find.sh` (incremental find, stepping, scroll to match, not found, close) pass |
+| `cargo test --workspace` | 119 test functions, 0 failures |
+| GUI smoke (`scripts/gui-smoke.sh`) | `basic.sh` (open, link click, back, wheel scroll, scrollbar track click + thumb drag, URL bar, new/close/reopen tab, resize, maximize, new window, private window), `frames.sh` (frameset render, wheel scrolls the frame under the pointer, targeted link loads into the named frame), `find.sh` (incremental find, stepping, scroll to match, not found, close) and `menus.sh` (≡ menu, link/tab/page/URL-bar context menus, keyboard and mouse, Esc and click-outside) pass |
 | `scripts/check-deps.sh` | OK — 162 crates, none banned |
 | Cross targets | `cargo clippy --target x86_64-pc-windows-gnu -D warnings` ✅ and Windows release `.exe` builds; `cargo check --target aarch64-apple-darwin` ✅ for every crate except those linking `ring` (see gaps) |
 
@@ -59,7 +59,7 @@ _Last updated: 2026-11-21 (session 1)._
 - [x] GUI: window, tab strip, back/forward/reload/home, URL bar, wheel/keyboard scrolling, link hover cursor + status, click to navigate, title in tab + window, favicon, loading indicator, error pages, light/dark
 - [x] GUI: overlay scrollbar (hover-widen, thumb drag, track paging, auto-hide)
 - [x] GUI: find bar (Ctrl+F / Ctrl+G / F3, Enter / Shift+Enter, Esc; case-insensitive, matches across elements, highlights, "n of m", scrolls to the match)
-- [ ] GUI: ≡ menu and context menus
+- [x] GUI: ≡ app menu and context menus (page, link, image, tab, URL bar) with keyboard navigation. Done on `main` after the 0.1.0 release, so it ships with v0.2
 - [x] Robustness: unknown tags, broken markup, missing images, `<script>` ignored, `<noscript>` shown
 - [x] Local snapshots + regression tests (example.com, theoldnet.com + lite, myip.wtf)
 - [x] 5 archived sites via theoldnet (GeoCities Area51, GeoCities home, Netscape, WinZip, Microsoft IE; live renders + offline snapshots)
@@ -76,7 +76,7 @@ _Last updated: 2026-11-21 (session 1)._
 * **Network:** no cookies or cache yet (M8); no HTTP/2; `HTTP_PROXY` absolute-form only for plain http.
 * **Frames:** frame navigations are not in session history (Back leaves the frameset); no frame resizing by dragging borders (`noresize` is the only behaviour); iframes are opaque (child canvas background is always painted); `<object data=…html>` isn't a nested document; keyboard focus doesn't move into frames (keys scroll the largest frame of a frameset).
 * **Find:** top-level document only (not inside frames); RTL runs highlight approximately; the counter is per tab but isn't refreshed when switching tabs with the bar open.
-* **GUI:** no ≡ menu / context menus / bookmarks; no session restore; private windows share the network client (no cookies exist yet, so nothing leaks); screenshots of overlapping windows in GUI tests can be stale.
+* **GUI:** menus are drawn inside the window (can't extend past its edges); "About BannedBrowser" opens `about:bannedbrowser` until the v0.2 About window; no bookmarks; no session restore; private windows share the network client (no cookies exist yet, so nothing leaks); screenshots of overlapping windows in GUI tests can be stale.
 * **macOS cross-check:** `ring`'s build script needs the macOS SDK headers to compile its C/asm, which the Linux VM doesn't have; the macOS CI job covers it. Two attempts (clang + generic headers) failed; not retried further.
 * **Packages:** not code-signed or notarized (macOS Gatekeeper / Windows SmartScreen will warn); no Windows icon resource embedded in the `.exe` yet.
 * **Environment:** `web.archive.org` blocked by the dev sandbox's egress policy (archived-site checks run on GitHub runners); theoldnet.com serves "Hello World" to non-browser user agents (our UA is fine).

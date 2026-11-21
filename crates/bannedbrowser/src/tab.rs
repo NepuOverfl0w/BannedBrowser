@@ -76,6 +76,7 @@ pub enum TabEvent {
     Frame(Frame),
     Hover {
         link: Option<String>,
+        image: Option<String>,
         pointer: bool,
     },
     Clicked {
@@ -205,8 +206,9 @@ fn handle(
         TabCmd::Hover { x, y } => {
             if let Some(p) = page.as_ref() {
                 let link = p.link_at(x, y).map(|u| u.href());
+                let image = p.image_at(x, y).map(|u| u.href());
                 let pointer = link.is_some() || matches!(p.cursor_at(x, y), Some(bb_style::Cursor::Pointer));
-                notify(id, TabEvent::Hover { link, pointer });
+                notify(id, TabEvent::Hover { link, image, pointer });
             }
         }
         TabCmd::Click { x, y, new_tab } => {
