@@ -130,6 +130,13 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
     - **html5lib tokenizer, 28 cases:** `<?…>` processing instructions (newer spec).
     - **html5lib tree construction, 5 cases:** 4 × `<selectedcontent>` mirroring, plus `<font><select><option>` with the adoption agency algorithm.
     - Plus whatever the un-pinned and newly included suites (WPT tree construction, `#script-on`, lone surrogates) reveal.
+* **About window** (requested by the maintainer), inspired by Firefox's "About" dialog but with original branding only:
+  - A small, non-resizable window, opened from ≡ menu → Help → About BannedBrowser (on macOS, the app menu).
+  - BannedBrowser logo and wordmark, the version and architecture (e.g. "0.2.0 (64-bit)"), and the release name.
+  - Update status: checks the GitHub Releases API on open. Shows "BannedBrowser is up to date" or links to the newer release; nothing is installed automatically.
+  - Links: what's new (release notes), `about:bannedbrowser` (credits and name origin), license (MIT OR Apache-2.0), source code.
+  - The unofficial fan-project / not-affiliated note.
+  - Drawn with `bb-ui` like the rest of the chrome, light and dark theme, HiDPI, keyboard accessible (Esc closes).
 * **Certificate error page** (requested by the maintainer):
   - Two buttons: **Go Back** (recommended; goes home if there is no history) and **Advanced…**.
   - Advanced reveals the warning, the readable reason and an error code, plus **Accept the Risk and Continue**.
