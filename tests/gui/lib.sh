@@ -26,7 +26,14 @@ fi
 cleanup() { [ -n "$BB_PID" ] && kill "$BB_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
-fail() { echo "FAIL: $*" >&2; [ -f "$STATE" ] && cat "$STATE" >&2; shot failure || true; exit 1; }
+fail() {
+  echo "FAIL: $*" >&2
+  [ -f "$STATE" ] && cat "$STATE" >&2
+  echo "--- browser log (last 40 lines) ---" >&2
+  tail -40 "$OUT/browser.log" >&2 2>/dev/null || true
+  shot failure || true
+  exit 1
+}
 pass() { echo "PASS: $1"; }
 
 start_browser() {
