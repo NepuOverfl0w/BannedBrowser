@@ -45,11 +45,16 @@ Windows, macOS and Linux. Every web-platform component is ours.
    - Dev-only: image, proptest.
 3. **No `unsafe`.**
    - The workspace lint is `unsafe_code = "forbid"` and every crate inherits it.
-   - **Single exception:** `crates/bb-media-os`, the FFI to OS hardware video decoders (Media
-     Foundation, VideoToolbox, VA-API). It doesn't inherit the workspace lints. Every `unsafe`
-     there needs a `// SAFETY:` comment directly above it.
-   - `scripts/check-deps.sh` enforces all of this.
-   - Video must still play without that crate: our own pure-Rust VP9 decoder is the fallback.
+   - **Two exceptions**, both decided by the maintainer. Neither inherits the workspace lints,
+     and every `unsafe` in them needs a `// SAFETY:` comment directly above it:
+     - `crates/bb-media-os`: the FFI to OS hardware video decoders (Media Foundation,
+       VideoToolbox, VA-API). Video must still play without it: our own pure-Rust VP9 decoder
+       is the fallback.
+     - `crates/bb-js-jit` (planned): the JavaScript JIT's executable-memory management and
+       generated-code entry. The bytecode interpreter in `bb-js` stays `unsafe`-free, remains
+       the reference, and must run every test with the JIT turned off.
+   - `scripts/check-deps.sh` enforces all of this. It gets the `bb-js-jit` exception when
+     that crate is created.
 4. **Never panic on web content.** Every parser gets randomized robustness tests. Tabs catch
    panics and show "BannedBrowser hit a snag".
 5. **The UI thread never blocks** on network, parsing or layout. Each tab runs its `Page` on a

@@ -123,7 +123,11 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   - **html5lib tree construction, 8 `#script-on` cases excluded.** Run them with the scripting flag on once our JS engine (M10) exists.
   - **Tree construction is pinned to html5lib-tests `224991e~1`.** Switch to the current tests (they now live in WPT). That brings in processing instructions and `<selectedcontent>`, both of which fail today.
   - **Snapshot regressions are skipped when the font set differs** (every non-Linux runner). Bundle open-licensed test fonts so snapshots render identically on Linux, Windows and macOS.
-  - **GUI tests run only on Linux.** Add a GUI test driver for Windows and macOS.
+  - **GUI tests run only on Linux.** Add a GUI test driver for Windows and macOS. Decided: real
+    OS-level input on every OS (xdotool on Linux, SendInput via PowerShell on Windows, CGEvent /
+    AppleScript on macOS), not an in-app hook. The risk: GitHub's macOS runners need
+    accessibility permission for synthetic input; if that can't be granted, report it rather
+    than skip the tests.
 * **All tests pass** (maintainer, 2026-11-21). v0.2 ships only with 100 % of every suite passing.
   - The pass-rate floors (URL 95 %, tokenizer 98 %, tree 90 %) become 100 %.
   - Known failures to fix:
@@ -148,9 +152,20 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   - The accept action needs a per-session secret token, so web pages can't link their way past a certificate error.
   - This needs either `:target`/`<details>` support or M10 JS for the Advanced toggle.
 
+**JavaScript and media decisions (maintainer, 2026-11-21, session 2):**
+* **JIT allowed.** `bb-js` gets a JIT in a separate crate, `crates/bb-js-jit`, the second
+  `unsafe` exception (AGENTS.md hard rule 3). The bytecode interpreter stays `unsafe`-free and
+  is the reference. test262 and every other suite must pass both with and without the JIT.
+* **test262 scope:** `test/language`, `test/built-ins` and `test/annexB` must pass 100 %.
+  `test/intl402` (the Intl API) and `test/staging` (proposals still in draft) are **out of
+  scope for v0.2** and not run. This is a stated scope limit, not an exclusion inside a suite.
+* **No DRM in v0.2.** Encrypted Media Extensions need a closed, licensed CDM, so protected
+  playback is out of scope. A site that requests it gets a clear "protected content isn't
+  supported" message. Normal YouTube playback is unaffected.
+
 **Dependency decisions for v0.2 (decided by the maintainer 2026-11-21; details in
 DEPENDENCIES.md):** GPU = `wgpu` (may also back WebGPU for content); video = OS
-hardware decoders in `bb-media-os` (the single `unsafe` exception, enforced by
+hardware decoders in `bb-media-os` (an `unsafe` exception, enforced by
 `check-deps.sh`) plus our own VP9 fallback; audio = `cpal` for output, all codecs
 ours. The original options, for the record:
 1. *GPU backend.* `wgpu` implements the WebGPU standard, so it falls under the
