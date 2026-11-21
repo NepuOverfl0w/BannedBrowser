@@ -7,13 +7,13 @@ source "$(dirname "$0")/lib.sh"
 start_browser "$BASE/frames/welcome.html"
 wait_state '.title == "Welcome" and .loading == false'
 
-key_until ctrl+f '.find_open == true'
+key_until accel+f '.find_open == true'
 type_text "paragraph"
 wait_state '.find_total == 40 and .find_active == 0'
 shot find-01
 
 # "Paragraph 3" etc: jump to a far match with repeated Enter.
-for _ in $(seq 1 30); do xdotool key Return; sleep 0.05; done
+for _ in $(seq 1 30); do key Return; done
 wait_state '.find_active == 30 and .scroll_y > 300'
 shot find-02-scrolled
 key shift+Return
@@ -22,7 +22,7 @@ key F3
 wait_state '.find_active == 30'
 
 # No match.
-key ctrl+a
+key accel+a
 type_text "zebra"
 wait_state '.find_total == 0'
 shot find-03-notfound

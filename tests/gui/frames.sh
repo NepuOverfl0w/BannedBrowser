@@ -9,9 +9,8 @@ wait_state '.title == "Frames Demo" and .loading == false and .frames == 3 and .
 shot frames-01
 
 # Wheel over the main frame: the frame scrolls (a new render arrives), the page doesn't.
-before=$(python3 -c "import json;print(json.load(open('$STATE'))['frame_renders'])")
-xdotool mousemove --window "$WID" 700 400; sleep 0.2
-for _ in 1 2 3; do xdotool click 5; sleep 0.05; done
+before=$("$PY" -c "import json;print(json.load(open('$STATE'))['frame_renders'])")
+wheel_at 700 400 3
 wait_state ".frame_renders > $before and .scroll_y == 0"
 shot frames-02-scrolled
 

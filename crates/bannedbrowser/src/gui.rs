@@ -327,6 +327,19 @@ impl App {
                 v["scrollbar_visible"] = serde_json::json!(w.scrollbar().is_some() && w.scrollbar_visible());
                 v["scrollbar_dragging"] = serde_json::json!(w.drag_thumb.is_some());
             }
+            // Window geometry for the GUI test drivers, which send real OS input in screen
+            // coordinates: the content area's position and size in logical pixels.
+            let k = w.window.scale_factor();
+            if let Ok(pos) = w.window.inner_position() {
+                v["win_x"] = serde_json::json!((pos.x as f64 / k).round());
+                v["win_y"] = serde_json::json!((pos.y as f64 / k).round());
+            }
+            let (lw, lh) = w.logical_size();
+            v["win_w"] = serde_json::json!(lw.round());
+            v["win_h"] = serde_json::json!(lh.round());
+            v["scale"] = serde_json::json!(k);
+            v["maximized"] = serde_json::json!(w.window.is_maximized());
+            v["has_focus"] = serde_json::json!(w.window.has_focus());
         }
         let tmp = path.with_extension("tmp");
         if std::fs::write(&tmp, v.to_string()).is_ok() {
@@ -1177,6 +1190,8 @@ impl ApplicationHandler<UserEvent> for App {
                 bw.dirty = true;
                 state_changed = true;
             }
+            // The test state reports window position and focus.
+            WindowEvent::Moved(_) | WindowEvent::Focused(_) => state_changed = true,
             WindowEvent::ThemeChanged(t) => {
                 bw.os_dark = self.force_dark.unwrap_or(t == winit::window::Theme::Dark);
                 if !bw.private {

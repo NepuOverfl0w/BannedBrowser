@@ -1,15 +1,29 @@
 #!/usr/bin/env bash
-# Run all GUI tests under Xvfb + Fluxbox. Starts the local test server.
+# Run all GUI tests (tests/gui/*.sh) with real OS input; starts the local test server.
+#   Linux:   under X11 (Xvfb + a window manager such as Fluxbox), driven with xdotool.
+#   Windows: in Git Bash on an interactive desktop, driven with SendInput.
+#   macOS:   in a logged-in session, driven with CGEvent (the runner needs Accessibility).
+# See tests/gui/lib.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export DISPLAY="${DISPLAY:-:99}"
-command -v vdisplay-start >/dev/null && vdisplay-start >/dev/null
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*) PY=python ;;
+  Darwin) PY=python3 ;;
+  *)
+    PY=python3
+    export DISPLAY="${DISPLAY:-:99}"
+    command -v vdisplay-start >/dev/null && vdisplay-start >/dev/null
+    ;;
+esac
 cargo build -q -p bannedbrowser
-rm -f /tmp/bb-server.out
+mkdir -p tests/gui/out
+SERVER_OUT=tests/gui/out/server.out
+rm -f "$SERVER_OUT"
 # The server exits when fd 3 (its stdin) closes, i.e. when this script ends.
-exec 3> >(python3 tests/server/testserver.py --port 0 --exit-on-stdin-eof > /tmp/bb-server.out 2>/dev/null)
-for _ in $(seq 1 50); do grep -q '^PORT' /tmp/bb-server.out 2>/dev/null && break; sleep 0.1; done
-export BASE="http://127.0.0.1:$(awk '/^PORT/{print $2}' /tmp/bb-server.out)"
+exec 3> >("$PY" tests/server/testserver.py --port 0 --exit-on-stdin-eof > "$SERVER_OUT" 2>/dev/null)
+for _ in $(seq 1 100); do grep -q '^PORT' "$SERVER_OUT" 2>/dev/null && break; sleep 0.1; done
+grep -q '^PORT' "$SERVER_OUT" || { echo "test server did not start" >&2; exit 1; }
+export BASE="http://127.0.0.1:$(awk '/^PORT/{print $2}' "$SERVER_OUT" | tr -d '\r')"
 status=0
 for t in tests/gui/*.sh; do
   [ "$(basename "$t")" = "lib.sh" ] && continue

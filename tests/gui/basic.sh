@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Basic GUI flow: open, type URL, navigate, click link, back, scroll, tabs,
 # reopen closed tab, new window, private window, resize, maximize.
-# Requires: DISPLAY with a window manager, xdotool, wmctrl, python3, a test
-# server on $BASE (see scripts/gui-smoke.sh).
+# Requires: a test server on $BASE and the OS's input driver (see scripts/gui-smoke.sh and
+# tests/gui/lib.sh).
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
@@ -26,43 +26,42 @@ key_until Home '.scroll_y == 0'
 click_at 1274 700
 wait_state '.scroll_y > 400 and .scrollbar_visible == true'
 key_until Home '.scroll_y == 0'
-xdotool mousemove --window "$WID" 1274 95; sleep 0.3
-xdotool mousedown 1; sleep 0.2
+mouse_move 1274 95
+mouse_down
 wait_state '.scrollbar_dragging == true'
-xdotool mousemove --window "$WID" 1274 790; sleep 0.4
+mouse_move 1274 790
 shot 02b-scrollbar-drag
-xdotool mouseup 1; sleep 0.3
+mouse_up
 wait_state '.scrollbar_dragging == false and .scroll_y > 2000'
 key_until Home '.scroll_y == 0'
 
 # URL bar: focus, type, enter.
-key ctrl+l
+key accel+l
 type_text "$BASE/gui/page2.html"
 key Return
 wait_state '.title == "GUI Page Two" and .focused == "content"'
 
 # Tabs.
-key ctrl+t
+key accel+t
 wait_state '.window_tabs == 2 and .focused == "urlbar"'
-key ctrl+w
+key accel+w
 wait_state '.window_tabs == 1'
-key ctrl+shift+t
+key accel+shift+t
 wait_state '.window_tabs == 2'
-key ctrl+w
+key accel+w
 wait_state '.window_tabs == 1'
 
 # Resize and maximize through the window manager.
-xdotool windowsize "$WID" 900 600
-sleep 1
-wait_state '.window_tabs == 1'
-wmctrl -i -r "$WID" -b add,maximized_vert,maximized_horz
-sleep 1
+resize_window 900 600
+wait_state '.window_tabs == 1 and .win_w < 1000 and .maximized == false'
+maximize_window
+wait_state '.maximized == true'
 shot 03-maximized
 
 # New window and private window.
-key ctrl+n
+key accel+n
 wait_state '.windows == 2'
-key ctrl+shift+p
+key accel+shift+p
 wait_state '.windows == 3'
 sleep 1
 shot 04-private
