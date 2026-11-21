@@ -65,10 +65,12 @@ All screenshots are real captures (`vshot` under Xvfb + Fluxbox, or `--headless 
 
 ## 🐺 Why "BannedBrowser"?
 
-The name is a reference to **Silver Wolf** from ***Honkai: Star Rail*** — the Stellaron
-Hunter hacker who treats reality like a game to be modded. "Banned" is her nickname.
-It fits the project's spirit: a browser that *bans* borrowed engines and builds every
-piece of the web platform from scratch, just to see if it can.
+The name is a nod to **[Silver Wolf](https://en.wikipedia.org/wiki/Silver_Wolf_(Honkai:_Star_Rail))**
+(银狼, *Yín Láng*) from ***Honkai: Star Rail*** — a member of the Stellaron Hunters and a
+genius-level hacker who views the universe as a game, rewriting "the data of reality itself"
+with her *aether editing* ([character wiki](https://honkai-star-rail.fandom.com/wiki/Silver_Wolf)).
+"Banned" is the project's own wordplay on that spirit: a browser that *bans* borrowed engines
+and builds every piece of the web platform from scratch, just to see if it can.
 
 > *BannedBrowser is an unofficial fan-named project and is not affiliated with, endorsed by,
 > or sponsored by HoYoverse. Honkai: Star Rail and Silver Wolf are trademarks of their

@@ -17,6 +17,9 @@ const PAGES: &[(&str, &str)] = &[
     ("theoldnet", "theoldnet/index.html"),
     ("theoldnet-lite", "theoldnet-lite/index.html"),
     ("myip.wtf", "myip.wtf/index.html"),
+    // Our own pages (original artwork): 1990s-style layout and a frameset.
+    ("retro", "../retro/index.html"),
+    ("frames", "../frames/index.html"),
 ];
 
 fn font_fingerprint() -> String {
