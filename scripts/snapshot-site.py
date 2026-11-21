@@ -11,7 +11,7 @@ For theoldnet.com archived pages the images live on web.archive.org; run it
 where that host is reachable (see scripts/archived-sites.sh). theoldnet's own
 image proxy re-encodes binary data as UTF-8 and is not usable.
 """
-import hashlib, os, re, sys, urllib.parse, urllib.request, datetime
+import hashlib, os, re, sys, time, urllib.error, urllib.parse, urllib.request, datetime
 
 UA = "Mozilla/5.0"  # theoldnet only proxies archived pages for old-looking UAs
 
@@ -20,6 +20,23 @@ def fetch(url):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=60) as r:
         return r.read()
+
+
+def fetch_retry(url, tries=4):
+    """web.archive.org refuses connections under load; back off and retry.
+    HTTP 404 means the archive doesn't have it: give up at once."""
+    delay = 10
+    for attempt in range(tries):
+        try:
+            return fetch(url)
+        except urllib.error.HTTPError as e:
+            if e.code == 404 or attempt == tries - 1:
+                raise
+        except Exception:
+            if attempt == tries - 1:
+                raise
+        time.sleep(delay)
+        delay *= 2
 
 
 def main():
@@ -39,14 +56,16 @@ def main():
         path = os.path.join(root, local)
         if not os.path.exists(path):
             try:
-                data = fetch(absu)
+                data = fetch_retry(absu)
                 if data[:6] in (b"<html>", b"<!DOCT") or data[:5].lower() == b"<html":
                     raise ValueError("got HTML instead of an image")
                 open(path, "wb").write(data)
             except Exception as e:
                 missing.append(absu)
                 print("skip", absu, e)
-                return m.group(0)
+                # Point at a local file that doesn't exist, so the snapshot renders
+                # the same broken image everywhere instead of hitting the network.
+                return f"{attr}={quote}missing-{local}{quote}"
         return f"{attr}={quote}{local}{quote}"
 
     pat = re.compile(r"""\b(src|background)\s*=\s*(?:(["'])(.*?)\2|()([^\s>"']+))""", re.I | re.S)
@@ -63,7 +82,7 @@ def main():
     today = datetime.date.today().isoformat()
     note = f"<!-- Snapshot of {url} taken {today} for offline regression tests. Images saved alongside"
     if missing:
-        note += f"; {len(missing)} image(s) could not be fetched and keep their original URLs"
+        note += f"; {len(missing)} image(s) could not be fetched and point at local missing-* files"
     html = note + ". -->\n" + html
     open(os.path.join(root, "index.html"), "wb").write(html.encode("latin-1"))
     print("saved", url, "->", root, f"({len(missing)} missing)")
