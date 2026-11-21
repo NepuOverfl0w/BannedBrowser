@@ -85,7 +85,7 @@ _Last updated: 2026-11-21 (session 1)._
 
 1. Tag v0.1.0 (version bump done in the release commit); after the release, this branch becomes `main`.
 2. v0.2 (not started; see scope below): GUI ≡ app menu, page/link/tab context menus, history dropdown, session restore.
-3. Settle the v0.2 dependency questions (GPU backend, codecs/audio) before starting that work.
+3. v0.2 dependency questions are settled (see "v0.2 scope"); `check-deps.sh` already enforces the `unsafe` exception.
 4. Frames: session history for frame navigations, border dragging.
 5. Reftests to ≥150 (M7), real WPT CSS subset; fix `border-collapse`, captions, inline-block baseline.
 6. `@font-face` (TTF/OTF first, WOFF/WOFF2 decoders), GIF animation, SVG basics for icons.
@@ -115,8 +115,11 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
 * **Hardware acceleration** — GPU compositing/rasterization and hardware
   video decode.
 
-**Open dependency questions for v0.2 (to settle before starting; no crate is
-added until it is justified in DEPENDENCIES.md):**
+**Dependency decisions for v0.2 (decided by the maintainer 2026-11-21; details in
+DEPENDENCIES.md):** GPU = `wgpu` (may also back WebGPU for content); video = OS
+hardware decoders in `bb-media-os` (the single `unsafe` exception, enforced by
+`check-deps.sh`) plus our own VP9 fallback; audio = `cpal` for output, all codecs
+ours. The original options, for the record:
 1. *GPU backend.* `wgpu` implements the WebGPU standard, so it falls under the
    "no web-standard crates" rule; raw API bindings (`ash`/`metal`/`windows`)
    need `unsafe`, which the workspace forbids. Options: a narrowly scoped,

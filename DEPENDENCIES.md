@@ -25,5 +25,15 @@ the banned list on every CI run.
 | `proptest` (dev) | parsers | Randomized robustness tests. |
 
 Planned (already allowed by the project rules, not yet used): `rfd`, `accesskit`,
-`accesskit_winit`, `keyring`, `rusqlite` (bundled), `once_cell`, `wgpu` (behind a
-`gpu` feature).
+`accesskit_winit`, `keyring`, `rusqlite` (bundled), `once_cell`.
+
+## v0.2 decisions (maintainer, 2026-11-21)
+
+Not added yet. Each crate gets a row in the table above, with its exact use, when
+it is first used.
+
+| Area | Decision | Boundaries |
+|---|---|---|
+| GPU / hardware acceleration | **`wgpu`** (+ its `naga`) as platform glue for GPU compositing and rasterization. It may also back the **WebGPU** API exposed to web content. | No `unsafe` on our side. All painting is our own shaders and display-list code. The CPU rasterizer stays as the fallback and as the reference for reftests. |
+| Video decoding | **OS hardware decoders**: Media Foundation (Windows), VideoToolbox (macOS), VA-API (Linux), in the new crate `bb-media-os`, plus **our own pure-Rust VP9 software decoder** as the fallback. | `bb-media-os` is the only crate allowed `unsafe` (CLAUDE.md §1.3, enforced by `check-deps.sh`): FFI only, every block documented with `// SAFETY:`. The bindings it uses (e.g. `windows`, `objc2-*`, a VA-API binding) are to be justified here when added. MP4/WebM demuxing and Media Source Extensions are ours. |
+| Audio | **`cpal`** for audio device output (WASAPI / CoreAudio / ALSA). | Opus, AAC, MP3 and Vorbis decoders, resampling, and the Web Audio graph are ours. |

@@ -40,7 +40,7 @@ jobs:
         run: cargo fmt --all --check
       - name: check-deps
         shell: bash
-        run: scripts/check-deps.sh
+        run: scripts/check-deps.sh --self-test && scripts/check-deps.sh
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: build
