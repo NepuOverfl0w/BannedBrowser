@@ -3,7 +3,7 @@
 All notable changes to BannedBrowser. Versions follow [SemVer](https://semver.org/);
 the format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.1.0] — "Hello, Old Web" (unreleased)
+## [0.1.0] — "Hello, Old Web" — 2026-11-21
 
 The first milestone: a from-scratch engine and shell that render the static, 1990s-style
 web and simple modern pages. No JavaScript yet. See [PROGRESS.md](PROGRESS.md) for the
@@ -47,7 +47,9 @@ complete, honest status, including the known gaps.
 - Headless mode: `--screenshot`, `--dump-dom/style/layout`, `--user-agent`.
 
 ### Quality
-- 47 reftests; offline snapshot regressions of real sites and our own retro and frames pages.
+- 48 reftests; offline snapshot regressions of real sites (example.com, theoldnet.com, myip.wtf, and
+  five archived 1996–99 sites: GeoCities ×2, Netscape, WinZip, Microsoft IE) and our own
+  retro and frames pages.
 - GUI tests under Xvfb + Fluxbox (basic flow, scrollbar, frames, find).
 - Randomized robustness tests for every parser.
 - CI on Linux, Windows and macOS; packages: Linux tarball, Windows zip, macOS `.app`.
