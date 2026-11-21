@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/bb-str",
     "crates/bb-url",
     "crates/bb-net",
     "crates/bb-dom",
@@ -28,6 +29,7 @@ repository = "https://github.com/NepuOverfl0w/BannedBrowser"
 authors = ["BannedBrowser contributors"]
 
 [workspace.dependencies]
+bb-str = { path = "crates/bb-str" }
 bb-url = { path = "crates/bb-url" }
 bb-net = { path = "crates/bb-net" }
 bb-dom = { path = "crates/bb-dom" }

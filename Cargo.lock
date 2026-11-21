@@ -225,6 +225,7 @@ name = "bb-html"
 version = "0.2.0-dev"
 dependencies = [
  "bb-dom",
+ "bb-str",
  "proptest",
  "serde_json",
 ]
@@ -283,6 +284,13 @@ dependencies = [
  "log",
  "png",
  "rustc-hash",
+]
+
+[[package]]
+name = "bb-str"
+version = "0.2.0-dev"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]

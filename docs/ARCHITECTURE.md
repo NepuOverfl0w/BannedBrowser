@@ -17,6 +17,7 @@ bytes ─▶ bb-net ─▶ encoding sniff ─▶ bb-html tokenizer ─▶ tree b
 
 | Crate | Responsibility |
 |---|---|
+| `bb-str` | WTF-8 strings (`Wtf8Buf`): UTF-8 that can also hold lone surrogates, for web strings; UTF-16 conversion |
 | `bb-url` | WHATWG URL parser/serializer, hosts (IPv4/IPv6/IDNA), percent-encoding, form encoding |
 | `bb-net` | HTTP/1.1 client with keep-alive pool, TLS (rustls), CONNECT proxies, content codings, redirects, `data:`/`file:`/`about:`, encoding sniffing |
 | `bb-dom` | Arena DOM (`NodeId` indices), dirty flags, html5lib dump, serializer |

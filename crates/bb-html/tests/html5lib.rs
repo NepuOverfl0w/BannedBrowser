@@ -4,7 +4,8 @@
 //! * Tree construction: compares the html5lib tree dump. `#script-on` cases
 //!   are excluded because BannedBrowser parses with scripting disabled.
 
-use bb_html::tokenizer::{State, Token, Tokenizer};
+use bb_html::tokenizer::{RawToken, State, Token, Tokenizer};
+use bb_str::Wtf8Buf;
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -16,69 +17,70 @@ fn suite_dir() -> PathBuf {
 
 // ---------------- tokenizer ----------------
 
-/// Decode `\uXXXX` escapes; `None` if the result has a lone surrogate.
-fn unescape(s: &str) -> Option<String> {
-    let mut out = String::new();
-    let units: Vec<char> = s.chars().collect();
+/// Decode the `\uXXXX` escapes of a `doubleEscaped` test string. The result may contain
+/// lone surrogates, so it is WTF-8.
+fn unescape(s: &str) -> Wtf8Buf {
+    let mut out = Wtf8Buf::new();
+    let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
-    let mut pending_high: Option<u32> = None;
-    while i < units.len() {
-        if units[i] == '\\' && i + 5 < units.len() + 1 && units.get(i + 1) == Some(&'u') {
-            let hex: String = units[i + 2..(i + 6).min(units.len())].iter().collect();
+    while i < chars.len() {
+        if chars[i] == '\\' && chars.get(i + 1) == Some(&'u') && i + 6 <= chars.len() {
+            let hex: String = chars[i + 2..i + 6].iter().collect();
             if let Ok(v) = u32::from_str_radix(&hex, 16) {
+                out.push_code_point(v); // joins surrogate pairs
                 i += 6;
-                if (0xD800..0xDC00).contains(&v) {
-                    if pending_high.is_some() {
-                        return None;
-                    }
-                    pending_high = Some(v);
-                    continue;
-                }
-                if (0xDC00..0xE000).contains(&v) {
-                    let h = pending_high.take()?;
-                    out.push(char::from_u32(0x10000 + ((h - 0xD800) << 10) + (v - 0xDC00))?);
-                    continue;
-                }
-                if pending_high.is_some() {
-                    return None;
-                }
-                out.push(char::from_u32(v)?);
                 continue;
             }
         }
-        if pending_high.is_some() {
-            return None;
-        }
-        out.push(units[i]);
+        out.push(chars[i]);
         i += 1;
     }
-    if pending_high.is_some() {
-        return None;
-    }
-    Some(out)
+    out
 }
 
-fn tokens_to_json(tokens: &[Token]) -> Vec<Value> {
+/// A lossless, comparable text form of a WTF-8 string: `\` is doubled and each lone
+/// surrogate is written as `\uXXXX`.
+fn esc(w: &Wtf8Buf) -> String {
+    let mut out = String::new();
+    for cp in w.code_points() {
+        match char::from_u32(cp) {
+            Some('\\') => out.push_str("\\\\"),
+            Some(c) => out.push(c),
+            None => out.push_str(&format!("\\u{cp:04X}")),
+        }
+    }
+    out
+}
+
+fn tokens_to_json(tokens: &[RawToken]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
+    let e = |w: &Wtf8Buf| Value::String(esc(w));
+    let eo = |w: &Option<Wtf8Buf>| w.as_ref().map(e).unwrap_or(Value::Null);
     for t in tokens {
         let v = match t {
             Token::Doctype(d) => {
-                serde_json::json!(["DOCTYPE", d.name, d.public_id, d.system_id, !d.force_quirks])
+                serde_json::json!([
+                    "DOCTYPE",
+                    eo(&d.name),
+                    eo(&d.public_id),
+                    eo(&d.system_id),
+                    !d.force_quirks
+                ])
             }
             Token::StartTag(tag) => {
                 let mut attrs = serde_json::Map::new();
                 for (k, v) in &tag.attrs {
-                    attrs.insert(k.clone(), Value::String(v.clone()));
+                    attrs.insert(esc(k), e(v));
                 }
                 if tag.self_closing {
-                    serde_json::json!(["StartTag", tag.name, attrs, true])
+                    serde_json::json!(["StartTag", e(&tag.name), attrs, true])
                 } else {
-                    serde_json::json!(["StartTag", tag.name, attrs])
+                    serde_json::json!(["StartTag", e(&tag.name), attrs])
                 }
             }
-            Token::EndTag(tag) => serde_json::json!(["EndTag", tag.name]),
-            Token::Comment(c) => serde_json::json!(["Comment", c]),
-            Token::Characters(s) => serde_json::json!(["Character", s]),
+            Token::EndTag(tag) => serde_json::json!(["EndTag", e(&tag.name)]),
+            Token::Comment(c) => serde_json::json!(["Comment", e(c)]),
+            Token::Characters(s) => serde_json::json!(["Character", e(s)]),
             Token::Eof => continue,
         };
         out.push(v);
@@ -86,6 +88,9 @@ fn tokens_to_json(tokens: &[Token]) -> Vec<Value> {
     merge_chars(out)
 }
 
+/// Merge adjacent character tokens. The strings are in `esc` form, where concatenation can't
+/// create a surrogate pair (lone surrogates are spelled out), matching the tokenizer, which
+/// never splits a pair.
 fn merge_chars(tokens: Vec<Value>) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for t in tokens {
@@ -103,25 +108,27 @@ fn merge_chars(tokens: Vec<Value>) -> Vec<Value> {
     out
 }
 
-fn unescape_value(v: &Value) -> Option<Value> {
-    Some(match v {
-        Value::String(s) => Value::String(unescape(s)?),
-        Value::Array(a) => Value::Array(a.iter().map(unescape_value).collect::<Option<_>>()?),
+/// Turn an expected-output value into the `esc` form used by `tokens_to_json`.
+fn expected_value(v: &Value, double: bool) -> Value {
+    let conv = |s: &str| esc(&if double { unescape(s) } else { Wtf8Buf::from(s) });
+    match v {
+        Value::String(s) => Value::String(conv(s)),
+        Value::Array(a) => Value::Array(a.iter().map(|x| expected_value(x, double)).collect()),
         Value::Object(o) => {
             let mut m = serde_json::Map::new();
             for (k, v) in o {
-                m.insert(unescape(k)?, unescape_value(v)?);
+                m.insert(conv(k), expected_value(v, double));
             }
             Value::Object(m)
         }
         other => other.clone(),
-    })
+    }
 }
 
 #[test]
 fn html5lib_tokenizer() {
     let dir = suite_dir().join("tokenizer");
-    let (mut pass, mut total, mut skipped) = (0, 0, 0);
+    let (mut pass, mut total) = (0, 0);
     let mut failures = Vec::new();
     let mut files: Vec<_> =
         std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).collect();
@@ -131,18 +138,9 @@ fn html5lib_tokenizer() {
         let Some(tests) = json["tests"].as_array() else { continue };
         for test in tests {
             let double = test["doubleEscaped"].as_bool() == Some(true);
-            let input = test["input"].as_str().unwrap().to_string();
-            let (input, expected) = if double {
-                match (unescape(&input), unescape_value(&test["output"])) {
-                    (Some(i), Some(o)) => (i, o),
-                    _ => {
-                        skipped += 1; // contains lone surrogates: not representable in Rust strings
-                        continue;
-                    }
-                }
-            } else {
-                (input, test["output"].clone())
-            };
+            let raw_input = test["input"].as_str().unwrap();
+            let input = if double { unescape(raw_input) } else { Wtf8Buf::from(raw_input) };
+            let expected = expected_value(&test["output"], double);
             let expected = merge_chars(expected.as_array().unwrap().clone());
             let states: Vec<String> = test["initialStates"]
                 .as_array()
@@ -150,7 +148,7 @@ fn html5lib_tokenizer() {
                 .unwrap_or_else(|| vec!["Data state".to_string()]);
             for st in states {
                 total += 1;
-                let mut tok = Tokenizer::new(&input);
+                let mut tok = Tokenizer::from_wtf8(&input);
                 tok.state = match st.as_str() {
                     "Data state" => State::Data,
                     "PLAINTEXT state" => State::Plaintext,
@@ -164,7 +162,7 @@ fn html5lib_tokenizer() {
                 let mut toks = Vec::new();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     loop {
-                        let t = tok.next_token();
+                        let t = tok.next_raw_token();
                         if t == Token::Eof {
                             break;
                         }
@@ -190,7 +188,7 @@ fn html5lib_tokenizer() {
         println!("FAIL {f}");
     }
     let rate = pass as f64 * 100.0 / total as f64;
-    println!("html5lib tokenizer: {pass}/{total} passed ({rate:.2}%), {skipped} skipped (lone surrogates)");
+    println!("html5lib tokenizer: {pass}/{total} passed ({rate:.2}%)");
     assert!(!failures.iter().any(|f| f.starts_with("PANIC")), "tokenizer panicked");
     assert!(rate >= 98.0, "tokenizer pass rate {rate:.2}% below 98%");
 }

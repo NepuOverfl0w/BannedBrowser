@@ -21,7 +21,7 @@ _Last updated: 2026-11-21 (session 1)._
 | Suite | Result |
 |---|---|
 | WPT `url/resources/urltestdata.json` | **904 / 904 (100.0 %)** |
-| html5lib tokenizer (HEAD `c5495c5`) | **7014 / 7042 (99.60 %)**, 4 skipped (lone surrogates can't be Rust strings) |
+| html5lib tokenizer (HEAD `c5495c5`) | **7018 / 7046 (99.60 %)**, nothing skipped (lone-surrogate cases run since session 2) |
 | html5lib tree-construction (pinned `224991e~1`) | **1779 / 1784 (99.72 %)**, 8 `#script-on` cases excluded |
 | Reftests (`tests/reftests`) | **48 / 48** |
 | Snapshot regressions (`tests/pages/snapshots`) | 12 pages (example.com ×2, theoldnet ×2, myip.wtf, 5 archived sites, retro, frames), pass on the approved font set |
@@ -70,6 +70,7 @@ _Last updated: 2026-11-21 (session 1)._
 ## Known gaps and bugs (honest list)
 
 * **Layout:** no `position: fixed` relative to the viewport (treated like absolute at scroll 0); `sticky` = relative; CSS Grid treated as block; inline-block baseline uses the first line (CSS says last); block-in-inline approximated (no inline splitting); `border-collapse: collapse` uses zero spacing without conflict resolution (borders double up); table captions sit inside the table border; no `vertical-align` for inline children of different fonts beyond the basics; `<textarea>` content does not wrap; flex lacks baseline alignment and `align-content`.
+* **DOM strings:** UTF-8 `String`s. The tokenizer keeps lone surrogates (WTF-8), but the tree builder replaces them with U+FFFD when inserting into the DOM. Switching DOM text and attributes to `bb_str::Wtf8Buf` is planned with the JS bindings (milestone E).
 * **Text:** bidi reordering is per text piece (no full UAX #9 incl. atomics); punctuation at RTL line ends can land on the wrong side; no small-caps; no `@font-face` loading yet (rules are parsed, fonts not fetched); no hinting.
 * **Paint:** SVG is not rendered (space reserved, nothing drawn); no `transform` beyond `translate()`; background-origin/clip ignored; GIF animation not played.
 * **Style:** no CSS counters, no `@layer` ordering (flattened), `:has()` sibling forms unsupported, nesting rules ignored, `lab()/lch()/oklch()/color-mix()` unsupported.
@@ -133,7 +134,7 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   video decode.
 
 * **No excluded test cases** (maintainer, 2026-11-21). Every suite runs in full on every OS. Today's exclusions, each to be removed:
-  - **html5lib tokenizer, 4 lone-surrogate cases skipped.** The tokenizer must take input as code points including lone surrogates, not a Rust `String`; `document.write` from JS needs the same.
+  - ~~**html5lib tokenizer, 4 lone-surrogate cases skipped.**~~ Done (session 2): the tokenizer takes WTF-8 input (`bb-str`) and keeps lone surrogates in its tokens; all 4 run and pass. Still open for E: the DOM stores UTF-8, so the tree builder replaces lone surrogates with U+FFFD on insertion; DOM strings must become WTF-8 for JS and `document.write`.
   - **html5lib tree construction, 8 `#script-on` cases excluded.** Run them with the scripting flag on once our JS engine (M10) exists.
   - **Tree construction is pinned to html5lib-tests `224991e~1`.** Switch to the current tests (they now live in WPT). That brings in processing instructions and `<selectedcontent>`, both of which fail today.
   - **Snapshot regressions are skipped when the font set differs** (every non-Linux runner). Bundle open-licensed test fonts so snapshots render identically on Linux, Windows and macOS.

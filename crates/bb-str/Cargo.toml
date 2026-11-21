@@ -1,0 +1,15 @@
+[package]
+name = "bb-str"
+description = "WTF-8 strings: UTF-8 that can also hold lone surrogates (web strings)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

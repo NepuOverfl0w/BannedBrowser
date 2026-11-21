@@ -212,6 +212,7 @@ flowchart TB
 
 | Crate | What it does |
 |---|---|
+| `bb-str` | WTF-8 strings (web strings that may hold lone surrogates) |
 | `bb-url` | WHATWG URL parser & serializer |
 | `bb-net` | HTTP/1.1, TLS, proxies, content codings, `data:`/`file:`/`about:`, encoding sniffing |
 | `bb-dom` | Arena DOM with dirty flags |

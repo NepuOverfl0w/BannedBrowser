@@ -3,22 +3,29 @@
 //! Character tokens are batched into runs ([`Token::Characters`]). The tree
 //! builder may change [`Tokenizer::state`] between tokens (e.g. to RCDATA
 //! after `<title>`), so the tokenizer never runs ahead past a tag token.
+//!
+//! The input is a sequence of code points that may include lone surrogates (HTML §13.2.3.5:
+//! they are a parse error but are passed through), so the tokenizer works on WTF-8
+//! ([`bb_str::Wtf8Buf`]) and [`Tokenizer::next_raw_token`] returns tokens that keep them.
+//! [`Tokenizer::next_token`] returns the same tokens as UTF-8 `String`s with lone surrogates
+//! replaced by U+FFFD, which is what the tree builder (and today's UTF-8 DOM) consumes.
 
 use crate::entities::ENTITIES;
-use std::collections::VecDeque;
+use bb_str::Wtf8Buf;
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Doctype {
-    pub name: Option<String>,
-    pub public_id: Option<String>,
-    pub system_id: Option<String>,
+pub struct Doctype<S = String> {
+    pub name: Option<S>,
+    pub public_id: Option<S>,
+    pub system_id: Option<S>,
     pub force_quirks: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Tag {
-    pub name: String,
-    pub attrs: Vec<(String, String)>,
+pub struct Tag<S = String> {
+    pub name: S,
+    pub attrs: Vec<(S, S)>,
     pub self_closing: bool,
 }
 
@@ -29,14 +36,47 @@ impl Tag {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Token {
-    Doctype(Doctype),
-    StartTag(Tag),
-    EndTag(Tag),
-    Comment(String),
-    Characters(String),
+pub enum Token<S = String> {
+    Doctype(Doctype<S>),
+    StartTag(Tag<S>),
+    EndTag(Tag<S>),
+    Comment(S),
+    Characters(S),
     Eof,
 }
+
+/// A token whose strings keep lone surrogates.
+pub type RawToken = Token<Wtf8Buf>;
+
+impl RawToken {
+    /// Convert to UTF-8 strings, replacing lone surrogates with U+FFFD.
+    pub fn into_lossy(self) -> Token {
+        let s = Wtf8Buf::into_string_lossy;
+        let tag = |t: Tag<Wtf8Buf>| Tag {
+            name: s(t.name),
+            attrs: t.attrs.into_iter().map(|(k, v)| (s(k), s(v))).collect(),
+            self_closing: t.self_closing,
+        };
+        match self {
+            Token::Doctype(d) => Token::Doctype(Doctype {
+                name: d.name.map(s),
+                public_id: d.public_id.map(s),
+                system_id: d.system_id.map(s),
+                force_quirks: d.force_quirks,
+            }),
+            Token::StartTag(t) => Token::StartTag(tag(t)),
+            Token::EndTag(t) => Token::EndTag(tag(t)),
+            Token::Comment(c) => Token::Comment(s(c)),
+            Token::Characters(c) => Token::Characters(s(c)),
+            Token::Eof => Token::Eof,
+        }
+    }
+}
+
+/// Stands in for a lone surrogate in `Tokenizer::input`; the real code point is in
+/// `Tokenizer::surrogates`. Any non-ASCII character works: surrogates take the "anything else"
+/// branch in every tokenizer state, like U+FFFD.
+const SURROGATE_PLACEHOLDER: char = '\u{FFFD}';
 
 /// Tokenizer states (HTML §13.2.5.1–80).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,22 +170,25 @@ enum TagKind {
 
 pub struct Tokenizer {
     input: Vec<char>,
+    /// Lone surrogates in the input: position in `input` → code point. Those positions hold
+    /// `SURROGATE_PLACEHOLDER`.
+    surrogates: HashMap<usize, u32>,
     pos: usize,
     pub state: State,
     return_state: State,
-    queue: VecDeque<Token>,
-    pending_chars: String,
+    queue: VecDeque<RawToken>,
+    pending_chars: Wtf8Buf,
     // Current tag being built.
     tag_kind: TagKind,
-    tag: Tag,
-    attr_name: String,
-    attr_value: String,
+    tag: Tag<Wtf8Buf>,
+    attr_name: Wtf8Buf,
+    attr_value: Wtf8Buf,
     attr_active: bool,
-    comment: String,
-    doctype: Doctype,
-    temp: String,
+    comment: Wtf8Buf,
+    doctype: Doctype<Wtf8Buf>,
+    temp: Wtf8Buf,
     char_ref_code: u32,
-    last_start_tag: Option<String>,
+    last_start_tag: Option<Wtf8Buf>,
     /// Set by the tree builder: adjusted current node is not in the HTML namespace.
     pub allow_cdata: bool,
     eof_emitted: bool,
@@ -159,34 +202,49 @@ fn is_ascii_ws(c: char) -> bool {
 
 impl Tokenizer {
     pub fn new(input: &str) -> Self {
+        Self::from_code_points(input.chars().map(u32::from), input.len())
+    }
+
+    /// Tokenize WTF-8 input, which may contain lone surrogates.
+    pub fn from_wtf8(input: &Wtf8Buf) -> Self {
+        Self::from_code_points(input.code_points(), input.len())
+    }
+
+    fn from_code_points(input: impl Iterator<Item = u32>, size_hint: usize) -> Self {
         // HTML §13.2.3.5 preprocessing: normalize newlines.
-        let mut chars = Vec::with_capacity(input.len());
-        let mut it = input.chars().peekable();
-        while let Some(c) = it.next() {
-            if c == '\r' {
-                if it.peek() == Some(&'\n') {
+        let mut chars = Vec::with_capacity(size_hint);
+        let mut surrogates = HashMap::new();
+        let mut it = input.peekable();
+        while let Some(cp) = it.next() {
+            if cp == u32::from('\r') {
+                if it.peek() == Some(&u32::from('\n')) {
                     it.next();
                 }
                 chars.push('\n');
-            } else {
+            } else if let Some(c) = char::from_u32(cp) {
                 chars.push(c);
+            } else {
+                // A lone surrogate ("surrogate-in-input-stream", passed through).
+                surrogates.insert(chars.len(), cp);
+                chars.push(SURROGATE_PLACEHOLDER);
             }
         }
         Tokenizer {
             input: chars,
+            surrogates,
             pos: 0,
             state: State::Data,
             return_state: State::Data,
             queue: VecDeque::new(),
-            pending_chars: String::new(),
+            pending_chars: Wtf8Buf::new(),
             tag_kind: TagKind::Start,
             tag: Tag::default(),
-            attr_name: String::new(),
-            attr_value: String::new(),
+            attr_name: Wtf8Buf::new(),
+            attr_value: Wtf8Buf::new(),
             attr_active: false,
-            comment: String::new(),
+            comment: Wtf8Buf::new(),
             doctype: Doctype::default(),
-            temp: String::new(),
+            temp: Wtf8Buf::new(),
             char_ref_code: 0,
             last_start_tag: None,
             allow_cdata: false,
@@ -197,11 +255,17 @@ impl Tokenizer {
 
     /// Set the "last start tag" (used for appropriate end tags in tests and fragments).
     pub fn set_last_start_tag(&mut self, name: Option<&str>) {
-        self.last_start_tag = name.map(str::to_string);
+        self.last_start_tag = name.map(Wtf8Buf::from);
     }
 
-    /// Produce the next token. Returns `Token::Eof` forever once input is exhausted.
+    /// Produce the next token, with lone surrogates replaced by U+FFFD.
+    /// Returns `Token::Eof` forever once input is exhausted.
     pub fn next_token(&mut self) -> Token {
+        self.next_raw_token().into_lossy()
+    }
+
+    /// Produce the next token, keeping lone surrogates.
+    pub fn next_raw_token(&mut self) -> RawToken {
         loop {
             if let Some(t) = self.queue.pop_front() {
                 return t;
@@ -221,6 +285,22 @@ impl Tokenizer {
             self.pos += 1;
         }
         c
+    }
+
+    /// The code point at `pos`, given the char `c` stored there (a lone surrogate if `c` is
+    /// the placeholder for one).
+    fn code_point_at(&self, pos: usize, c: char) -> u32 {
+        if c == SURROGATE_PLACEHOLDER {
+            if let Some(&cp) = self.surrogates.get(&pos) {
+                return cp;
+            }
+        }
+        u32::from(c)
+    }
+
+    /// The code point of `c`, the character just consumed.
+    fn cur(&self, c: char) -> u32 {
+        self.code_point_at(self.pos.wrapping_sub(1), c)
     }
 
     fn reconsume(&mut self, c: Option<char>) {
@@ -253,6 +333,16 @@ impl Tokenizer {
         self.pending_chars.push_str(s);
     }
 
+    fn emit_wtf8(&mut self, s: &Wtf8Buf) {
+        self.pending_chars.push_wtf8(s);
+    }
+
+    /// Emit `c`, the input character just consumed (it may stand for a lone surrogate).
+    fn emit_input(&mut self, c: char) {
+        let cp = self.cur(c);
+        self.pending_chars.push_code_point(cp);
+    }
+
     fn flush_chars(&mut self) {
         if !self.pending_chars.is_empty() {
             let s = std::mem::take(&mut self.pending_chars);
@@ -260,7 +350,7 @@ impl Tokenizer {
         }
     }
 
-    fn emit(&mut self, t: Token) {
+    fn emit(&mut self, t: RawToken) {
         self.flush_chars();
         self.queue.push_back(t);
     }
@@ -326,8 +416,7 @@ impl Tokenizer {
     }
 
     fn is_appropriate_end_tag(&self) -> bool {
-        matches!(self.tag_kind, TagKind::End)
-            && self.last_start_tag.as_deref() == Some(self.tag.name.as_str())
+        matches!(self.tag_kind, TagKind::End) && self.last_start_tag.as_ref() == Some(&self.tag.name)
     }
 
     fn char_ref_in_attr(&self) -> bool {
@@ -342,9 +431,9 @@ impl Tokenizer {
     fn flush_temp_as_char_ref(&mut self) {
         let t = std::mem::take(&mut self.temp);
         if self.char_ref_in_attr() {
-            self.attr_value.push_str(&t);
+            self.attr_value.push_wtf8(&t);
         } else {
-            self.emit_str(&t);
+            self.emit_wtf8(&t);
         }
     }
 
@@ -352,7 +441,7 @@ impl Tokenizer {
     fn end_tag_name_anything_else(&mut self, c: Option<char>, back: State) {
         self.emit_str("</");
         let t = std::mem::take(&mut self.temp);
-        self.emit_str(&t);
+        self.emit_wtf8(&t);
         self.reconsume(c);
         self.state = back;
     }
@@ -369,8 +458,14 @@ impl Tokenizer {
                 self.emit_tag();
             }
             Some(ch) if ch.is_ascii_alphabetic() => {
-                self.tag.name.push(ch.to_ascii_lowercase());
-                self.temp.push(ch);
+                {
+                    let cp = self.cur(ch.to_ascii_lowercase());
+                    self.tag.name.push_code_point(cp)
+                };
+                {
+                    let cp = self.cur(ch);
+                    self.temp.push_code_point(cp)
+                };
             }
             _ => self.end_tag_name_anything_else(c, back),
         }
@@ -391,13 +486,14 @@ impl Tokenizer {
                     self.emit_char('\0');
                 }
                 Some(c) => {
-                    self.emit_char(c);
+                    self.emit_input(c);
                     // Fast path: copy a run of plain text.
                     while let Some(&n) = self.input.get(self.pos) {
                         if n == '&' || n == '<' || n == '\0' {
                             break;
                         }
-                        self.pending_chars.push(n);
+                        let cp = self.code_point_at(self.pos, n);
+                        self.pending_chars.push_code_point(cp);
                         self.pos += 1;
                     }
                 }
@@ -413,7 +509,7 @@ impl Tokenizer {
                     self.error();
                     self.emit_char('\u{FFFD}');
                 }
-                Some(c) => self.emit_char(c),
+                Some(c) => self.emit_input(c),
                 None => self.emit_eof(),
             },
             S::Rawtext => match self.consume() {
@@ -422,7 +518,7 @@ impl Tokenizer {
                     self.error();
                     self.emit_char('\u{FFFD}');
                 }
-                Some(c) => self.emit_char(c),
+                Some(c) => self.emit_input(c),
                 None => self.emit_eof(),
             },
             S::ScriptData => match self.consume() {
@@ -431,7 +527,7 @@ impl Tokenizer {
                     self.error();
                     self.emit_char('\u{FFFD}');
                 }
-                Some(c) => self.emit_char(c),
+                Some(c) => self.emit_input(c),
                 None => self.emit_eof(),
             },
             S::Plaintext => match self.consume() {
@@ -439,7 +535,7 @@ impl Tokenizer {
                     self.error();
                     self.emit_char('\u{FFFD}');
                 }
-                Some(c) => self.emit_char(c),
+                Some(c) => self.emit_input(c),
                 None => self.emit_eof(),
             },
             S::TagOpen => {
@@ -507,7 +603,10 @@ impl Tokenizer {
                     self.error();
                     self.tag.name.push('\u{FFFD}');
                 }
-                Some(c) => self.tag.name.push(c.to_ascii_lowercase()),
+                Some(c) => {
+                    let cp = self.cur(c.to_ascii_lowercase());
+                    self.tag.name.push_code_point(cp)
+                }
                 None => {
                     self.error();
                     self.emit_eof();
@@ -622,7 +721,7 @@ impl Tokenizer {
                     self.error();
                     self.emit_char('\u{FFFD}');
                 }
-                Some(c) => self.emit_char(c),
+                Some(c) => self.emit_input(c),
                 None => {
                     self.error();
                     self.emit_eof();
@@ -641,7 +740,7 @@ impl Tokenizer {
                 }
                 Some(c) => {
                     self.state = S::ScriptDataEscaped;
-                    self.emit_char(c);
+                    self.emit_input(c);
                 }
                 None => {
                     self.error();
@@ -662,7 +761,7 @@ impl Tokenizer {
                 }
                 Some(c) => {
                     self.state = S::ScriptDataEscaped;
-                    self.emit_char(c);
+                    self.emit_input(c);
                 }
                 None => {
                     self.error();
@@ -711,11 +810,14 @@ impl Tokenizer {
                         } else {
                             S::ScriptDataEscaped
                         };
-                        self.emit_char(ch);
+                        self.emit_input(ch);
                     }
                     Some(ch) if ch.is_ascii_alphabetic() => {
-                        self.temp.push(ch.to_ascii_lowercase());
-                        self.emit_char(ch);
+                        {
+                            let cp = self.cur(ch.to_ascii_lowercase());
+                            self.temp.push_code_point(cp)
+                        };
+                        self.emit_input(ch);
                     }
                     _ => {
                         self.reconsume(c);
@@ -736,7 +838,7 @@ impl Tokenizer {
                     self.error();
                     self.emit_char('\u{FFFD}');
                 }
-                Some(c) => self.emit_char(c),
+                Some(c) => self.emit_input(c),
                 None => {
                     self.error();
                     self.emit_eof();
@@ -758,7 +860,7 @@ impl Tokenizer {
                 }
                 Some(c) => {
                     self.state = S::ScriptDataDoubleEscaped;
-                    self.emit_char(c);
+                    self.emit_input(c);
                 }
                 None => {
                     self.error();
@@ -782,7 +884,7 @@ impl Tokenizer {
                 }
                 Some(c) => {
                     self.state = S::ScriptDataDoubleEscaped;
-                    self.emit_char(c);
+                    self.emit_input(c);
                 }
                 None => {
                     self.error();
@@ -809,11 +911,14 @@ impl Tokenizer {
                         } else {
                             S::ScriptDataDoubleEscaped
                         };
-                        self.emit_char(ch);
+                        self.emit_input(ch);
                     }
                     Some(ch) if ch.is_ascii_alphabetic() => {
-                        self.temp.push(ch.to_ascii_lowercase());
-                        self.emit_char(ch);
+                        {
+                            let cp = self.cur(ch.to_ascii_lowercase());
+                            self.temp.push_code_point(cp)
+                        };
+                        self.emit_input(ch);
                     }
                     _ => {
                         self.reconsume(c);
@@ -862,7 +967,10 @@ impl Tokenizer {
                         if matches!(ch, '"' | '\'' | '<') {
                             self.error();
                         }
-                        self.attr_name.push(ch.to_ascii_lowercase());
+                        {
+                            let cp = self.cur(ch.to_ascii_lowercase());
+                            self.attr_name.push_code_point(cp)
+                        };
                     }
                 }
             }
@@ -916,7 +1024,10 @@ impl Tokenizer {
                         self.error();
                         self.attr_value.push('\u{FFFD}');
                     }
-                    Some(c) => self.attr_value.push(c),
+                    Some(c) => {
+                        let cp = self.cur(c);
+                        self.attr_value.push_code_point(cp)
+                    }
                     None => {
                         self.error();
                         self.emit_eof();
@@ -941,7 +1052,10 @@ impl Tokenizer {
                     if matches!(c, '"' | '\'' | '<' | '=' | '`') {
                         self.error();
                     }
-                    self.attr_value.push(c);
+                    {
+                        let cp = self.cur(c);
+                        self.attr_value.push_code_point(cp)
+                    };
                 }
                 None => {
                     self.error();
@@ -1000,7 +1114,10 @@ impl Tokenizer {
                     self.error();
                     self.comment.push('\u{FFFD}');
                 }
-                Some(c) => self.comment.push(c),
+                Some(c) => {
+                    let cp = self.cur(c);
+                    self.comment.push_code_point(cp)
+                }
             },
             S::MarkupDeclarationOpen => {
                 if self.peek_matches("--", false) {
@@ -1016,7 +1133,7 @@ impl Tokenizer {
                         self.state = S::CdataSection;
                     } else {
                         self.error();
-                        self.comment = "[CDATA[".to_string();
+                        self.comment = Wtf8Buf::from("[CDATA[");
                         self.state = S::BogusComment;
                     }
                 } else {
@@ -1071,7 +1188,10 @@ impl Tokenizer {
                     self.error();
                     self.comment.push('\u{FFFD}');
                 }
-                Some(c) => self.comment.push(c),
+                Some(c) => {
+                    let cp = self.cur(c);
+                    self.comment.push_code_point(cp)
+                }
                 None => {
                     self.error();
                     self.emit_comment();
@@ -1222,8 +1342,9 @@ impl Tokenizer {
                         self.emit_eof();
                     }
                     Some(ch) => {
+                        let cp = self.cur(ch.to_ascii_lowercase());
                         self.doctype =
-                            Doctype { name: Some(ch.to_ascii_lowercase().to_string()), ..Default::default() };
+                            Doctype { name: Some(Wtf8Buf::from_code_points([cp])), ..Default::default() };
                         self.state = S::DoctypeName;
                     }
                 }
@@ -1236,9 +1357,12 @@ impl Tokenizer {
                 }
                 Some('\0') => {
                     self.error();
-                    self.doctype.name.get_or_insert_with(String::new).push('\u{FFFD}');
+                    self.doctype.name.get_or_insert_with(Wtf8Buf::new).push('\u{FFFD}');
                 }
-                Some(c) => self.doctype.name.get_or_insert_with(String::new).push(c.to_ascii_lowercase()),
+                Some(c) => {
+                    let cp = self.cur(c.to_ascii_lowercase());
+                    self.doctype.name.get_or_insert_with(Wtf8Buf::new).push_code_point(cp)
+                }
                 None => {
                     self.error();
                     self.doctype.force_quirks = true;
@@ -1349,11 +1473,11 @@ impl Tokenizer {
                     _ => (false, '\''),
                 };
                 let c = self.consume();
-                fn target(d: &mut Doctype, public: bool) -> &mut String {
+                fn target(d: &mut Doctype<Wtf8Buf>, public: bool) -> &mut Wtf8Buf {
                     if public {
-                        d.public_id.get_or_insert_with(String::new)
+                        d.public_id.get_or_insert_with(Wtf8Buf::new)
                     } else {
-                        d.system_id.get_or_insert_with(String::new)
+                        d.system_id.get_or_insert_with(Wtf8Buf::new)
                     }
                 }
                 match c {
@@ -1374,7 +1498,10 @@ impl Tokenizer {
                         self.state = S::Data;
                         self.emit_doctype();
                     }
-                    Some(ch) => target(&mut self.doctype, public).push(ch),
+                    Some(ch) => {
+                        let cp = self.cur(ch);
+                        target(&mut self.doctype, public).push_code_point(cp)
+                    }
                     None => {
                         self.error();
                         self.doctype.force_quirks = true;
@@ -1467,7 +1594,7 @@ impl Tokenizer {
             },
             S::CdataSection => match self.consume() {
                 Some(']') => self.state = S::CdataSectionBracket,
-                Some(c) => self.emit_char(c),
+                Some(c) => self.emit_input(c),
                 None => {
                     self.error();
                     self.emit_eof();
@@ -1521,9 +1648,12 @@ impl Tokenizer {
                 match c {
                     Some(ch) if ch.is_ascii_alphanumeric() => {
                         if self.char_ref_in_attr() {
-                            self.attr_value.push(ch);
+                            {
+                                let cp = self.cur(ch);
+                                self.attr_value.push_code_point(cp)
+                            };
                         } else {
-                            self.emit_char(ch);
+                            self.emit_input(ch);
                         }
                     }
                     Some(';') => {
@@ -1604,14 +1734,14 @@ impl Tokenizer {
     fn set_doctype_id(&mut self, public: bool, quote: char) {
         use State as S;
         if public {
-            self.doctype.public_id = Some(String::new());
+            self.doctype.public_id = Some(Wtf8Buf::new());
             self.state = if quote == '"' {
                 S::DoctypePublicIdentifierDoubleQuoted
             } else {
                 S::DoctypePublicIdentifierSingleQuoted
             };
         } else {
-            self.doctype.system_id = Some(String::new());
+            self.doctype.system_id = Some(Wtf8Buf::new());
             self.state = if quote == '"' {
                 S::DoctypeSystemIdentifierDoubleQuoted
             } else {
@@ -1722,6 +1852,89 @@ mod tests {
         );
         assert_eq!(v[1], Token::Characters("Hi & ¬it; A".into()));
         assert_eq!(v[3], Token::Comment("c".into()));
+    }
+
+    /// Tokenize UTF-16 input (so lone surrogates can be written) and return raw tokens.
+    fn raw(units: &[u16]) -> Vec<RawToken> {
+        let mut t = Tokenizer::from_wtf8(&Wtf8Buf::from_utf16(units));
+        let mut v = Vec::new();
+        loop {
+            let tok = t.next_raw_token();
+            if tok == Token::Eof {
+                break;
+            }
+            v.push(tok);
+        }
+        v
+    }
+
+    fn u16s(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    /// `prefix` + lone surrogate U+D800 + `suffix`, as UTF-16.
+    fn with_surrogate(prefix: &str, suffix: &str) -> Vec<u16> {
+        let mut v = u16s(prefix);
+        v.push(0xD800);
+        v.extend(u16s(suffix));
+        v
+    }
+
+    fn w(prefix: &str, suffix: &str) -> Wtf8Buf {
+        Wtf8Buf::from_utf16(&with_surrogate(prefix, suffix))
+    }
+
+    // HTML §13.2.3.5: lone surrogates are a parse error but are passed through unchanged.
+    #[test]
+    fn lone_surrogates_pass_through_everywhere() {
+        // Text, including the plain-text fast path after the first character.
+        assert_eq!(raw(&with_surrogate("ab", "cd")), vec![Token::Characters(w("ab", "cd"))]);
+        // Attribute values (quoted and unquoted), attribute names and tag names.
+        match &raw(&with_surrogate("<a title='x", "y' b=z>"))[0] {
+            Token::StartTag(t) => assert_eq!(t.attrs[0].1, w("x", "y")),
+            other => panic!("{other:?}"),
+        }
+        match &raw(&with_surrogate("<a b=", ">"))[0] {
+            Token::StartTag(t) => assert_eq!(t.attrs[0].1, w("", "")),
+            other => panic!("{other:?}"),
+        }
+        match &raw(&with_surrogate("<A B", "C=1>"))[0] {
+            Token::StartTag(t) => assert_eq!(t.attrs[0].0, w("b", "c")),
+            other => panic!("{other:?}"),
+        }
+        match &raw(&with_surrogate("<X", "Y>"))[0] {
+            Token::StartTag(t) => assert_eq!(t.name, w("x", "y")),
+            other => panic!("{other:?}"),
+        }
+        // Comments, bogus comments and doctype names.
+        assert_eq!(raw(&with_surrogate("<!--a", "b-->")), vec![Token::Comment(w("a", "b"))]);
+        match &raw(&with_surrogate("<!DOCTYPE ", "x>"))[0] {
+            Token::Doctype(d) => assert_eq!(d.name, Some(w("", "x"))),
+            other => panic!("{other:?}"),
+        }
+        // After a character reference, and in RCDATA after an end-tag-name mismatch.
+        assert_eq!(raw(&with_surrogate("&amp;", "")), vec![Token::Characters(w("&", ""))]);
+        let mut t = Tokenizer::from_wtf8(&w("</ti", "</title>"));
+        t.state = State::Rcdata;
+        t.set_last_start_tag(Some("title"));
+        assert_eq!(t.next_raw_token(), Token::Characters(w("</ti", "")));
+    }
+
+    #[test]
+    fn real_replacement_characters_stay_replacement_characters() {
+        // U+FFFD in the input is the surrogate placeholder internally; it must not turn into a
+        // surrogate, even next to one.
+        let mut v = u16s("a\u{FFFD}");
+        v.push(0xDC00);
+        v.extend(u16s("\u{FFFD}"));
+        assert_eq!(raw(&v), vec![Token::Characters(Wtf8Buf::from_utf16(&v))]);
+        assert_eq!(toks("<p x='\u{FFFD}'>")[0], toks("<p x='\u{FFFD}'>")[0]);
+    }
+
+    #[test]
+    fn lossy_tokens_replace_lone_surrogates() {
+        let mut t = Tokenizer::from_wtf8(&w("a", "b"));
+        assert_eq!(t.next_token(), Token::Characters("a\u{FFFD}b".into()));
     }
 
     #[test]

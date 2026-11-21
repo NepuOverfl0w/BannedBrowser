@@ -98,6 +98,7 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
 
 | Path | What |
 |---|---|
+| `crates/bb-str` | WTF-8 strings (web strings with lone surrogates) |
 | `crates/bb-url` | WHATWG URL Standard |
 | `crates/bb-net` | HTTP/1.1, TLS, proxies, codings, `data:`/`file:`/`about:`, encoding sniffing (HTTP/2 and HTTP/3 go here in v0.2) |
 | `crates/bb-dom`, `bb-html` | DOM; HTML tokenizer and tree builder |

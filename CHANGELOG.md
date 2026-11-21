@@ -19,6 +19,10 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 - Menus work with the mouse (click, or press-drag-release) and keyboard (arrows, Enter, Esc, the
   context-menu key or Shift+F10). The last v0.1 checklist item, finished after the 0.1.0 release.
 
+- **HTML tokenizer:** input is a sequence of code points that may include lone surrogates
+  (HTML §13.2.3.5), via the new `bb-str` crate's WTF-8 strings. Surrogates are kept in every
+  token; the html5lib tokenizer suite now runs without skipping any case.
+
 ### Changed
 - `about:bannedbrowser` matches the README: tagline, what we wrote ourselves, the name's origin
   (Silver Wolf's handle `@Banned_Player`, replacing the old "nickname" claim) with the
