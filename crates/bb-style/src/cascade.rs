@@ -419,6 +419,9 @@ pub struct StyleEnv {
     pub no_author_styles: bool,
     /// Minimum font size in px (0 = none).
     pub min_font_size: f32,
+    /// `marginwidth`/`marginheight` of the `<frame>`/`<iframe>` holding this
+    /// document (HTML §15.3.3), in CSS px.
+    pub container_margins: (Option<f32>, Option<f32>),
 }
 
 impl Default for StyleEnv {
@@ -428,6 +431,7 @@ impl Default for StyleEnv {
             prefers_dark: false,
             no_author_styles: false,
             min_font_size: 0.0,
+            container_margins: (None, None),
         }
     }
 }
@@ -556,7 +560,7 @@ impl Stylist {
         let hints;
         let inline;
         if pseudo.is_none() && !env.no_author_styles {
-            hints = crate::hints::presentational_hints(doc, node);
+            hints = crate::hints::presentational_hints_in(doc, node, env.container_margins);
             for d in &hints {
                 matched.push(Matched { key: (2, 0, 0), decl: d });
             }

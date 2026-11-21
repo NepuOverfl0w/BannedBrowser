@@ -179,7 +179,7 @@ pub fn replaced_size(l: &mut Layout, id: BoxId, used_w: Option<f32>, cb_w: f32) 
                 Control::Select { label } => (Some(text_width(label, &style) + 18.0), Some(line), None),
             }
         }
-        Replaced::Placeholder { default, .. } | Replaced::Svg { default } => {
+        Replaced::Placeholder { default, .. } | Replaced::Svg { default } | Replaced::Frame { default } => {
             (Some(default.0), Some(default.1), Some(default.0 / default.1.max(1.0)))
         }
     };

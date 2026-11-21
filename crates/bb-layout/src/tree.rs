@@ -52,7 +52,11 @@ pub enum Replaced {
     Svg {
         default: (f32, f32),
     },
-    /// iframe / embed / object / canvas / video placeholders.
+    /// `<iframe>`: a nested document painted by the engine (HTML §4.8.5).
+    Frame {
+        default: (f32, f32),
+    },
+    /// embed / object / canvas / video placeholders.
     Placeholder {
         label: String,
         default: (f32, f32),
@@ -559,7 +563,8 @@ impl<'a> Builder<'a> {
                             Some(r) => Some(r),
                             None => return,
                         },
-                        "iframe" | "embed" | "object" | "video" | "canvas" | "audio" | "applet" => {
+                        "iframe" => Some(Replaced::Frame { default: (300.0, 150.0) }),
+                        "embed" | "object" | "video" | "canvas" | "audio" | "applet" => {
                             if name == "object"
                                 && doc.children(node).any(|c| {
                                     doc.node(c).is_element()
@@ -568,13 +573,7 @@ impl<'a> Builder<'a> {
                             {
                                 None // render fallback content
                             } else {
-                                let label = match name.as_str() {
-                                    "iframe" => doc
-                                        .attr(node, "src")
-                                        .map(|s| format!("frame: {s}"))
-                                        .unwrap_or_default(),
-                                    _ => String::new(),
-                                };
+                                let label = String::new();
                                 let default = if name == "audio" { (300.0, 40.0) } else { (300.0, 150.0) };
                                 Some(Replaced::Placeholder { label, default })
                             }

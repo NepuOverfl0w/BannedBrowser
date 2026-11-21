@@ -23,10 +23,10 @@ _Last updated: 2026-11-21 (session 1)._
 | WPT `url/resources/urltestdata.json` | **904 / 904 (100.0 %)** |
 | html5lib tokenizer (HEAD `c5495c5`) | **7014 / 7042 (99.60 %)**, 4 skipped (lone surrogates can't be Rust strings) |
 | html5lib tree-construction (pinned `224991e~1`) | **1779 / 1784 (99.72 %)**, 8 `#script-on` cases excluded |
-| Reftests (`tests/reftests`) | **46 / 46** |
+| Reftests (`tests/reftests`) | **47 / 47** |
 | Snapshot regressions (`tests/pages/snapshots`) | 5 pages, pass on the approved font set |
-| `cargo test --workspace` | 105 test functions, 0 failures |
-| GUI smoke (`scripts/gui-smoke.sh`) | `basic.sh` passes (open, link click, back, wheel scroll, URL bar, new/close/reopen tab, resize, maximize, new window, private window) |
+| `cargo test --workspace` | 111 test functions, 0 failures |
+| GUI smoke (`scripts/gui-smoke.sh`) | `basic.sh` (open, link click, back, wheel scroll, scrollbar track click + thumb drag, URL bar, new/close/reopen tab, resize, maximize, new window, private window) and `frames.sh` (frameset render, wheel scrolls the frame under the pointer, targeted link loads into the named frame) pass |
 | `scripts/check-deps.sh` | OK — 162 crates, none banned |
 | Cross targets | `cargo clippy --target x86_64-pc-windows-gnu -D warnings` ✅ and Windows release `.exe` builds; `cargo check --target aarch64-apple-darwin` ✅ for every crate except those linking `ring` (see gaps) |
 
@@ -55,9 +55,10 @@ _Last updated: 2026-11-21 (session 1)._
 - [x] HTML tables (auto + fixed, colspan/rowspan, spacing/padding, borders, % widths, nested)
 - [x] Images: GIF (first frame shown; all frames decoded), JPEG, PNG, WebP, BMP, ICO; alt text when broken; sized placeholders
 - [x] Image maps (`<map>/<area>` rect/circle/poly) clickable
-- [ ] Frames: `<frameset>` currently renders as a list of links (allowed v0.1 fallback, logged as gap); `<iframe>` is a placeholder box
+- [x] Frames: real `<frameset>`/`<frame>` layout (rows/cols list-of-dimensions, nested framesets, borders, `frameborder`/`border`), `<iframe src|srcdoc>`, link `target` (`_self/_parent/_top/_blank`/named frames, `<base target>`), per-frame wheel/keyboard scrolling with a scroll indicator, `scrolling="no"`, container `marginwidth/marginheight`, depth limit 4 / 32 frames per page
 - [x] GUI: window, tab strip, back/forward/reload/home, URL bar, wheel/keyboard scrolling, link hover cursor + status, click to navigate, title in tab + window, favicon, loading indicator, error pages, light/dark
-- [ ] GUI: scrollbar (none drawn yet), find bar, menus
+- [x] GUI: overlay scrollbar (hover-widen, thumb drag, track paging, auto-hide)
+- [ ] GUI: find bar, menus
 - [x] Robustness: unknown tags, broken markup, missing images, `<script>` ignored, `<noscript>` shown
 - [x] Local snapshots + regression tests (example.com, theoldnet.com + lite, myip.wtf)
 - [ ] 5 archived sites via theoldnet (blocked: web.archive.org)
@@ -72,7 +73,8 @@ _Last updated: 2026-11-21 (session 1)._
 * **Paint:** SVG is not rendered (space reserved, nothing drawn); no `transform` beyond `translate()`; background-origin/clip ignored; GIF animation not played.
 * **Style:** no CSS counters, no `@layer` ordering (flattened), `:has()` sibling forms unsupported, nesting rules ignored, `lab()/lch()/oklch()/color-mix()` unsupported.
 * **Network:** no cookies or cache yet (M8); no HTTP/2; `HTTP_PROXY` absolute-form only for plain http.
-* **GUI:** no scrollbars, no ≡ menu / context menus / find bar / bookmarks; no session restore; private windows share the network client (no cookies exist yet, so nothing leaks); screenshots of overlapping windows in GUI tests can be stale.
+* **Frames:** frame navigations are not in session history (Back leaves the frameset); no frame resizing by dragging borders (`noresize` is the only behaviour); iframes are opaque (child canvas background is always painted); `<object data=…html>` isn't a nested document; keyboard focus doesn't move into frames (keys scroll the largest frame of a frameset).
+* **GUI:** no ≡ menu / context menus / find bar / bookmarks; no session restore; private windows share the network client (no cookies exist yet, so nothing leaks); screenshots of overlapping windows in GUI tests can be stale.
 * **macOS cross-check:** `ring`'s build script needs the macOS SDK headers to compile its C/asm, which the Linux VM doesn't have; the macOS CI job covers it. Two attempts (clang + generic headers) failed; not retried further.
 * **Environment:** `web.archive.org` blocked by egress policy; theoldnet.com serves "Hello World" to non-browser user agents (our UA is fine).
 
@@ -80,8 +82,22 @@ _Last updated: 2026-11-21 (session 1)._
 
 1. Push, watch the first CI run on Linux/Windows/macOS and fix platform issues.
 2. Ask for `web.archive.org` on the allowlist; check 5 archived GeoCities-era sites and add them as snapshots.
-3. GUI: overlay scrollbars, ≡ app menu, page/link/tab context menus, find bar (Ctrl+F), history dropdown, session restore.
-4. Frames: real `<frameset>`/`<iframe>` rendering with nested pages and `target`.
+3. GUI: ≡ app menu, page/link/tab context menus, find bar (Ctrl+F), history dropdown, session restore.
+4. Frames: session history for frame navigations, border dragging.
 5. Reftests to ≥150 (M7), real WPT CSS subset; fix `border-collapse`, captions, inline-block baseline.
 6. `@font-face` (TTF/OTF first, WOFF/WOFF2 decoders), GIF animation, SVG basics for icons.
 7. Then M8 (forms, cookies, cache, profile storage) and on through M11.
+
+## v0.2 scope (agreed with the maintainer)
+
+v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
+
+* **HTTP/2** — our own framing, HPACK (RFC 7541), stream multiplexing and flow
+  control (RFC 9113), negotiated via ALPN `h2` in rustls. `h2`/`hyper` stay banned.
+* **HTTP/3** — our own QUIC transport (RFC 9000/9001/9002) on top of rustls'
+  QUIC TLS API, QPACK (RFC 9204) and HTTP/3 framing (RFC 9114), discovered via
+  `Alt-Svc`. `quinn`/`quiche`/`h3` stay banned.
+* **Firefox extension parity** — WebExtensions: `manifest.json` (MV2 + MV3),
+  content scripts, background scripts/service workers, `browser.*`/`chrome.*`
+  APIs (tabs, storage, runtime messaging, webRequest, contextMenus, …) on our
+  own JS engine (M10), `.xpi` installation, an add-ons manager page.

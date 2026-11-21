@@ -103,6 +103,12 @@ pub enum Item {
     PopClip,
     PushOpacity(f32),
     PopOpacity,
+    /// A nested document (iframe / frame) drawn by the caller of
+    /// [`render_with`]; `id` identifies the frame to its owner.
+    SubDocument {
+        rect: Rect,
+        id: u32,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -126,8 +132,31 @@ fn shade(c: Color, f: f32) -> Color {
 }
 
 /// Replay `list` onto `canvas`: CSS px → device px with `scale`, after
-/// translating by `(-scroll_x, -scroll_y)`.
+/// translating by `(-scroll_x, -scroll_y)`. Sub-documents are skipped.
 pub fn render<C: Canvas + ?Sized>(list: &DisplayList, canvas: &mut C, scroll: (f32, f32), scale: f32) {
+    render_with(list, canvas, scroll, scale, &mut |_, _| {});
+}
+
+/// Where a nested document should be drawn: the clip is already pushed.
+#[derive(Debug, Clone, Copy)]
+pub struct SubDocumentPlacement {
+    pub id: u32,
+    /// The frame's rect in device px (already clipped to by the canvas).
+    pub device_rect: Rect,
+    /// Scroll offset to pass to the nested document's own `render` so that
+    /// its origin lands on the frame's top-left corner.
+    pub scroll: (f32, f32),
+    pub scale: f32,
+}
+
+/// Like [`render`], calling `sub` for each [`Item::SubDocument`] in paint order.
+pub fn render_with<C: Canvas + ?Sized>(
+    list: &DisplayList,
+    canvas: &mut C,
+    scroll: (f32, f32),
+    scale: f32,
+    sub: &mut dyn FnMut(&mut C, SubDocumentPlacement),
+) {
     let (sx, sy) = scroll;
     let tr = |r: &Rect| Rect::new((r.x - sx) * scale, (r.y - sy) * scale, r.w * scale, r.h * scale);
     let rad = |r: &Radii| Radii {
@@ -304,6 +333,20 @@ pub fn render<C: Canvas + ?Sized>(list: &DisplayList, canvas: &mut C, scroll: (f
             Item::PopClip => canvas.pop_clip(),
             Item::PushOpacity(o) => canvas.push_layer(*o),
             Item::PopOpacity => canvas.pop_layer(),
+            Item::SubDocument { rect, id } => {
+                let r = snap(tr(rect));
+                if r.w > 0.0 && r.h > 0.0 && r.intersects(&view) {
+                    canvas.push_clip(r, None);
+                    let placement = SubDocumentPlacement {
+                        id: *id,
+                        device_rect: r,
+                        scroll: (sx - rect.x, sy - rect.y),
+                        scale,
+                    };
+                    sub(canvas, placement);
+                    canvas.pop_clip();
+                }
+            }
         }
     }
 }

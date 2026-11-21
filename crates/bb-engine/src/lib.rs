@@ -6,8 +6,10 @@
 //! turned into the "BannedBrowser hit a snag" page.
 #![forbid(unsafe_code)]
 
+mod frames;
 mod internal;
 
+pub use frames::{ChildFrame, LinkDisposition, LinkHit, MAX_FRAMES, MAX_FRAME_DEPTH};
 pub use internal::{about_handler, error_page_html, snag_page_html};
 
 use bb_css::{MediaContext, MediaQueryList, Rule, Stylesheet};
@@ -32,6 +34,10 @@ pub struct PageConfig {
     /// Overall budget for subresources (stylesheets + images).
     pub subresource_timeout: Duration,
     pub load_images: bool,
+    /// Nesting depth: 0 for a tab's top-level page, +1 per frame.
+    pub frame_depth: u8,
+    /// The frame container's `marginwidth`/`marginheight` (HTML §15.3.3).
+    pub container_margins: (Option<f32>, Option<f32>),
 }
 
 impl Default for PageConfig {
@@ -42,6 +48,8 @@ impl Default for PageConfig {
             no_author_styles: false,
             subresource_timeout: Duration::from_secs(20),
             load_images: true,
+            frame_depth: 0,
+            container_margins: (None, None),
         }
     }
 }
@@ -77,6 +85,10 @@ pub struct Page {
     pub stats: LoadStats,
     /// Set when the page is an internal error page (network / snag).
     pub error: Option<NetError>,
+    /// Child frames (`<frame>` in a frameset, `<iframe>`), in load order.
+    pub frames: Vec<ChildFrame>,
+    /// The `<frameset>` that replaces the body, for frameset documents.
+    pub frameset: Option<NodeId>,
 }
 
 struct PageResources<'a> {
@@ -356,27 +368,6 @@ fn favicon(doc: &Document, base: &Url) -> Option<Url> {
     None
 }
 
-/// HTML frameset fallback (v0.1): frames render as a list of links.
-/// TODO(HTML §15.6): real frame rendering with nested documents.
-fn frameset_fallback(doc: &Document, base: &Url) -> Option<String> {
-    let body = doc.body()?;
-    if !doc.is_html(body, "frameset") {
-        return None;
-    }
-    let mut html = format!("<!DOCTYPE html><html><head><title>{}</title><link rel=stylesheet href=\"about:style.css\"></head><body><main><h1>{}</h1><p>This page uses frames. BannedBrowser doesn't render framesets yet; open a frame:</p><ul>", escape_html(&doc.title()), escape_html(&doc.title()));
-    for f in doc.descendants(body) {
-        if doc.is_html(f, "frame") {
-            if let Some(src) = doc.attr(f, "src") {
-                let u = base.join(src.trim()).map(|u| u.href()).unwrap_or_else(|_| src.to_string());
-                let name = doc.attr(f, "name").unwrap_or(src);
-                html.push_str(&format!("<li><a href=\"{}\">{}</a></li>", escape_html(&u), escape_html(name)));
-            }
-        }
-    }
-    html.push_str("</ul></main></body></html>");
-    Some(html)
-}
-
 fn image_urls(doc: &Document, styles: &StyleMap, base: &Url) -> Vec<Url> {
     let mut out = Vec::new();
     for n in doc.descendants(Document::ROOT) {
@@ -452,10 +443,8 @@ impl Page {
         let mut doc = bb_html::parse_document(html);
         doc.url = url.href();
         let base = base_url(&doc, url);
-        if let Some(fb) = frameset_fallback(&doc, &base) {
-            doc = bb_html::parse_document(&fb);
-            doc.url = url.href();
-        }
+        // HTML §15.6: a frameset document renders its frames instead of a body.
+        let frameset = doc.body().filter(|&b| doc.is_html(b, "frameset"));
         stats.parse_ms = t0.elapsed().as_millis();
         let t1 = Instant::now();
         let deadline = Instant::now() + config.subresource_timeout;
@@ -479,6 +468,7 @@ impl Page {
             prefers_dark: config.prefers_dark,
             no_author_styles: config.no_author_styles,
             min_font_size: 0.0,
+            container_margins: config.container_margins,
         };
         let ts = Instant::now();
         let stylist = Stylist::new(&sheets, media);
@@ -536,8 +526,11 @@ impl Page {
             stats,
             doc,
             error: None,
+            frames: Vec::new(),
+            frameset,
         };
         page.relayout_styles_ready();
+        page.load_frames(client);
         page
     }
 
@@ -555,6 +548,7 @@ impl Page {
             prefers_dark: self.config.prefers_dark,
             no_author_styles: self.config.no_author_styles,
             min_font_size: 0.0,
+            container_margins: self.config.container_margins,
         };
         let ts = Instant::now();
         self.styles = Stylist::new(&self.sheets, media).compute(&self.doc, &env);
@@ -567,8 +561,12 @@ impl Page {
         let res = PageResources { base: &self.base_url, images: &self.images };
         let mut tree = bb_layout::build_tree(&self.doc, &self.styles, &res, self.config.viewport);
         bb_layout::layout(&mut tree);
-        self.display_list = bb_layout::paint::build_display_list(&tree);
+        self.display_list = match self.frameset {
+            Some(fs) => frames::layout_frameset(&self.doc, fs, self.config.viewport),
+            None => bb_layout::paint::build_display_list(&tree),
+        };
         self.layout = tree;
+        self.sync_frames();
         self.stats.layout_ms = tl.elapsed().as_millis();
         self.doc.clear_dirty();
     }
@@ -583,6 +581,9 @@ impl Page {
     }
 
     pub fn set_dark(&mut self, dark: bool) {
+        for f in &mut self.frames {
+            f.page.set_dark(dark);
+        }
         if self.config.prefers_dark != dark {
             self.config.prefers_dark = dark;
             self.restyle();
@@ -596,23 +597,22 @@ impl Page {
 
     /// The link (resolved URL) at a page point, if any.
     pub fn link_at(&self, x: f32, y: f32) -> Option<Url> {
-        let hit = bb_layout::hit_test(&self.layout, x, y);
-        let node = hit.node?;
-        self.link_for_node(node, x, y)
+        self.link_hit_at(x, y).map(|h| h.url)
     }
 
-    fn link_for_node(&self, node: NodeId, x: f32, y: f32) -> Option<Url> {
+    /// The link element (and its resolved URL) containing `node`.
+    fn link_for_node(&self, node: NodeId, x: f32, y: f32) -> Option<(Url, NodeId)> {
         let doc = &self.doc;
         let mut cur = Some(node);
         while let Some(n) = cur {
             if let Some(e) = doc.element(n) {
                 if e.ns == bb_dom::Namespace::Html {
                     if (e.name == "a" || e.name == "area") && e.has_attr("href") {
-                        return self.base_url.join(e.attr("href")?.trim()).ok();
+                        return self.base_url.join(e.attr("href")?.trim()).ok().map(|u| (u, n));
                     }
                     if e.name == "img" {
-                        if let Some(u) = self.image_map_link(n, x, y) {
-                            return Some(u);
+                        if let Some(hit) = self.image_map_link(n, x, y) {
+                            return Some(hit);
                         }
                     }
                 }
@@ -623,7 +623,7 @@ impl Page {
     }
 
     /// Client-side image maps (HTML §4.8.13): `<img usemap>` + `<map>/<area>`.
-    fn image_map_link(&self, img: NodeId, x: f32, y: f32) -> Option<Url> {
+    fn image_map_link(&self, img: NodeId, x: f32, y: f32) -> Option<(Url, NodeId)> {
         let doc = &self.doc;
         let usemap = doc.attr(img, "usemap")?.trim().trim_start_matches('#').to_string();
         let map = doc.descendants(Document::ROOT).find(|&n| {
@@ -670,7 +670,7 @@ impl Page {
             };
             if inside {
                 if let Some(h) = doc.attr(area, "href") {
-                    return self.base_url.join(h.trim()).ok();
+                    return self.base_url.join(h.trim()).ok().map(|u| (u, area));
                 }
                 return None;
             }
@@ -680,6 +680,9 @@ impl Page {
 
     /// Cursor style at a page point.
     pub fn cursor_at(&self, x: f32, y: f32) -> Option<bb_style::Cursor> {
+        if let Some((i, lx, ly)) = self.frame_at(x, y) {
+            return self.frames[i].page.cursor_at(lx, ly);
+        }
         let hit = bb_layout::hit_test(&self.layout, x, y);
         if let Some(n) = hit.node {
             if self.link_for_node(n, x, y).is_some() {
@@ -705,7 +708,7 @@ impl Page {
     pub fn render_into(&self, c: &mut bb_paint::SoftwareCanvas, scroll_y: f32, scale: f32) {
         use bb_paint::Canvas;
         c.clear(self.display_list.background);
-        bb_paint::render(&self.display_list, c, (0.0, scroll_y), scale);
+        self.paint_into(c, (0.0, scroll_y), scale);
     }
 }
 

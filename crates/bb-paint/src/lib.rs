@@ -12,7 +12,9 @@ pub mod path;
 pub mod raster;
 
 pub use canvas::{Canvas, Color, ImageData, Paint, SoftwareCanvas, Stop};
-pub use display::{render, BorderSide, BorderStyle, DisplayList, GlyphRun, Item};
+pub use display::{
+    render, render_with, BorderSide, BorderStyle, DisplayList, GlyphRun, Item, SubDocumentPlacement,
+};
 pub use path::{Path, Point, Radii, Rect};
 
 #[cfg(test)]

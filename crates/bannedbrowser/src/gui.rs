@@ -2,7 +2,7 @@
 //! Proton-style chrome drawn with bb-ui, tabs backed by worker threads.
 
 use crate::cli::{fixup_url, Args};
-use crate::tab::{self, Frame, TabCmd, TabEvent};
+use crate::tab::{self, Frame, LinkOpen, TabCmd, TabEvent};
 use bb_paint::{Canvas, Color, DisplayList, ImageData, Item, Rect, SoftwareCanvas};
 use bb_ui::icons::Icon;
 use bb_ui::textfield::TextField;
@@ -47,6 +47,9 @@ struct Tab {
     secure: bool,
     hover_link: Option<String>,
     pointer: bool,
+    /// Frames received from the worker (test hook for frame scrolling/navigation).
+    frame_renders: u64,
+    frame_titles: Vec<String>,
 }
 
 /// Which chrome element the mouse is over.
@@ -83,9 +86,8 @@ struct BrowserWindow {
     canvas: SoftwareCanvas,
     dirty: bool,
     /// Links to open in background tabs (Ctrl/Cmd+click, middle-click).
-    pending_background: Vec<Url>,
-    /// The next content click should open in a background tab.
-    click_background: bool,
+    /// Tabs requested by link clicks: (url, open in foreground).
+    pending_background: Vec<(Url, bool)>,
     /// When the page was last scrolled (scrollbar visibility).
     last_scroll: Instant,
     /// Dragging the scrollbar thumb: grab offset within the thumb (logical px).
@@ -194,7 +196,6 @@ impl App {
             canvas: SoftwareCanvas::new(size.width.max(1), size.height.max(1)),
             dirty: true,
             pending_background: Vec::new(),
-            click_background: false,
             last_scroll: Instant::now() - Duration::from_secs(10),
             drag_thumb: None,
         };
@@ -240,6 +241,8 @@ impl App {
             secure: false,
             hover_link: None,
             pointer: false,
+            frame_renders: 0,
+            frame_titles: Vec::new(),
         };
         let (vw, vh) = bw.viewport();
         let _ = t.tx.send(TabCmd::Render {
@@ -285,6 +288,9 @@ impl App {
                 v["private"] = serde_json::json!(w.private);
                 v["hover_link"] = serde_json::json!(t.hover_link);
                 v["url_text"] = serde_json::json!(w.url.text);
+                v["frames"] = serde_json::json!(t.frame.as_ref().map_or(0, |f| f.frames.len()));
+                v["frame_titles"] = serde_json::json!(t.frame_titles);
+                v["frame_renders"] = serde_json::json!(t.frame_renders);
                 v["scrollbar_visible"] = serde_json::json!(w.scrollbar().is_some() && w.scrollbar_visible());
                 v["scrollbar_dragging"] = serde_json::json!(w.drag_thumb.is_some());
             }
@@ -395,6 +401,38 @@ impl BrowserWindow {
                 self.request_render();
                 self.dirty = true;
             }
+        }
+    }
+
+    /// Scroll from the wheel or keyboard: child frames under the pointer
+    /// get the scroll first (the tab worker hands it back if they can't).
+    fn scroll_content(&mut self, dy: f32, wheel: bool) {
+        let (mx, my) = self.mouse;
+        let vh = self.viewport().1;
+        let Some(t) = self.tab() else { return };
+        let frames = t.frame.as_ref().map(|f| f.frames.as_slice()).unwrap_or(&[]);
+        if frames.is_empty() || (!wheel && t.content_height > vh + 0.5) {
+            self.scroll_by(dy);
+            return;
+        }
+        let (px, py) = (mx, my - CHROME_H + t.scroll_y);
+        let over = |r: &Rect| px >= r.x && py >= r.y && px < r.right() && py < r.bottom();
+        let point = if my >= CHROME_H && frames.iter().any(over) {
+            Some((px, py))
+        } else if !wheel {
+            // Keyboard in a frameset: scroll the largest frame.
+            frames
+                .iter()
+                .max_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)))
+                .map(|r| (r.x + r.w / 2.0, r.y + r.h / 2.0))
+        } else {
+            None
+        };
+        match point {
+            Some((x, y)) => {
+                let _ = t.tx.send(TabCmd::Wheel { x, y, dy });
+            }
+            None => self.scroll_by(dy),
         }
     }
 
@@ -815,9 +853,10 @@ impl ApplicationHandler<UserEvent> for App {
                     t.hover_link = None;
                     state_changed = true;
                 }
-                TabEvent::Loaded { url, title, content_height, secure } => {
+                TabEvent::Loaded { url, title, content_height, secure, frame_titles } => {
                     let t = &mut bw.tabs[ti];
                     t.loading = false;
+                    t.frame_titles = frame_titles;
                     t.title = title;
                     t.content_height = content_height;
                     t.secure = secure;
@@ -840,6 +879,8 @@ impl ApplicationHandler<UserEvent> for App {
                 TabEvent::Frame(f) => {
                     let t = &mut bw.tabs[ti];
                     t.frame = Some(f);
+                    t.frame_renders += 1;
+                    state_changed = true;
                 }
                 TabEvent::Hover { link, pointer } => {
                     let t = &mut bw.tabs[ti];
@@ -852,16 +893,21 @@ impl ApplicationHandler<UserEvent> for App {
                         bw.window.set_cursor(if pointer { CursorIcon::Pointer } else { CursorIcon::Default });
                     }
                 }
-                TabEvent::Clicked { link } => {
+                TabEvent::Clicked { link, open } => {
                     if let Some(u) = link {
                         if is_active {
-                            if std::mem::take(&mut bw.click_background) || primary(bw.modifiers) {
-                                bw.pending_background.push(u);
-                            } else {
-                                bw.navigate(u);
+                            match open {
+                                LinkOpen::Current => bw.navigate(u),
+                                LinkOpen::BackgroundTab => bw.pending_background.push((u, false)),
+                                LinkOpen::ForegroundTab => bw.pending_background.push((u, true)),
                             }
                             state_changed = true;
                         }
+                    }
+                }
+                TabEvent::WheelUnconsumed { dy } => {
+                    if is_active {
+                        bw.scroll_by(dy);
                     }
                 }
             }
@@ -877,10 +923,16 @@ impl ApplicationHandler<UserEvent> for App {
                 .get_mut(&id)
                 .map(|w| std::mem::take(&mut w.pending_background))
                 .unwrap_or_default();
-            for u in pending {
+            for (u, foreground) in pending {
                 if let Some(mut bw) = self.windows.remove(&id) {
                     let t = self.new_tab(&mut bw, Some(u));
                     bw.tabs.insert(bw.active + 1, t);
+                    if foreground {
+                        bw.active += 1;
+                        bw.sync_url_field();
+                        bw.update_title();
+                        bw.request_render();
+                    }
                     bw.dirty = true;
                     self.windows.insert(id, bw);
                 }
@@ -1014,9 +1066,8 @@ impl ApplicationHandler<UserEvent> for App {
                         } else if tgt == Target::Content {
                             let sy = bw.tab().map(|t| t.scroll_y).unwrap_or(0.0);
                             if let Some(t) = bw.tab() {
-                                let _ = t.tx.send(TabCmd::Click { x, y: y - CHROME_H + sy });
+                                let _ = t.tx.send(TabCmd::Click { x, y: y - CHROME_H + sy, new_tab: true });
                             }
-                            bw.click_background = true;
                         }
                         bw.dirty = true;
                     }
@@ -1030,7 +1081,7 @@ impl ApplicationHandler<UserEvent> for App {
                     MouseScrollDelta::LineDelta(_, y) => -y * 48.0,
                     MouseScrollDelta::PixelDelta(PhysicalPosition { y, .. }) => -(y as f32) / bw.scale(),
                 };
-                bw.scroll_by(dy);
+                bw.scroll_content(dy, true);
                 state_changed = true;
             }
             WindowEvent::Ime(ime) => {
@@ -1149,7 +1200,8 @@ impl App {
                 let (x, y) = bw.mouse;
                 let sy = bw.tab().map(|t| t.scroll_y).unwrap_or(0.0);
                 if let Some(t) = bw.tab() {
-                    let _ = t.tx.send(TabCmd::Click { x, y: y - CHROME_H + sy });
+                    let new_tab = primary(bw.modifiers);
+                    let _ = t.tx.send(TabCmd::Click { x, y: y - CHROME_H + sy, new_tab });
                 }
                 false
             }
@@ -1293,11 +1345,13 @@ impl App {
         // Page scrolling.
         let vh = bw.viewport().1;
         match key {
-            Key::Named(NamedKey::ArrowDown) => bw.scroll_by(48.0),
-            Key::Named(NamedKey::ArrowUp) => bw.scroll_by(-48.0),
-            Key::Named(NamedKey::PageDown) => bw.scroll_by(vh * 0.85),
-            Key::Named(NamedKey::PageUp) => bw.scroll_by(-vh * 0.85),
-            Key::Named(NamedKey::Space) => bw.scroll_by(if shift { -vh * 0.85 } else { vh * 0.85 }),
+            Key::Named(NamedKey::ArrowDown) => bw.scroll_content(48.0, false),
+            Key::Named(NamedKey::ArrowUp) => bw.scroll_content(-48.0, false),
+            Key::Named(NamedKey::PageDown) => bw.scroll_content(vh * 0.85, false),
+            Key::Named(NamedKey::PageUp) => bw.scroll_content(-vh * 0.85, false),
+            Key::Named(NamedKey::Space) => {
+                bw.scroll_content(if shift { -vh * 0.85 } else { vh * 0.85 }, false)
+            }
             Key::Named(NamedKey::Home) => bw.scroll_to(0.0),
             Key::Named(NamedKey::End) => bw.scroll_to(f32::MAX / 4.0),
             Key::Named(NamedKey::Escape) => {

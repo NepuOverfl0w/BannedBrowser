@@ -607,6 +607,11 @@ impl<'a> Painter<'a> {
             }
             Replaced::Control(c) => self.paint_control(c, content, &s),
             Replaced::Svg { .. } => {}
+            Replaced::Frame { .. } => {
+                if let Some(node) = b.node {
+                    self.dl.push(Item::SubDocument { rect: content, id: node.0 });
+                }
+            }
             Replaced::Placeholder { label, .. } => {
                 self.dl.push(Item::Rect { rect: content, color: Color::rgba(128, 128, 128, 30) });
                 if !label.is_empty() {

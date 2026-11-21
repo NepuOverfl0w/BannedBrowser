@@ -113,6 +113,16 @@ fn css_url(v: &str) -> String {
 
 /// Compute the presentational hint declarations for `node`.
 pub fn presentational_hints(doc: &Document, node: NodeId) -> Vec<Declaration> {
+    presentational_hints_in(doc, node, (None, None))
+}
+
+/// Like [`presentational_hints`] for a document shown in a frame whose
+/// container has `marginwidth`/`marginheight` (HTML §15.3.3).
+pub fn presentational_hints_in(
+    doc: &Document,
+    node: NodeId,
+    container_margins: (Option<f32>, Option<f32>),
+) -> Vec<Declaration> {
     let Some(e) = doc.element(node) else { return Vec::new() };
     if e.ns != Namespace::Html {
         return Vec::new();
@@ -163,17 +173,22 @@ pub fn presentational_hints(doc: &Document, node: NodeId) -> Vec<Declaration> {
             if let Some(c) = a("text").and_then(color_css) {
                 add("color", &c);
             }
+            // HTML §15.3.3: the frame container's margins win over the body's own.
             let margin = |n: &str| a(n).and_then(parse_dimension);
-            if let Some(m) = margin("marginheight").or_else(|| margin("topmargin")) {
+            let (cw, ch) = (
+                container_margins.0.map(|v| format!("{v}px")),
+                container_margins.1.map(|v| format!("{v}px")),
+            );
+            if let Some(m) = ch.clone().or_else(|| margin("marginheight")).or_else(|| margin("topmargin")) {
                 add("margin-top", &m);
             }
-            if let Some(m) = margin("marginheight").or_else(|| margin("bottommargin")) {
+            if let Some(m) = ch.or_else(|| margin("marginheight")).or_else(|| margin("bottommargin")) {
                 add("margin-bottom", &m);
             }
-            if let Some(m) = margin("marginwidth").or_else(|| margin("leftmargin")) {
+            if let Some(m) = cw.clone().or_else(|| margin("marginwidth")).or_else(|| margin("leftmargin")) {
                 add("margin-left", &m);
             }
-            if let Some(m) = margin("marginwidth").or_else(|| margin("rightmargin")) {
+            if let Some(m) = cw.or_else(|| margin("marginwidth")).or_else(|| margin("rightmargin")) {
                 add("margin-right", &m);
             }
         }

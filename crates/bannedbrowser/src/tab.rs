@@ -11,9 +11,28 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub enum TabCmd {
     Navigate(Url),
-    Render { viewport: (f32, f32), scale: f32, scroll_y: f32, dark: bool },
-    Hover { x: f32, y: f32 },
-    Click { x: f32, y: f32 },
+    Render {
+        viewport: (f32, f32),
+        scale: f32,
+        scroll_y: f32,
+        dark: bool,
+    },
+    Hover {
+        x: f32,
+        y: f32,
+    },
+    /// `new_tab`: Ctrl/Cmd- or middle-click (open in a background tab).
+    Click {
+        x: f32,
+        y: f32,
+        new_tab: bool,
+    },
+    /// Wheel over a child frame (page coordinates).
+    Wheel {
+        x: f32,
+        y: f32,
+        dy: f32,
+    },
     Shutdown,
 }
 
@@ -24,16 +43,42 @@ pub struct Frame {
     pub w: u32,
     pub h: u32,
     pub scroll_y: f32,
+    /// Child frame rects in page coordinates (wheel events over them go to the tab).
+    pub frames: Vec<bb_paint::Rect>,
+}
+
+/// Where a clicked link should open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkOpen {
+    Current,
+    BackgroundTab,
+    ForegroundTab,
 }
 
 #[derive(Debug, Clone)]
 pub enum TabEvent {
     Started,
-    Loaded { url: Url, title: String, content_height: f32, secure: bool },
+    Loaded {
+        url: Url,
+        title: String,
+        content_height: f32,
+        secure: bool,
+        frame_titles: Vec<String>,
+    },
     Favicon(bb_paint::ImageData),
     Frame(Frame),
-    Hover { link: Option<String>, pointer: bool },
-    Clicked { link: Option<Url> },
+    Hover {
+        link: Option<String>,
+        pointer: bool,
+    },
+    Clicked {
+        link: Option<Url>,
+        open: LinkOpen,
+    },
+    /// No frame could scroll; the main page should.
+    WheelUnconsumed {
+        dy: f32,
+    },
 }
 
 pub type Notify = Box<dyn Fn(u64, TabEvent) + Send>;
@@ -61,7 +106,7 @@ fn worker(id: u64, client: Arc<Client>, rx: Receiver<TabCmd>, notify: Notify) {
             let max_scroll = (page.content_height() - viewport.1).max(0.0);
             let sy = scroll_y.clamp(0.0, max_scroll);
             let c = page.render(sy, scale, w, h);
-            Some(Frame { pixels: Arc::new(c.pixels), w, h, scroll_y: sy })
+            Some(Frame { pixels: Arc::new(c.pixels), w, h, scroll_y: sy, frames: page.frame_rects() })
         };
     while let Ok(cmd) = rx.recv() {
         // Coalesce queued render requests: only the newest matters.
@@ -117,6 +162,7 @@ fn handle(
                     title: p.title.clone(),
                     content_height: p.content_height(),
                     secure: p.secure,
+                    frame_titles: p.frames.iter().map(|f| f.page.title.clone()).collect(),
                 },
             );
             if let Some(f) = render(&mut p, (vw, vh), scale, 0.0, dark) {
@@ -151,9 +197,61 @@ fn handle(
                 notify(id, TabEvent::Hover { link, pointer });
             }
         }
-        TabCmd::Click { x, y } => {
-            let link = page.as_ref().and_then(|p| p.link_at(x, y));
-            notify(id, TabEvent::Clicked { link });
+        TabCmd::Click { x, y, new_tab } => {
+            let Some(p) = page.as_mut() else { return };
+            let Some(hit) = p.link_hit_at(x, y) else {
+                notify(id, TabEvent::Clicked { link: None, open: LinkOpen::Current });
+                return;
+            };
+            if new_tab {
+                notify(id, TabEvent::Clicked { link: Some(hit.url), open: LinkOpen::BackgroundTab });
+                return;
+            }
+            // Frame targets are resolved here; only top-level navigations go to the UI.
+            let frame_target = !hit.frame_path.is_empty() || !hit.target.is_empty();
+            if frame_target {
+                notify(id, TabEvent::Started);
+            }
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| p.follow_link(client, hit)));
+            match r {
+                Ok(bb_engine::LinkDisposition::Top(u)) => {
+                    notify(id, TabEvent::Clicked { link: Some(u), open: LinkOpen::Current })
+                }
+                Ok(bb_engine::LinkDisposition::NewTab(u)) => {
+                    notify(id, TabEvent::Clicked { link: Some(u), open: LinkOpen::ForegroundTab })
+                }
+                Ok(bb_engine::LinkDisposition::Frame) => {}
+                Err(_) => log::error!("tab {id}: frame navigation panicked"),
+            }
+            if frame_target {
+                notify(
+                    id,
+                    TabEvent::Loaded {
+                        url: p.url.clone(),
+                        title: p.title.clone(),
+                        content_height: p.content_height(),
+                        secure: p.secure,
+                        frame_titles: p.frames.iter().map(|f| f.page.title.clone()).collect(),
+                    },
+                );
+                if let Some((vw, vh, scale, sy, dark)) = *last_render {
+                    if let Some(f) = render(p, (vw, vh), scale, sy, dark) {
+                        notify(id, TabEvent::Frame(f));
+                    }
+                }
+            }
+        }
+        TabCmd::Wheel { x, y, dy } => {
+            let Some(p) = page.as_mut() else { return };
+            if p.scroll_frame_at(x, y, dy) {
+                if let Some((vw, vh, scale, sy, dark)) = *last_render {
+                    if let Some(f) = render(p, (vw, vh), scale, sy, dark) {
+                        notify(id, TabEvent::Frame(f));
+                    }
+                }
+            } else {
+                notify(id, TabEvent::WheelUnconsumed { dy });
+            }
         }
         TabCmd::Shutdown => {}
     }
