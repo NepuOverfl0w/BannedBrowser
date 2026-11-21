@@ -104,6 +104,9 @@ start_browser() {
     if [ "$GUI_OS" = windows ] && [ -r "/proc/$BB_PID/winpid" ]; then BB_OS_PID=$(cat "/proc/$BB_PID/winpid"); fi
     wait_state '.windows >= 1 and .win_x != None'
     activate_window
+    # Start with the pointer inside the page, never over window controls (on macOS, hovering
+    # the green button opens a popover that takes the keyboard).
+    mouse_move 400 300
   fi
   sleep 0.5
 }

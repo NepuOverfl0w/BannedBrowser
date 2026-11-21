@@ -210,6 +210,9 @@ func run(_ args: [String]) throws {
         let release = CGEvent(keyboardEventSource: nil, virtualKey: 58, keyDown: false)
         release?.flags = []
         try post(release)
+        // Don't leave the pointer on the green button: hovering there opens macOS's window
+        // tiling popover, which takes the keyboard.
+        try mouse(.mouseMoved, CGPoint(x: center.x + 300, y: center.y + 300), .left)
     default:
         throw DriverError(description: "unknown command \(cmd)")
     }
