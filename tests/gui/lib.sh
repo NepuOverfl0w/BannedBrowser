@@ -112,6 +112,7 @@ activate_window() {
   case "$GUI_OS" in
     x11) xdotool windowactivate --sync "$WID" 2>/dev/null || true ;;
     *)
+      WAIT_TRIES=1 wait_state '.has_focus == true' && return 0
       drv activate "$BB_OS_PID"
       WAIT_TRIES=50 wait_state '.has_focus == true' || fail "the browser window did not get the focus"
       ;;

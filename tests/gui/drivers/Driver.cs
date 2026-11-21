@@ -43,6 +43,12 @@ static class Driver
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hwnd, int cmd);
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int w, int h, uint flags);
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
+    delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc proc, IntPtr lParam);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr hwnd, uint cmd);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
 
     const uint INPUT_MOUSE = 0, INPUT_KEYBOARD = 1;
     const uint MOUSEEVENTF_MOVE = 0x1, MOUSEEVENTF_LEFTDOWN = 0x2, MOUSEEVENTF_LEFTUP = 0x4;
@@ -148,16 +154,32 @@ static class Driver
         }
     }
 
+    // The process's window to act on: its foreground window if it has one, else its first
+    // visible, unowned top-level window. (Process.MainWindowHandle proved unreliable.)
     static IntPtr MainWindow(int pid)
     {
         for (int i = 0; i < 50; i++)
         {
-            Process p = Process.GetProcessById(pid);
-            p.Refresh();
-            if (p.MainWindowHandle != IntPtr.Zero) return p.MainWindowHandle;
+            IntPtr fg = GetForegroundWindow();
+            uint fgPid;
+            GetWindowThreadProcessId(fg, out fgPid);
+            if (fg != IntPtr.Zero && fgPid == (uint)pid) return fg;
+            IntPtr found = IntPtr.Zero;
+            EnumWindows(delegate (IntPtr hwnd, IntPtr lParam)
+            {
+                uint wp;
+                GetWindowThreadProcessId(hwnd, out wp);
+                if (wp == (uint)pid && IsWindowVisible(hwnd) && GetWindow(hwnd, 4 /* GW_OWNER */) == IntPtr.Zero)
+                {
+                    found = hwnd;
+                    return false;
+                }
+                return true;
+            }, IntPtr.Zero);
+            if (found != IntPtr.Zero) return found;
             Thread.Sleep(100);
         }
-        throw new Exception("process " + pid + " has no main window");
+        throw new Exception("process " + pid + " has no visible top-level window");
     }
 
     static void Activate(int pid)
