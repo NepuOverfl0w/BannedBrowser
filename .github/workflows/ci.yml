@@ -129,5 +129,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -la dist
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "$(cat title.txt)" --notes-file notes.md --verify-tag
+          # The tag may come from `git push` or from GitHub's "Draft a new release"
+          # page; in the second case the release already exists, so fill it in.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "$(cat title.txt)" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --title "$(cat title.txt)" --notes-file notes.md --verify-tag
+          fi
