@@ -8,7 +8,7 @@ _Last updated: 2026-11-21 (session 1)._
 |---|---|---|
 | M0 Scaffold | ✅ done | workspace, check-deps, CI workflow, docs, headless PNG, window under Xvfb + Fluxbox |
 | M1 URL + networking | ✅ done | 904/904 WPT urltestdata; HTTP/1.1 + TLS + proxies + codings + redirects; 16 integration tests |
-| M2 HTML | ✅ done | tokenizer 99.60 %, tree construction 99.72 % (html5lib-tests) |
+| M2 HTML | ✅ done | tokenizer 100 % (html5lib-tests), tree construction 99.74 % (WPT); processing instructions; lone surrogates in the tokenizer |
 | M3 CSS + style | 🚧 mostly | parser, selectors, cascade, var(), calc(), media, UA sheet, presentational hints; see gaps |
 | M4 Layout I | 🚧 mostly | block/inline/floats/tables/flex(basic)/positioned/replaced; see gaps |
 | M5 Paint | 🚧 mostly | AA rasterizer, borders, gradients, shadows, clips, opacity, glyph cache; 48 reftests |
@@ -22,7 +22,7 @@ _Last updated: 2026-11-21 (session 1)._
 |---|---|
 | WPT `url/resources/urltestdata.json` | **904 / 904 (100.0 %)** |
 | html5lib tokenizer (HEAD `c5495c5`) | **7018 / 7046 (99.60 %)**, nothing skipped (lone-surrogate cases run since session 2) |
-| html5lib tree-construction (pinned `224991e~1`) | **1779 / 1784 (99.72 %)**, 8 `#script-on` cases excluded |
+| Tree construction, WPT `html/syntax/parsing/resources` (pinned `9986bb3`, 2026-11-21) | **1954 / 1959 (99.74 %)**; 14 `#script-on` cases not run yet (need JS, milestone E) |
 | Reftests (`tests/reftests`) | **48 / 48** |
 | Snapshot regressions (`tests/pages/snapshots`) | 12 pages (example.com ×2, theoldnet ×2, myip.wtf, 5 archived sites, retro, frames), pass on the approved font set |
 | `cargo test --workspace` | 119 test functions, 0 failures |
@@ -31,8 +31,9 @@ _Last updated: 2026-11-21 (session 1)._
 | Cross targets | `cargo clippy --target x86_64-pc-windows-gnu -D warnings` ✅ and Windows release `.exe` builds; `cargo check --target aarch64-apple-darwin` ✅ for every crate except those linking `ring` (see gaps) |
 
 ### Failing / excluded spec cases
-* **Tokenizer (28):** all are `<?…>` processing-instruction tests added to html5lib-tests on 2026-09-29 (a newer spec change). The pinned tree-construction snapshot still expects the old bogus-comment behaviour, so PIs are not implemented yet.
+* **Tokenizer:** none (7046 / 7046). Processing instructions (HTML §13.2.5.72–76) and lone surrogates are implemented.
 * **Tree construction (5):** 4 × `<selectedcontent>` mirroring (customizable `<select>`; needs DOM option-insertion steps, not parser work) and `<font><select><option>a</option></font></select>` (adoption agency interaction with select).
+* **Not run yet:** 14 `#script-on` tree cases (8 in `tests*.dat`/`webkit02.dat`, 6 in `scripted_*.dat`); they need our JS engine (milestone E).
 
 ## Real sites checked (headless + GUI, 2026-11-21)
 
@@ -136,8 +137,8 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
 
 * **No excluded test cases** (maintainer, 2026-11-21). Every suite runs in full on every OS. Today's exclusions, each to be removed:
   - ~~**html5lib tokenizer, 4 lone-surrogate cases skipped.**~~ Done (session 2): the tokenizer takes WTF-8 input (`bb-str`) and keeps lone surrogates in its tokens; all 4 run and pass. Still open for E: the DOM stores UTF-8, so the tree builder replaces lone surrogates with U+FFFD on insertion; DOM strings must become WTF-8 for JS and `document.write`.
-  - **html5lib tree construction, 8 `#script-on` cases excluded.** Run them with the scripting flag on once our JS engine (M10) exists.
-  - **Tree construction is pinned to html5lib-tests `224991e~1`.** Switch to the current tests (they now live in WPT). That brings in processing instructions and `<selectedcontent>`, both of which fail today.
+  - **Tree construction, 14 `#script-on` cases not run** (8 old ones plus 6 in WPT's `scripted_*.dat`). Run them with the scripting flag on once our JS engine exists (milestone E).
+  - ~~**Tree construction is pinned to html5lib-tests `224991e~1`.**~~ Done (session 2): the suite now comes from WPT (`html/syntax/parsing/resources`, pinned to a WPT commit for reproducibility). That brought in processing instructions (now implemented), `#description` records, the new frameset-ok reset when `<body>` is inserted implicitly, and "parsing template contents" for the form element pointer (both fixed).
   - **Snapshot regressions are skipped when the font set differs** (every non-Linux runner). Bundle open-licensed test fonts so snapshots render identically on Linux, Windows and macOS.
   - **GUI tests run only on Linux.** Add a GUI test driver for Windows and macOS. Decided: real
     OS-level input on every OS (xdotool on Linux, SendInput via PowerShell on Windows, CGEvent /
@@ -147,9 +148,9 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
 * **All tests pass** (maintainer, 2026-11-21). v0.2 ships only with 100 % of every suite passing.
   - The pass-rate floors (URL 95 %, tokenizer 98 %, tree 90 %) become 100 %.
   - Known failures to fix:
-    - **html5lib tokenizer, 28 cases:** `<?…>` processing instructions (newer spec).
-    - **html5lib tree construction, 5 cases:** 4 × `<selectedcontent>` mirroring, plus `<font><select><option>` with the adoption agency algorithm.
-    - Plus whatever the un-pinned and newly included suites (WPT tree construction, `#script-on`, lone surrogates) reveal.
+    - ~~**html5lib tokenizer, 28 cases:** `<?…>` processing instructions.~~ Done (session 2); the tokenizer floor is 100 %.
+    - **Tree construction, 5 cases:** 4 × `<selectedcontent>` mirroring, plus `<font><select><option>` with the adoption agency algorithm.
+    - Plus whatever `#script-on` reveals once it runs (milestone E).
 * **About window** (requested by the maintainer), inspired by Firefox's "About" dialog but with original branding only:
   - A small, non-resizable window, opened from ≡ menu → Help → About BannedBrowser (on macOS, the app menu).
   - BannedBrowser logo and wordmark, the version and architecture (e.g. "0.2.0 (64-bit)"), and the release name.

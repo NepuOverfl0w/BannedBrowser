@@ -1,16 +1,17 @@
-//! html5lib-tests conformance (fetched by `scripts/fetch-spec-tests.sh`).
+//! HTML parser conformance (suites fetched by `scripts/fetch-spec-tests.sh`).
 //!
-//! * Tokenizer: compares token streams (parse *errors* are not compared).
-//! * Tree construction: compares the html5lib tree dump. `#script-on` cases
-//!   are excluded because BannedBrowser parses with scripting disabled.
+//! * Tokenizer: html5lib-tests; compares token streams (parse *errors* are not compared).
+//! * Tree construction: WPT `html/syntax/parsing/resources/*.dat` (the tests moved there from
+//!   html5lib-tests); compares the html5lib tree dump. `#script-on` cases need our JS engine
+//!   (milestone E) and are not run yet; they are counted and reported.
 
 use bb_html::tokenizer::{RawToken, State, Token, Tokenizer};
 use bb_str::Wtf8Buf;
 use serde_json::Value;
 use std::path::PathBuf;
 
-fn suite_dir() -> PathBuf {
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../third_party/html5lib-tests");
+fn third_party(rel: &str) -> PathBuf {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../third_party").join(rel);
     assert!(p.is_dir(), "{} missing: run scripts/fetch-spec-tests.sh", p.display());
     p
 }
@@ -80,6 +81,9 @@ fn tokens_to_json(tokens: &[RawToken]) -> Vec<Value> {
             }
             Token::EndTag(tag) => serde_json::json!(["EndTag", e(&tag.name)]),
             Token::Comment(c) => serde_json::json!(["Comment", e(c)]),
+            Token::ProcessingInstruction { target, data } => {
+                serde_json::json!(["ProcessingInstruction", e(target), e(data)])
+            }
             Token::Characters(s) => serde_json::json!(["Character", e(s)]),
             Token::Eof => continue,
         };
@@ -127,7 +131,7 @@ fn expected_value(v: &Value, double: bool) -> Value {
 
 #[test]
 fn html5lib_tokenizer() {
-    let dir = suite_dir().join("tokenizer");
+    let dir = third_party("html5lib-tests/tokenizer");
     let (mut pass, mut total) = (0, 0);
     let mut failures = Vec::new();
     let mut files: Vec<_> =
@@ -190,7 +194,7 @@ fn html5lib_tokenizer() {
     let rate = pass as f64 * 100.0 / total as f64;
     println!("html5lib tokenizer: {pass}/{total} passed ({rate:.2}%)");
     assert!(!failures.iter().any(|f| f.starts_with("PANIC")), "tokenizer panicked");
-    assert!(rate >= 98.0, "tokenizer pass rate {rate:.2}% below 98%");
+    assert!(failures.is_empty(), "{} tokenizer cases failed (v0.2 requires 100 %)", failures.len());
 }
 
 // ---------------- tree construction ----------------
@@ -221,7 +225,7 @@ fn parse_dat(file: &str, text: &str) -> Vec<TreeTest> {
         let mut fragment = None;
         let mut script = None;
         let mut document = Vec::new();
-        while i < lines.len() && lines[i] != "#data" {
+        while i < lines.len() && lines[i] != "#data" && lines[i] != "#description" {
             match lines[i] {
                 "#errors" | "#new-errors" => {
                     i += 1;
@@ -242,17 +246,24 @@ fn parse_dat(file: &str, text: &str) -> Vec<TreeTest> {
                     i += 1;
                 }
                 "#document" => {
+                    // The tree runs until a blank line before the next record, which starts
+                    // with `#data` or (WPT) an optional `#description`.
+                    let next_record = |l: &str| l == "#data" || l == "#description";
                     i += 1;
                     while i < lines.len() {
-                        if lines[i] == "#data" {
+                        if next_record(lines[i]) {
                             break;
                         }
-                        if lines[i].is_empty() && (i + 1 >= lines.len() || lines[i + 1] == "#data") {
+                        if lines[i].is_empty() && (i + 1 >= lines.len() || next_record(lines[i + 1])) {
                             i += 1;
                             break;
                         }
                         document.push(lines[i]);
                         i += 1;
+                    }
+                    // Blank separator lines at the end of a file aren't part of the tree.
+                    while document.last() == Some(&"") {
+                        document.pop();
                     }
                 }
                 _ => i += 1,
@@ -289,7 +300,7 @@ fn run_tree_test(t: &TreeTest) -> String {
 
 #[test]
 fn html5lib_tree_construction() {
-    let dir = suite_dir().join("tree-construction");
+    let dir = third_party("wpt/html/syntax/parsing/resources");
     let mut files: Vec<_> =
         std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).collect();
     files.sort();
@@ -336,7 +347,7 @@ fn html5lib_tree_construction() {
         }
     }
     let rate = pass as f64 * 100.0 / total as f64;
-    println!("html5lib tree-construction: {pass}/{total} passed ({rate:.2}%), {script_on} #script-on cases excluded");
+    println!("tree construction (WPT): {pass}/{total} passed ({rate:.2}%), {script_on} #script-on cases not run (need JS, milestone E)");
     assert!(!failures.iter().any(|f| f.starts_with("PANIC")), "tree builder panicked");
     assert!(rate >= 90.0, "tree-construction pass rate {rate:.2}% below 90%");
 }

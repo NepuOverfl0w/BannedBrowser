@@ -50,10 +50,18 @@ enum Tok {
     Doctype(Doctype),
     Start(Tag),
     End(Tag),
-    Comment(String),
+    /// A comment or a processing instruction: every insertion mode handles them in the same
+    /// place ("insert a comment" / "insert a processing instruction").
+    Comment(CommentLike),
     /// A run of characters that are all NUL, all whitespace, or all "other".
     Chars(String),
     Eof,
+}
+
+#[derive(Clone, Debug)]
+enum CommentLike {
+    Comment(String),
+    ProcessingInstruction { target: String, data: String },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -298,7 +306,10 @@ impl TreeBuilder {
                     Token::Doctype(d) => Tok::Doctype(d),
                     Token::StartTag(t) => Tok::Start(t),
                     Token::EndTag(t) => Tok::End(t),
-                    Token::Comment(c) => Tok::Comment(c),
+                    Token::Comment(c) => Tok::Comment(CommentLike::Comment(c)),
+                    Token::ProcessingInstruction { target, data } => {
+                        Tok::Comment(CommentLike::ProcessingInstruction { target, data })
+                    }
                     Token::Eof => Tok::Eof,
                     Token::Characters(_) => unreachable!("handled above"),
                 };
@@ -599,9 +610,15 @@ impl TreeBuilder {
         }
     }
 
-    fn insert_comment(&mut self, text: &str, location: Option<(NodeId, Option<NodeId>)>) {
+    /// HTML §13.2.6.1 "insert a comment" / "insert a processing instruction".
+    fn insert_comment(&mut self, c: &CommentLike, location: Option<(NodeId, Option<NodeId>)>) {
         let loc = location.unwrap_or_else(|| self.insertion_location(None));
-        let c = self.doc.create_comment(text);
+        let c = match c {
+            CommentLike::Comment(text) => self.doc.create_comment(text),
+            CommentLike::ProcessingInstruction { target, data } => {
+                self.doc.create_processing_instruction(target, data)
+            }
+        };
         self.insert_at(loc, c);
     }
 
@@ -1142,6 +1159,13 @@ impl TreeBuilder {
         }
     }
 
+    /// HTML §13.2.4.4: the parser is "parsing template contents" if there is a template element
+    /// on the stack of open elements, or the fragment context element is a template element.
+    fn parsing_template_contents(&self) -> bool {
+        self.open.iter().any(|&n| self.is_html(n, "template"))
+            || self.context.is_some_and(|c| self.is_html(c, "template"))
+    }
+
     // §13.2.6.4.6
     fn mode_after_head(&mut self, tok: Tok) {
         match tok {
@@ -1182,12 +1206,17 @@ impl TreeBuilder {
             Tok::End(ref t) if t.name == "template" => self.mode_in_head(tok),
             Tok::End(ref t) if matches!(t.name.as_str(), "body" | "html" | "br") => {
                 self.insert_html_named("body");
+                self.frameset_ok = true;
                 self.reprocess(M::InBody, tok);
             }
             Tok::Start(ref t) if t.name == "head" => self.error(),
             Tok::End(_) => self.error(),
             other => {
+                // "Insert an HTML element for a "body" start tag token with no attributes. Set
+                // the frameset-ok flag to "ok"." (tokens seen in the head, such as a template,
+                // don't block a later frameset).
                 self.insert_html_named("body");
+                self.frameset_ok = true;
                 self.reprocess(M::InBody, other);
             }
         }
@@ -1286,8 +1315,8 @@ impl TreeBuilder {
                 self.frameset_ok = false;
             }
             "form" => {
-                let has_template = self.open.iter().any(|&n| self.is_html(n, "template"));
-                if self.form.is_some() && !has_template {
+                let in_template = self.parsing_template_contents();
+                if self.form.is_some() && !in_template {
                     self.error();
                     return;
                 }
@@ -1295,7 +1324,7 @@ impl TreeBuilder {
                     self.close_p();
                 }
                 let el = self.insert_html(&t);
-                if !has_template {
+                if !in_template {
                     self.form = Some(el);
                 }
             }
@@ -1576,7 +1605,7 @@ impl TreeBuilder {
                 self.pop_until(name);
             }
             "form" => {
-                if !self.open.iter().any(|&n| self.is_html(n, "template")) {
+                if !self.parsing_template_contents() {
                     let node = self.form.take();
                     let Some(node) = node.filter(|&n| self.in_scope_node(n)) else {
                         self.error();
@@ -1756,11 +1785,14 @@ impl TreeBuilder {
                 }
                 "form" => {
                     self.error();
-                    if self.open.iter().any(|&n| self.is_html(n, "template")) || self.form.is_some() {
+                    let in_template = self.parsing_template_contents();
+                    if self.form.is_some() && !in_template {
                         return;
                     }
                     let el = self.insert_html(t);
-                    self.form = Some(el);
+                    if !in_template {
+                        self.form = Some(el);
+                    }
                     self.pop();
                 }
                 _ => self.in_table_anything_else(tok),

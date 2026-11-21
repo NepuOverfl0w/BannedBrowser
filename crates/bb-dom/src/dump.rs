@@ -32,6 +32,7 @@ fn dump_node(doc: &Document, id: NodeId, depth: usize, out: &mut String) {
         }
         NodeData::Text(t) => out.push_str(&format!("\"{t}\"\n")),
         NodeData::Comment(t) => out.push_str(&format!("<!-- {t} -->\n")),
+        NodeData::ProcessingInstruction { target, data } => out.push_str(&format!("<?{target} {data}?>\n")),
         NodeData::Element(e) => {
             match e.ns {
                 Namespace::Svg => out.push_str(&format!("<svg {}>\n", e.name)),
@@ -104,6 +105,8 @@ fn ser(doc: &Document, id: NodeId, out: &mut String) {
         }
         NodeData::Doctype { name, .. } => out.push_str(&format!("<!DOCTYPE {name}>")),
         NodeData::Comment(t) => out.push_str(&format!("<!--{t}-->")),
+        // HTML §13.3 serialization: "<?", target, U+0020 SPACE, data, "?>".
+        NodeData::ProcessingInstruction { target, data } => out.push_str(&format!("<?{target} {data}?>")),
         NodeData::Text(t) => {
             let raw = doc.parent(id).and_then(|p| doc.element(p)).is_some_and(|e| {
                 e.ns == Namespace::Html

@@ -41,6 +41,11 @@ pub enum Token<S = String> {
     StartTag(Tag<S>),
     EndTag(Tag<S>),
     Comment(S),
+    /// HTML §13.2.5 processing instruction token: a target and data.
+    ProcessingInstruction {
+        target: S,
+        data: S,
+    },
     Characters(S),
     Eof,
 }
@@ -67,6 +72,9 @@ impl RawToken {
             Token::StartTag(t) => Token::StartTag(tag(t)),
             Token::EndTag(t) => Token::EndTag(tag(t)),
             Token::Comment(c) => Token::Comment(s(c)),
+            Token::ProcessingInstruction { target, data } => {
+                Token::ProcessingInstruction { target: s(target), data: s(data) }
+            }
             Token::Characters(c) => Token::Characters(s(c)),
             Token::Eof => Token::Eof,
         }
@@ -152,6 +160,11 @@ pub enum State {
     CdataSection,
     CdataSectionBracket,
     CdataSectionEnd,
+    ProcessingInstructionOpen,
+    ProcessingInstructionTarget,
+    AfterProcessingInstructionTarget,
+    ProcessingInstructionData,
+    ProcessingInstructionQuestionable,
     CharacterReference,
     NamedCharacterReference,
     AmbiguousAmpersand,
@@ -185,6 +198,8 @@ pub struct Tokenizer {
     attr_value: Wtf8Buf,
     attr_active: bool,
     comment: Wtf8Buf,
+    /// The current processing instruction token (target, data).
+    pi: Option<(Wtf8Buf, Wtf8Buf)>,
     doctype: Doctype<Wtf8Buf>,
     temp: Wtf8Buf,
     char_ref_code: u32,
@@ -243,6 +258,7 @@ impl Tokenizer {
             attr_value: Wtf8Buf::new(),
             attr_active: false,
             comment: Wtf8Buf::new(),
+            pi: None,
             doctype: Doctype::default(),
             temp: Wtf8Buf::new(),
             char_ref_code: 0,
@@ -405,6 +421,20 @@ impl Tokenizer {
         }
     }
 
+    /// "Convert the temporary buffer to a comment": a comment token whose data is "?" followed
+    /// by the temporary buffer (an invalid processing instruction becomes a bogus comment).
+    fn temp_to_comment(&mut self) {
+        self.comment = Wtf8Buf::from("?");
+        let t = std::mem::take(&mut self.temp);
+        self.comment.push_wtf8(&t);
+    }
+
+    fn emit_pi(&mut self) {
+        if let Some((target, data)) = self.pi.take() {
+            self.emit(Token::ProcessingInstruction { target, data });
+        }
+    }
+
     fn emit_comment(&mut self) {
         let c = std::mem::take(&mut self.comment);
         self.emit(Token::Comment(c));
@@ -549,10 +579,8 @@ impl Tokenizer {
                         self.state = S::TagName;
                     }
                     Some('?') => {
-                        self.error();
-                        self.comment.clear();
-                        self.reconsume(c);
-                        self.state = S::BogusComment;
+                        self.temp.clear();
+                        self.state = S::ProcessingInstructionOpen;
                     }
                     None => {
                         self.error();
@@ -1098,6 +1126,109 @@ impl Tokenizer {
                         self.error();
                         self.reconsume(c);
                         self.state = S::BeforeAttributeName;
+                    }
+                }
+            }
+            // HTML §13.2.5.72 processing instruction open state.
+            S::ProcessingInstructionOpen => {
+                let c = self.consume();
+                match c {
+                    Some(ch) if ch.is_ascii_alphabetic() || ch == '_' => {
+                        self.reconsume(c);
+                        self.state = S::ProcessingInstructionTarget;
+                    }
+                    None => {
+                        self.error(); // eof-in-processing-instruction
+                        self.emit_eof();
+                    }
+                    Some(_) => {
+                        self.error(); // invalid-first-character-of-processing-instruction-target
+                        self.temp_to_comment();
+                        self.reconsume(c);
+                        self.state = S::BogusComment;
+                    }
+                }
+            }
+            // HTML §13.2.5.73 processing instruction target state.
+            S::ProcessingInstructionTarget => {
+                let c = self.consume();
+                match c {
+                    Some(ch) if is_ascii_ws(ch) || ch == '?' || ch == '>' => {
+                        let lower = self.temp.as_str().map(str::to_ascii_lowercase);
+                        if matches!(lower.as_deref(), Some("xml" | "xml-stylesheet")) {
+                            self.error(); // disallowed-processing-instruction-target
+                            self.temp_to_comment();
+                            self.reconsume(c);
+                            self.state = S::BogusComment;
+                        } else {
+                            let target = std::mem::take(&mut self.temp);
+                            self.pi = Some((target, Wtf8Buf::new()));
+                            self.reconsume(c);
+                            self.state = S::AfterProcessingInstructionTarget;
+                        }
+                    }
+                    Some(ch) if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' => self.temp.push(ch),
+                    None => {
+                        self.error(); // eof-in-processing-instruction
+                        self.emit_eof();
+                    }
+                    Some(_) => {
+                        self.error(); // invalid-processing-instruction-target
+                        self.temp_to_comment();
+                        self.reconsume(c);
+                        self.state = S::BogusComment;
+                    }
+                }
+            }
+            // HTML §13.2.5.74 after processing instruction target state.
+            S::AfterProcessingInstructionTarget => {
+                let c = self.consume();
+                match c {
+                    Some(ch) if is_ascii_ws(ch) => {}
+                    _ => {
+                        self.reconsume(c);
+                        self.state = S::ProcessingInstructionData;
+                    }
+                }
+            }
+            // HTML §13.2.5.75 processing instruction data state.
+            S::ProcessingInstructionData => match self.consume() {
+                Some('?') => self.state = S::ProcessingInstructionQuestionable,
+                Some('>') => {
+                    self.state = S::Data;
+                    self.emit_pi();
+                }
+                None => {
+                    self.error(); // eof-in-processing-instruction
+                    self.pi = None;
+                    self.emit_eof();
+                }
+                Some(c) => {
+                    let cp = self.cur(c);
+                    if let Some((_, data)) = &mut self.pi {
+                        data.push_code_point(cp);
+                    }
+                }
+            },
+            // HTML §13.2.5.76 processing instruction questionable state.
+            S::ProcessingInstructionQuestionable => {
+                let c = self.consume();
+                match c {
+                    Some('>') => {
+                        self.state = S::Data;
+                        self.emit_pi();
+                    }
+                    None => {
+                        self.error(); // eof-in-processing-instruction
+                        self.pi = None;
+                        self.emit_eof();
+                    }
+                    Some(_) => {
+                        if let Some((_, data)) = &mut self.pi {
+                            data.push('?');
+                        }
+                        self.reconsume(c);
+                        self.state = S::ProcessingInstructionData;
                     }
                 }
             }

@@ -22,6 +22,15 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 - **HTML tokenizer:** input is a sequence of code points that may include lone surrogates
   (HTML §13.2.3.5), via the new `bb-str` crate's WTF-8 strings. Surrogates are kept in every
   token; the html5lib tokenizer suite now runs without skipping any case.
+- **Processing instructions** (`<?target data?>`, HTML §13.2.5.72–76): tokenized, inserted as
+  `ProcessingInstruction` DOM nodes wherever comments go, and serialized as `<?target data?>`.
+  Invalid or `xml`/`xml-stylesheet` targets still become bogus comments. Tokenizer: 7046/7046.
+
+### Fixed
+- `<frameset>` after a `<template>` in the head: implicitly inserting `<body>` resets the
+  frameset-ok flag (current spec).
+- `<form>` inside template contents, including `template` fragments: the form element pointer
+  follows the spec's "parsing template contents" (template on the stack, or a template context).
 
 ### Changed
 - `about:bannedbrowser` matches the README: tagline, what we wrote ourselves, the name's origin
@@ -31,6 +40,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 - Version is `0.2.0-dev` on `main`.
 
 ### Development
+- Tree-construction tests come from WPT (`html/syntax/parsing/resources`, where they moved from
+  html5lib-tests), pinned to a WPT commit; 1954/1959 pass. The tokenizer suite must pass 100 %.
 - Ready for a public repository: `SECURITY.md` (private vulnerability reporting),
   `CODE_OF_CONDUCT.md`, issue templates (bug, website compatibility, feature) and a pull
   request template; `docs/CONTRIBUTING.md` now covers setup per OS, every test layer, and

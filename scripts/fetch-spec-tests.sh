@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Fetch the external conformance suites into third_party/ (git-ignored).
-#   - html5lib-tests: tokenizer tests from HEAD, tree-construction tests from the
-#     last commit before they moved to WPT (224991e^).
+#   - html5lib-tests: tokenizer tests (HEAD).
+#   - WPT html/syntax/parsing/resources/*.dat: the tree-construction tests, which moved
+#     from html5lib-tests to WPT in 2026. Pinned to WPT_COMMIT for reproducible runs; bump
+#     it deliberately and fix what the new tests reveal.
 #   - WPT url/resources/urltestdata.json
 #   - WHATWG entities.json (used to regenerate the named character reference table)
 set -euo pipefail
@@ -13,10 +15,16 @@ cd "$TP"
 if [ ! -d html5lib-tests/.git ]; then
   git clone -q --depth 40 https://github.com/html5lib/html5lib-tests html5lib-tests
 fi
-TREE_COMMIT="224991e~1"
-if [ ! -d html5lib-tests/tree-construction ]; then
-  (cd html5lib-tests && git fetch -q --depth 40 origin master || true
-   git archive "$TREE_COMMIT" tree-construction | tar -x)
+
+WPT_COMMIT="9986bb32c9e97707eff870ab284ebc5cc7ae8d21" # 2026-11-21
+if [ "$(git -C wpt rev-parse HEAD 2>/dev/null || true)" != "$WPT_COMMIT" ]; then
+  rm -rf wpt
+  git init -q wpt
+  (cd wpt
+   git remote add origin https://github.com/web-platform-tests/wpt
+   git sparse-checkout set --no-cone /html/syntax/parsing/resources/
+   git fetch -q --depth 1 --filter=blob:none origin "$WPT_COMMIT"
+   git -c advice.detachedHead=false checkout -q FETCH_HEAD)
 fi
 
 mkdir -p wpt-url

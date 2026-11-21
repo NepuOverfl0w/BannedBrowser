@@ -117,10 +117,19 @@ impl ElementData {
 pub enum NodeData {
     Document,
     DocumentFragment,
-    Doctype { name: String, public_id: String, system_id: String },
+    Doctype {
+        name: String,
+        public_id: String,
+        system_id: String,
+    },
     Element(ElementData),
     Text(String),
     Comment(String),
+    /// DOM §4.13 `ProcessingInstruction`: a target name and data (a character-data node).
+    ProcessingInstruction {
+        target: String,
+        data: String,
+    },
 }
 
 bitflags! {
@@ -266,6 +275,10 @@ impl Document {
 
     pub fn create_comment(&mut self, text: &str) -> NodeId {
         self.alloc(NodeData::Comment(text.to_string()))
+    }
+
+    pub fn create_processing_instruction(&mut self, target: &str, data: &str) -> NodeId {
+        self.alloc(NodeData::ProcessingInstruction { target: target.to_string(), data: data.to_string() })
     }
 
     pub fn create_doctype(&mut self, name: &str, public_id: &str, system_id: &str) -> NodeId {
@@ -474,11 +487,13 @@ impl Document {
         self.insert_before(parent, t, Some(reference));
     }
 
-    /// Replace the text of a text or comment node.
+    /// Replace the data of a character-data node (text, comment, processing instruction).
     pub fn set_text(&mut self, id: NodeId, text: &str) {
         self.generation += 1;
         match &mut self.nodes[id.index()].data {
-            NodeData::Text(t) | NodeData::Comment(t) => *t = text.to_string(),
+            NodeData::Text(t) | NodeData::Comment(t) | NodeData::ProcessingInstruction { data: t, .. } => {
+                *t = text.to_string()
+            }
             _ => {}
         }
         if let Some(p) = self.parent(id) {
