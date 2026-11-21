@@ -8,7 +8,7 @@ _Last updated: 2026-11-21 (session 1)._
 |---|---|---|
 | M0 Scaffold | ✅ done | workspace, check-deps, CI workflow, docs, headless PNG, window under Xvfb + Fluxbox |
 | M1 URL + networking | ✅ done | 904/904 WPT urltestdata; HTTP/1.1 + TLS + proxies + codings + redirects; 16 integration tests |
-| M2 HTML | ✅ done | tokenizer 100 % (html5lib-tests), tree construction 99.74 % (WPT); processing instructions; lone surrogates in the tokenizer |
+| M2 HTML | ✅ done | tokenizer 100 % (html5lib-tests), tree construction 100 % (WPT); processing instructions; lone surrogates in the tokenizer; `<selectedcontent>` |
 | M3 CSS + style | 🚧 mostly | parser, selectors, cascade, var(), calc(), media, UA sheet, presentational hints; see gaps |
 | M4 Layout I | 🚧 mostly | block/inline/floats/tables/flex(basic)/positioned/replaced; see gaps |
 | M5 Paint | 🚧 mostly | AA rasterizer, borders, gradients, shadows, clips, opacity, glyph cache; 48 reftests |
@@ -22,7 +22,7 @@ _Last updated: 2026-11-21 (session 1)._
 |---|---|
 | WPT `url/resources/urltestdata.json` | **904 / 904 (100.0 %)** |
 | html5lib tokenizer (HEAD `c5495c5`) | **7018 / 7046 (99.60 %)**, nothing skipped (lone-surrogate cases run since session 2) |
-| Tree construction, WPT `html/syntax/parsing/resources` (pinned `9986bb3`, 2026-11-21) | **1954 / 1959 (99.74 %)**; 14 `#script-on` cases not run yet (need JS, milestone E) |
+| Tree construction, WPT `html/syntax/parsing/resources` (pinned `9986bb3`, 2026-11-21) | **1959 / 1959 (100 %)**; 14 `#script-on` cases not run yet (need JS, milestone E) |
 | Reftests (`tests/reftests`) | **48 / 48** |
 | Snapshot regressions (`tests/pages/snapshots`) | 12 pages (example.com ×2, theoldnet ×2, myip.wtf, 5 archived sites, retro, frames), pass on the approved font set |
 | `cargo test --workspace` | 119 test functions, 0 failures |
@@ -32,7 +32,7 @@ _Last updated: 2026-11-21 (session 1)._
 
 ### Failing / excluded spec cases
 * **Tokenizer:** none (7046 / 7046). Processing instructions (HTML §13.2.5.72–76) and lone surrogates are implemented.
-* **Tree construction (5):** 4 × `<selectedcontent>` mirroring (customizable `<select>`; needs DOM option-insertion steps, not parser work) and `<font><select><option>a</option></font></select>` (adoption agency interaction with select).
+* **Tree construction:** none (1959 / 1959). `select` is a default-scope boundary (current spec), and option selectedness plus `<selectedcontent>` mirroring are DOM state in `bb-dom` (`select.rs`), driven by the insertion/removing/attribute-change steps and the parser's "children parsed" step.
 * **Not run yet:** 14 `#script-on` tree cases (8 in `tests*.dat`/`webkit02.dat`, 6 in `scripted_*.dat`); they need our JS engine (milestone E).
 
 ## Real sites checked (headless + GUI, 2026-11-21)
@@ -149,7 +149,7 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   - The pass-rate floors (URL 95 %, tokenizer 98 %, tree 90 %) become 100 %.
   - Known failures to fix:
     - ~~**html5lib tokenizer, 28 cases:** `<?…>` processing instructions.~~ Done (session 2); the tokenizer floor is 100 %.
-    - **Tree construction, 5 cases:** 4 × `<selectedcontent>` mirroring, plus `<font><select><option>` with the adoption agency algorithm.
+    - ~~**Tree construction, 5 cases:** 4 × `<selectedcontent>` mirroring, plus `<font><select><option>`.~~ Done (session 2); the tree-construction floor is 100 %.
     - Plus whatever `#script-on` reveals once it runs (milestone E).
 * **About window** (requested by the maintainer), inspired by Firefox's "About" dialog but with original branding only:
   - A small, non-resizable window, opened from ≡ menu → Help → About BannedBrowser (on macOS, the app menu).

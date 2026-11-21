@@ -504,11 +504,11 @@ impl<'a> Builder<'a> {
                 Control::Button { label }
             }
             "select" => {
-                let options: Vec<NodeId> =
-                    doc.descendants(node).filter(|&d| doc.is_html(d, "option")).collect();
-                let sel = options.iter().find(|&&o| doc.attr(o, "selected").is_some()).or(options.first());
+                // The drop-down shows the first option in the list of options whose selectedness
+                // is true (HTML §4.10.7; the DOM keeps selectedness up to date).
+                let sel = doc.list_of_options(node).into_iter().find(|&o| doc.option_selectedness(o));
                 let label = sel
-                    .map(|&o| doc.text_content(o).split_whitespace().collect::<Vec<_>>().join(" "))
+                    .map(|o| doc.text_content(o).split_whitespace().collect::<Vec<_>>().join(" "))
                     .unwrap_or_default();
                 Control::Select { label }
             }

@@ -26,7 +26,14 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   `ProcessingInstruction` DOM nodes wherever comments go, and serialized as `<?target data?>`.
   Invalid or `xml`/`xml-stylesheet` targets still become bogus comments. Tokenizer: 7046/7046.
 
+- **Option selectedness and `<selectedcontent>`** (customizable `<select>`): options keep a
+  selectedness state (first enabled option by default, last `selected` one wins), and a
+  `<selectedcontent>` inside the select's `<button>` mirrors the selected option's content
+  (without scripts, frames, embeds or objects). The drop-down shows the option the DOM says is
+  selected.
+
 ### Fixed
+- `</font>` (and other end tags) no longer reach past a `<select>`: `select` is a scope boundary.
 - `<frameset>` after a `<template>` in the head: implicitly inserting `<body>` resets the
   frameset-ok flag (current spec).
 - `<form>` inside template contents, including `template` fragments: the form element pointer
@@ -41,7 +48,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 
 ### Development
 - Tree-construction tests come from WPT (`html/syntax/parsing/resources`, where they moved from
-  html5lib-tests), pinned to a WPT commit; 1954/1959 pass. The tokenizer suite must pass 100 %.
+  html5lib-tests), pinned to a WPT commit. Tokenizer 7046/7046 and tree construction 1959/1959; both suites
+  must now pass 100 %.
 - Ready for a public repository: `SECURITY.md` (private vulnerability reporting),
   `CODE_OF_CONDUCT.md`, issue templates (bug, website compatibility, feature) and a pull
   request template; `docs/CONTRIBUTING.md` now covers setup per OS, every test layer, and

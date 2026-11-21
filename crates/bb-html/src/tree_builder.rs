@@ -439,6 +439,8 @@ impl TreeBuilder {
                 return true;
             }
             let (ns, name) = self.elem_name(node);
+            // HTML §13.2.4.3 "has an element in scope": the default list of boundary element
+            // types (current spec: `select` is one of them).
             let boundary = {
                 match ns {
                     Namespace::Html => {
@@ -452,6 +454,7 @@ impl TreeBuilder {
                                 | "th"
                                 | "marquee"
                                 | "object"
+                                | "select"
                                 | "template"
                         ) || extra_html.contains(&name)
                     }
@@ -506,7 +509,26 @@ impl TreeBuilder {
     }
 
     fn pop(&mut self) -> Option<NodeId> {
-        self.open.pop()
+        let n = self.open.pop();
+        if let Some(n) = n {
+            self.finish_children(n);
+        }
+        n
+    }
+
+    /// Pop nodes off the stack until it has `len` entries.
+    fn truncate_open(&mut self, len: usize) {
+        while self.open.len() > len {
+            self.pop();
+        }
+    }
+
+    /// HTML §13.2.4.3 "finish parsing the children of an element": run the element's
+    /// children parsed steps (today only `option` defines any).
+    fn finish_children(&mut self, element: NodeId) {
+        if self.is_html(element, "option") {
+            self.doc.option_children_parsed(element);
+        }
     }
 
     fn pop_until(&mut self, name: &str) {
@@ -528,6 +550,7 @@ impl TreeBuilder {
     fn remove_from_stack(&mut self, node: NodeId) {
         if let Some(i) = self.open.iter().rposition(|&n| n == node) {
             self.open.remove(i);
+            self.finish_children(node);
         }
     }
 
@@ -789,7 +812,7 @@ impl TreeBuilder {
             }
             let fb_stack = (fe_stack + 1..self.open.len()).find(|&i| self.is_special(self.open[i]));
             let Some(fb_stack) = fb_stack else {
-                self.open.truncate(fe_stack);
+                self.truncate_open(fe_stack);
                 self.afe.remove(fe_idx);
                 return true;
             };
@@ -818,6 +841,7 @@ impl TreeBuilder {
                 }
                 let Some(ai) = node_afe else {
                     self.open.remove(node_idx);
+                    self.finish_children(node);
                     continue;
                 };
                 let tag = match &self.afe[ai] {
@@ -945,8 +969,11 @@ impl TreeBuilder {
         self.mode = M::Text;
     }
 
+    /// HTML §13.2.7 "stop parsing": pop all the nodes off the stack of open elements, then
+    /// (our stand-in for the event loop) run the queued microtasks.
     fn stop_parsing(&mut self) {
-        self.open.clear();
+        self.truncate_open(0);
+        self.doc.run_select_microtasks();
         self.stopped = true;
     }
 
@@ -1284,7 +1311,7 @@ impl TreeBuilder {
                 }
                 let body = self.open[1];
                 self.doc.detach(body);
-                self.open.truncate(1);
+                self.truncate_open(1);
                 self.insert_html(&t);
                 self.mode = M::InFrameset;
             }
@@ -1703,7 +1730,7 @@ impl TreeBuilder {
                 if self.current() != Some(node) {
                     self.error();
                 }
-                self.open.truncate(i);
+                self.truncate_open(i);
                 return;
             }
             if self.is_special(node) {
@@ -2344,7 +2371,7 @@ impl TreeBuilder {
                     }
                     let node = self.open[i];
                     if self.elem_name(node).1.eq_ignore_ascii_case(&t.name) {
-                        self.open.truncate(i);
+                        self.truncate_open(i);
                         return;
                     }
                     i -= 1;

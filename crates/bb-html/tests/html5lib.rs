@@ -349,5 +349,5 @@ fn html5lib_tree_construction() {
     let rate = pass as f64 * 100.0 / total as f64;
     println!("tree construction (WPT): {pass}/{total} passed ({rate:.2}%), {script_on} #script-on cases not run (need JS, milestone E)");
     assert!(!failures.iter().any(|f| f.starts_with("PANIC")), "tree builder panicked");
-    assert!(rate >= 90.0, "tree-construction pass rate {rate:.2}% below 90%");
+    assert!(failures.is_empty(), "{} tree-construction cases failed (v0.2 requires 100 %)", failures.len());
 }

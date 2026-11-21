@@ -147,7 +147,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | URL Standard | ✅ 100 % WPT urltestdata |
 | HTTP/1.1, HTTPS, gzip/deflate/br, chunked, redirects, proxies | ✅ |
 | Cookies, cache | 📋 M8 |
-| HTML parsing | ✅ tokenizer 100 % (html5lib), tree construction 99.7 % (WPT) |
+| HTML parsing | ✅ 100 % html5lib tokenizer, 100 % WPT tree construction |
 | Legacy presentational attributes, quirks mode | ✅ |
 | CSS selectors, cascade, custom properties, `calc()`, media queries | ✅ |
 | Colors incl. `light-dark()`, `hsl()`, `hwb()`, legacy color parsing | ✅ |
@@ -178,7 +178,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 |---|---|
 | WPT urltestdata | **904 / 904 (100 %)** |
 | html5lib tokenizer | **7046 / 7046 (100 %)** |
-| WPT tree construction | **1954 / 1959 (99.74 %)** |
+| WPT tree construction | **1959 / 1959 (100 %)** |
 | Reftests | **48 / 48** |
 | test262 | 📋 (M10) |
 

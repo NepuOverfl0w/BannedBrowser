@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod dump;
+mod select;
 pub use dump::{dump_html5lib, serialize_html};
 
 use bitflags::bitflags;
@@ -200,6 +201,8 @@ pub struct Document {
     pub url: String,
     /// Incremented on every mutation.
     pub generation: u64,
+    /// Option selectedness and `<selectedcontent>` state (see `select.rs`).
+    select_state: select::SelectState,
 }
 
 impl Default for Document {
@@ -218,6 +221,7 @@ impl Document {
             quirks_mode: QuirksMode::NoQuirks,
             url: "about:blank".to_string(),
             generation: 0,
+            select_state: Default::default(),
         }
     }
 
@@ -262,6 +266,7 @@ impl Document {
                 e.template_contents = Some(frag);
             }
         }
+        self.select_element_created(id);
         id
     }
 
@@ -375,6 +380,7 @@ impl Document {
 
     /// Set (or add) a no-namespace attribute.
     pub fn set_attr(&mut self, id: NodeId, name: &str, value: &str) {
+        let old = self.attr(id, name).map(str::to_string);
         if let Some(e) = self.element_mut(id) {
             if let Some(a) = e.attrs.iter_mut().find(|a| a.ns == Namespace::None && a.name == name) {
                 a.value = value.to_string();
@@ -383,13 +389,18 @@ impl Document {
             }
         }
         self.mark_style_dirty(id);
+        self.select_attribute_changed(id, name, old.as_deref(), Some(value));
     }
 
     pub fn remove_attr(&mut self, id: NodeId, name: &str) {
+        let old = self.attr(id, name).map(str::to_string);
         if let Some(e) = self.element_mut(id) {
             e.attrs.retain(|a| !(a.ns == Namespace::None && a.name == name));
         }
         self.mark_style_dirty(id);
+        if old.is_some() {
+            self.select_attribute_changed(id, name, old.as_deref(), None);
+        }
     }
 
     // ----- mutation -----
@@ -415,6 +426,7 @@ impl Document {
         n.prev_sibling = None;
         n.next_sibling = None;
         self.mark_layout_dirty(parent);
+        self.select_after_remove(id);
     }
 
     /// Append `child` as the last child of `parent` (detaching it first).
@@ -452,6 +464,7 @@ impl Document {
         }
         self.mark_style_dirty(child);
         self.mark_layout_dirty(parent);
+        self.select_after_insert(child);
     }
 
     /// Move all children of `from` to the end of `to`.
