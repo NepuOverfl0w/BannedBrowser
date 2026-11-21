@@ -453,6 +453,26 @@ impl Page {
     /// Paint this page (and its frames, recursively) onto `c`.
     pub(crate) fn paint_into(&self, c: &mut bb_paint::SoftwareCanvas, scroll: (f32, f32), scale: f32) {
         use bb_paint::Canvas;
+        self.paint_document(c, scroll, scale);
+        // Find-in-page highlights over the text (active match in the glitch cyan).
+        for (i, m) in self.find_matches.iter().enumerate() {
+            let col = if Some(i) == self.find_active {
+                Color::rgba(0x3D, 0xF2, 0xE0, 0x90)
+            } else {
+                Color::rgba(0x7C, 0x5C, 0xFF, 0x55)
+            };
+            for r in m {
+                let d =
+                    Rect::new((r.x - scroll.0) * scale, (r.y - scroll.1) * scale, r.w * scale, r.h * scale);
+                if d.bottom() >= 0.0 && d.y <= c.height() as f32 {
+                    c.fill_rect(Rect::new(d.x.round(), d.y.round(), d.w.round().max(1.0), d.h.round()), col);
+                }
+            }
+        }
+    }
+
+    fn paint_document(&self, c: &mut bb_paint::SoftwareCanvas, scroll: (f32, f32), scale: f32) {
+        use bb_paint::Canvas;
         bb_paint::render_with(&self.display_list, c, scroll, scale, &mut |canvas, p| {
             let Some(f) = self.frames.iter().find(|f| f.node.0 == p.id) else { return };
             canvas.fill_rect(p.device_rect, f.page.display_list.background);

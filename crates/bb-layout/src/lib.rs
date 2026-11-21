@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod block;
+pub mod find;
 pub mod flex;
 pub mod inline;
 pub mod intrinsic;

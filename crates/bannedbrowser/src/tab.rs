@@ -27,6 +27,13 @@ pub enum TabCmd {
         y: f32,
         new_tab: bool,
     },
+    /// Find in page: `step` 0 = new query (first match at/after `from_y`), ±1 = next/previous.
+    Find {
+        query: String,
+        step: i8,
+        from_y: f32,
+    },
+    FindClose,
     /// Wheel over a child frame (page coordinates).
     Wheel {
         x: f32,
@@ -74,6 +81,11 @@ pub enum TabEvent {
     Clicked {
         link: Option<Url>,
         open: LinkOpen,
+    },
+    FindResult {
+        total: usize,
+        active: Option<usize>,
+        rect: Option<bb_paint::Rect>,
     },
     /// No frame could scroll; the main page should.
     WheelUnconsumed {
@@ -238,6 +250,30 @@ fn handle(
                     if let Some(f) = render(p, (vw, vh), scale, sy, dark) {
                         notify(id, TabEvent::Frame(f));
                     }
+                }
+            }
+        }
+        TabCmd::Find { query, step, from_y } => {
+            let Some(p) = page.as_mut() else { return };
+            let (total, active) = if step == 0 || p.find_query != query {
+                p.find(&query, from_y)
+            } else {
+                p.find_step(step > 0)
+            };
+            let rect = p.find_active_rect();
+            if let Some((vw, vh, scale, sy, dark)) = *last_render {
+                if let Some(f) = render(p, (vw, vh), scale, sy, dark) {
+                    notify(id, TabEvent::Frame(f));
+                }
+            }
+            notify(id, TabEvent::FindResult { total, active, rect });
+        }
+        TabCmd::FindClose => {
+            let Some(p) = page.as_mut() else { return };
+            p.find_clear();
+            if let Some((vw, vh, scale, sy, dark)) = *last_render {
+                if let Some(f) = render(p, (vw, vh), scale, sy, dark) {
+                    notify(id, TabEvent::Frame(f));
                 }
             }
         }

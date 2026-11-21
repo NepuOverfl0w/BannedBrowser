@@ -815,7 +815,7 @@ fn build_line(
         match p {
             Placed::Text { piece, x, width } => {
                 let pc = piece_at(pieces, *piece);
-                let Item::Text { style, node, owner, .. } = &items[pc.item] else { unreachable!() };
+                let Item::Text { style, node, owner, text, .. } = &items[pc.item] else { unreachable!() };
                 let x = visual_x.get(piece).copied().unwrap_or(*x);
                 let px = x0 + shift + x + extra_x;
                 out.push(LineItem::Text {
@@ -827,6 +827,7 @@ fn build_line(
                     node: *node,
                     owner: *owner,
                     range: (pc.start, pc.end),
+                    text: text.clone(),
                     ascent: v.a,
                     descent: v.d,
                 });

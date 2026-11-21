@@ -115,6 +115,9 @@ pub enum LineItem {
         owner: BoxId,
         /// Byte range in the text node (for selection / find).
         range: (usize, usize),
+        /// The text box's (whitespace-processed) text; `range` indexes into it
+        /// and glyph clusters are relative to `range.0`.
+        text: Rc<str>,
         ascent: f32,
         descent: f32,
     },

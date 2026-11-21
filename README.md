@@ -115,7 +115,8 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Wheel and keyboard scrolling, overlay scrollbar (drag, track paging) | ✅ |
 | Favicons, loading throbber + progress line, page title in tab and window | ✅ |
 | Light / dark theme following the OS (`--dark` / `--light` override) | ✅ |
-| ≡ app menu, context menus, find bar, sidebars | 📋 |
+| Find in page (Ctrl+F) with highlights and match counter | ✅ |
+| ≡ app menu, context menus, sidebars | 📋 |
 | Session restore, pinned tabs, drag to reorder | 📋 |
 
 </details>

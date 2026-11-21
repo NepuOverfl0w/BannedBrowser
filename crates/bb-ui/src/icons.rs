@@ -20,6 +20,7 @@ pub enum Icon {
     Globe,
     Mask,
     ChevronDown,
+    ChevronUp,
     Sidebar,
     Download,
 }
@@ -154,6 +155,7 @@ fn raw_path(icon: Icon) -> Path {
             p
         }
         Icon::ChevronDown => line(&[(4.0, 6.0), (8.0, 10.0), (12.0, 6.0)]),
+        Icon::ChevronUp => line(&[(4.0, 10.0), (8.0, 6.0), (12.0, 10.0)]),
         Icon::Sidebar => {
             let mut p = line(&[(2.0, 3.0), (14.0, 3.0), (14.0, 13.0), (2.0, 13.0), (2.0, 3.0)]);
             p.cmds.extend(line(&[(6.0, 3.0), (6.0, 13.0)]).cmds);

@@ -89,6 +89,10 @@ pub struct Page {
     pub frames: Vec<ChildFrame>,
     /// The `<frameset>` that replaces the body, for frameset documents.
     pub frameset: Option<NodeId>,
+    /// Find in page: the query, its matches (rects per match) and the active one.
+    pub find_query: String,
+    pub find_matches: Vec<Vec<bb_paint::Rect>>,
+    pub find_active: Option<usize>,
 }
 
 struct PageResources<'a> {
@@ -528,6 +532,9 @@ impl Page {
             error: None,
             frames: Vec::new(),
             frameset,
+            find_query: String::new(),
+            find_matches: Vec::new(),
+            find_active: None,
         };
         page.relayout_styles_ready();
         page.load_frames(client);
@@ -567,6 +574,13 @@ impl Page {
         };
         self.layout = tree;
         self.sync_frames();
+        if !self.find_query.is_empty() {
+            self.find_matches = bb_layout::find::find_text(&self.layout, &self.find_query);
+            self.find_active = self.find_active.map(|a| a.min(self.find_matches.len().saturating_sub(1)));
+            if self.find_matches.is_empty() {
+                self.find_active = None;
+            }
+        }
         self.stats.layout_ms = tl.elapsed().as_millis();
         self.doc.clear_dirty();
     }
@@ -676,6 +690,44 @@ impl Page {
             }
         }
         None
+    }
+
+    /// Start (or refine) a find: the active match is the first one at or below `from_y`.
+    /// Returns (number of matches, active index).
+    pub fn find(&mut self, query: &str, from_y: f32) -> (usize, Option<usize>) {
+        self.find_query = query.to_string();
+        self.find_matches = bb_layout::find::find_text(&self.layout, query);
+        self.find_active = if self.find_matches.is_empty() {
+            None
+        } else {
+            Some(self.find_matches.iter().position(|m| m.first().is_some_and(|r| r.y >= from_y)).unwrap_or(0))
+        };
+        (self.find_matches.len(), self.find_active)
+    }
+
+    /// Move to the next / previous match (wrapping).
+    pub fn find_step(&mut self, forward: bool) -> (usize, Option<usize>) {
+        let n = self.find_matches.len();
+        if n > 0 {
+            self.find_active = Some(match self.find_active {
+                Some(a) if forward => (a + 1) % n,
+                Some(a) => (a + n - 1) % n,
+                None => 0,
+            });
+        }
+        (n, self.find_active)
+    }
+
+    /// Stop highlighting matches.
+    pub fn find_clear(&mut self) {
+        self.find_query.clear();
+        self.find_matches.clear();
+        self.find_active = None;
+    }
+
+    /// The active match's first rect (page coordinates).
+    pub fn find_active_rect(&self) -> Option<bb_paint::Rect> {
+        self.find_matches.get(self.find_active?)?.first().copied()
     }
 
     /// Cursor style at a page point.
