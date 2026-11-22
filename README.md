@@ -160,7 +160,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Images (PNG, JPEG, GIF, WebP, BMP, ICO), image maps | ✅ (GIF animation 📋) |
 | Fonts: system fonts, fallback (CJK, Thai, Arabic, emoji) | ✅ · `@font-face` 📋 |
 | Bidi text | 🚧 basic reordering |
-| Frames: `<frameset>`, `<iframe>` (src/srcdoc), link targets, per-frame scrolling | ✅ (frame navigations not in history yet) |
+| Frames: `<frameset>`, `<iframe>` (src/srcdoc), link targets, per-frame scrolling, frame navigations in history | ✅ |
 | SVG | 📋 |
 | JavaScript | 📋 M10 (own engine) |
 

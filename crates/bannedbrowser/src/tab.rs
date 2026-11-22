@@ -34,6 +34,9 @@ pub enum TabCmd {
         from_y: f32,
     },
     FindClose,
+    /// Back/Forward between history entries of the same document: bring the frames to this
+    /// snapshot (only frames whose URL differs are reloaded).
+    RestoreFrames(FrameState),
     /// Wheel over a child frame (page coordinates).
     Wheel {
         x: f32,
@@ -65,6 +68,23 @@ pub enum LinkOpen {
     ForegroundTab,
 }
 
+/// The URL of every child frame: (path of frame indices, URL); see `Page::frame_urls`.
+pub type FrameState = Vec<(Vec<usize>, Url)>;
+
+/// A session history entry: the top-level document and its frames' URLs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryEntry {
+    pub url: Url,
+    /// Empty until the document has loaded (then its initial frames are recorded).
+    pub frames: FrameState,
+}
+
+impl HistoryEntry {
+    pub fn new(url: Url) -> Self {
+        HistoryEntry { url, frames: Vec::new() }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum TabEvent {
     Started,
@@ -74,6 +94,12 @@ pub enum TabEvent {
         content_height: f32,
         secure: bool,
         frame_titles: Vec<String>,
+        /// The frames' URLs now (for the session history entry).
+        frames: FrameState,
+    },
+    /// A link navigated a frame: a new session history entry with these frame URLs.
+    FrameNavigated {
+        frames: FrameState,
     },
     Favicon(bb_paint::ImageData),
     Frame(Frame),
@@ -100,6 +126,17 @@ pub enum TabEvent {
 }
 
 pub type Notify = Box<dyn Fn(u64, TabEvent) + Send>;
+
+fn loaded_event(p: &Page) -> TabEvent {
+    TabEvent::Loaded {
+        url: p.url.clone(),
+        title: p.title.clone(),
+        content_height: p.content_height(),
+        secure: p.secure,
+        frame_titles: p.frames.iter().map(|f| f.page.title.clone()).collect(),
+        frames: p.frame_urls(),
+    }
+}
 
 /// Scheme of the links internal pages use to ask the browser to do something. They are never
 /// fetched; see `browser_action`.
@@ -218,16 +255,7 @@ fn handle(
                     Page::from_html(client, &html, &url, cfg, 0, false)
                 }
             };
-            notify(
-                id,
-                TabEvent::Loaded {
-                    url: p.url.clone(),
-                    title: p.title.clone(),
-                    content_height: p.content_height(),
-                    secure: p.secure,
-                    frame_titles: p.frames.iter().map(|f| f.page.title.clone()).collect(),
-                },
-            );
+            notify(id, loaded_event(&p));
             if let Some(f) = render(&mut p, (vw, vh), scale, 0.0, dark) {
                 notify(id, TabEvent::Frame(f));
             }
@@ -300,20 +328,14 @@ fn handle(
                 Ok(bb_engine::LinkDisposition::NewTab(u)) => {
                     notify(id, TabEvent::Clicked { link: Some(u), open: LinkOpen::ForegroundTab })
                 }
-                Ok(bb_engine::LinkDisposition::Frame) => {}
+                // A frame navigation is a new session history entry.
+                Ok(bb_engine::LinkDisposition::Frame) => {
+                    notify(id, TabEvent::FrameNavigated { frames: p.frame_urls() })
+                }
                 Err(_) => log::error!("tab {id}: frame navigation panicked"),
             }
             if frame_target {
-                notify(
-                    id,
-                    TabEvent::Loaded {
-                        url: p.url.clone(),
-                        title: p.title.clone(),
-                        content_height: p.content_height(),
-                        secure: p.secure,
-                        frame_titles: p.frames.iter().map(|f| f.page.title.clone()).collect(),
-                    },
-                );
+                notify(id, loaded_event(p));
                 if let Some((vw, vh, scale, sy, dark)) = *last_render {
                     if let Some(f) = render(p, (vw, vh), scale, sy, dark) {
                         notify(id, TabEvent::Frame(f));
@@ -335,6 +357,21 @@ fn handle(
                 }
             }
             notify(id, TabEvent::FindResult { total, active, rect });
+        }
+        TabCmd::RestoreFrames(state) => {
+            let Some(p) = page.as_mut() else { return };
+            notify(id, TabEvent::Started);
+            let r =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| p.restore_frames(client, &state)));
+            if r.is_err() {
+                log::error!("tab {id}: restoring frames panicked");
+            }
+            notify(id, loaded_event(p));
+            if let Some((vw, vh, scale, sy, dark)) = *last_render {
+                if let Some(f) = render(p, (vw, vh), scale, sy, dark) {
+                    notify(id, TabEvent::Frame(f));
+                }
+            }
         }
         TabCmd::FindClose => {
             let Some(p) = page.as_mut() else { return };

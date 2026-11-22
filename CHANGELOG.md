@@ -46,6 +46,9 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   "Details"), the summary comes first, and clicking it toggles `open`.
 
 ### Fixed
+- Frame navigations are session history entries: Back after following a link inside a frameset
+  goes back to the previous frame contents instead of leaving the frameset, and only the frames
+  that differ are reloaded.
 - `</font>` (and other end tags) no longer reach past a `<select>`: `select` is a scope boundary.
 - `<frameset>` after a `<template>` in the head: implicitly inserting `<body>` resets the
   frameset-ok flag (current spec).

@@ -79,7 +79,7 @@ _Last updated: 2026-11-22 (session 2)._
 * **`<details>`:** toggles with the mouse; there is no keyboard activation yet (content has no focus model until forms/JS), and no `toggle` event (no JS).
 * **Forms:** controls (`<input>`, `<button>`, `<select>`, `<textarea>`) are only drawn. They can't be focused, typed into, opened or submitted, so search boxes like theoldnet's "Go" / "Search Archives" don't work. Interactive controls and form submission are milestone C.
 * **Network:** no cookies or cache yet (M8); no HTTP/2; `HTTP_PROXY` absolute-form only for plain http.
-* **Frames:** frame navigations are not in session history (Back leaves the frameset); no frame resizing by dragging borders (`noresize` is the only behaviour); iframes are opaque (child canvas background is always painted); `<object data=…html>` isn't a nested document; keyboard focus doesn't move into frames (keys scroll the largest frame of a frameset).
+* **Frames:** frame navigations are in session history (each history entry stores its frames' URLs; Back/Forward reload only the frames that differ), but frame scroll positions aren't restored; no frame resizing by dragging borders (`noresize` is the only behaviour); iframes are opaque (child canvas background is always painted); `<object data=…html>` isn't a nested document; keyboard focus doesn't move into frames (keys scroll the largest frame of a frameset).
 * **Find:** top-level document only (not inside frames); RTL runs highlight approximately; the counter is per tab but isn't refreshed when switching tabs with the bar open.
 * **GUI:** menus are drawn inside the window (can't extend past its edges); the About window is opened from the ≡ menu only: macOS's app menu "About" item still shows the system's standard panel (replacing it needs AppKit calls, i.e. `unsafe`), and "About BannedBrowser" sits directly in the ≡ menu because menus have no submenus (no Help submenu) yet; no bookmarks; no session restore; private windows share the network client (no cookies exist yet, so nothing leaks); screenshots of overlapping windows in GUI tests can be stale.
 * **macOS cross-check:** `ring`'s build script needs the macOS SDK headers to compile its C/asm, which the Linux VM doesn't have; the macOS CI job covers it. Two attempts (clang + generic headers) failed; not retried further.
@@ -111,7 +111,11 @@ and CHANGELOG `[Unreleased]` updated, pushed to `main`.
 **Done:** milestone A (session 2), except the 14 `#script-on` tree cases, which need JS and land in E.
 CI is green on all three OSes with every suite at 100 % and the GUI tests on each.
 
-**Now:** milestone B.
+**Done:** milestone B (session 2): certificate error page, About window, frame navigations in
+session history. Remaining placement gaps (macOS app-menu About, no Help submenu) are listed under
+"Known gaps".
+
+**Now:** milestone C (M8 network + storage: cookies, HTTP cache, profile storage, forms, HTTP/2).
 
 ## v0.2 scope (agreed with the maintainer)
 

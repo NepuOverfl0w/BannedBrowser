@@ -157,3 +157,34 @@ fn image_at_finds_images_including_inside_frames() {
     assert!(p.image_at(f.x + 5.0, f.y + 5.0).unwrap().href().ends_with("/frames/in.png"));
     assert_eq!(p.image_at(f.x + 80.0, f.y + 80.0), None, "iframe background, no image");
 }
+
+#[test]
+fn frame_urls_snapshot_and_restore() {
+    let client = new_client(Vec::new());
+    let mut p = Page::load(
+        &client,
+        &page_url("index.html"),
+        PageConfig { viewport: (900.0, 500.0), ..Default::default() },
+    );
+    let initial = p.frame_urls();
+    let paths: Vec<Vec<usize>> = initial.iter().map(|(path, _)| path.clone()).collect();
+    assert_eq!(paths, vec![vec![0], vec![1], vec![2]]);
+    assert!(initial[2].1.href().ends_with("welcome.html"));
+    // Navigate the main frame, as a targeted link would.
+    assert!(p.navigate_frame(&client, &[2], &page_url("links.html")));
+    let after = p.frame_urls();
+    assert!(after[2].1.href().ends_with("links.html"));
+    // Restoring the first snapshot only reloads the frame that differs.
+    // (A reload resets a frame's scroll position, so a scrolled nav frame shows whether it
+    // was reloaded.)
+    p.frames[1].scroll_y = 7.0;
+    assert!(p.restore_frames(&client, &initial));
+    assert_eq!(titles(&p), ["banner", "nav", "Welcome"]);
+    assert_eq!(p.frames[1].scroll_y, 7.0, "unchanged frames are not reloaded");
+    assert_eq!(p.frames[2].scroll_y, 0.0);
+    // Already in that state: nothing to do.
+    assert!(!p.restore_frames(&client, &initial));
+    // And forward again.
+    assert!(p.restore_frames(&client, &after));
+    assert_eq!(titles(&p)[2], "Links");
+}

@@ -429,6 +429,46 @@ impl Page {
         LinkDisposition::Frame
     }
 
+    /// The URL of every child frame, recursively, as (path of indices into `frames`, URL),
+    /// parents before their children. A session history entry stores this so Back/Forward can
+    /// restore frame navigations (HTML §7.4 joint session history, simplified).
+    pub fn frame_urls(&self) -> Vec<(Vec<usize>, Url)> {
+        let mut out = Vec::new();
+        for (i, f) in self.frames.iter().enumerate() {
+            out.push((vec![i], f.page.url.clone()));
+            for (mut sub, url) in f.page.frame_urls() {
+                sub.insert(0, i);
+                out.push((sub, url));
+            }
+        }
+        out
+    }
+
+    fn frame_url_at(&self, path: &[usize]) -> Option<&Url> {
+        let (&first, rest) = path.split_first()?;
+        let f = self.frames.get(first)?;
+        if rest.is_empty() {
+            Some(&f.page.url)
+        } else {
+            f.page.frame_url_at(rest)
+        }
+    }
+
+    /// Bring the frames back to a `frame_urls` snapshot, navigating only the frames whose URL
+    /// differs (parents first, so their new documents' frames are then compared in turn).
+    /// Returns whether any frame was navigated.
+    pub fn restore_frames(&mut self, client: &Client, state: &[(Vec<usize>, Url)]) -> bool {
+        let mut state: Vec<&(Vec<usize>, Url)> = state.iter().collect();
+        state.sort_by_key(|(path, _)| path.len());
+        let mut changed = false;
+        for (path, url) in state {
+            if self.frame_url_at(path) != Some(url) {
+                changed |= self.navigate_frame(client, path, url);
+            }
+        }
+        changed
+    }
+
     /// Load `url` into the frame at `path`.
     pub fn navigate_frame(&mut self, client: &Client, path: &[usize], url: &Url) -> bool {
         let Some((&first, rest)) = path.split_first() else { return false };

@@ -3,7 +3,7 @@
 
 use crate::cli::{fixup_url, Args};
 use crate::menu::{primary_label, Action, Entry, Menu};
-use crate::tab::{self, Frame, LinkOpen, TabCmd, TabEvent};
+use crate::tab::{self, Frame, HistoryEntry, LinkOpen, TabCmd, TabEvent};
 use bb_paint::{Canvas, Color, DisplayList, ImageData, Item, Rect, SoftwareCanvas};
 use bb_ui::icons::Icon;
 use bb_ui::textfield::TextField;
@@ -42,7 +42,7 @@ struct Tab {
     tx: Sender<TabCmd>,
     title: String,
     url: Option<Url>,
-    history: Vec<Url>,
+    history: Vec<HistoryEntry>,
     index: usize,
     loading: bool,
     load_started: Instant,
@@ -122,7 +122,7 @@ struct BrowserWindow {
 }
 
 struct ClosedTab {
-    history: Vec<Url>,
+    history: Vec<HistoryEntry>,
     index: usize,
 }
 
@@ -400,7 +400,7 @@ impl App {
             dark: bw.page_dark(),
         });
         if let Some(u) = url {
-            t.history.push(u.clone());
+            t.history.push(HistoryEntry::new(u.clone()));
             t.index = 0;
             t.url = Some(u.clone());
             t.loading = true;
@@ -535,8 +535,8 @@ impl BrowserWindow {
     fn navigate(&mut self, url: Url) {
         if let Some(t) = self.tab_mut() {
             t.history.truncate(t.index + 1);
-            if t.history.last() != Some(&url) || t.history.is_empty() {
-                t.history.push(url.clone());
+            if t.history.last().map(|e| &e.url) != Some(&url) || t.history.is_empty() {
+                t.history.push(HistoryEntry::new(url.clone()));
             }
             t.index = t.history.len() - 1;
             t.url = Some(url.clone());
@@ -557,13 +557,23 @@ impl BrowserWindow {
             if ni < 0 || ni as usize >= t.history.len() {
                 return;
             }
+            // Entries of the same (loaded) document differ only in their frames: restore those
+            // without reloading the top-level page.
+            let same_document = !t.loading && t.url.as_ref() == Some(&t.history[ni as usize].url);
             t.index = ni as usize;
-            let url = t.history[t.index].clone();
-            t.url = Some(url.clone());
+            let entry = t.history[t.index].clone();
+            t.url = Some(entry.url.clone());
             t.loading = true;
             t.load_started = Instant::now();
-            t.scroll_y = 0.0;
-            let _ = t.tx.send(TabCmd::Navigate(url));
+            if !same_document {
+                t.scroll_y = 0.0;
+                let _ = t.tx.send(TabCmd::Navigate(entry.url));
+            }
+            if !entry.frames.is_empty() {
+                let _ = t.tx.send(TabCmd::RestoreFrames(entry.frames));
+            } else if same_document {
+                t.loading = false;
+            }
         }
         self.sync_url_field();
         self.dirty = true;
@@ -1232,7 +1242,16 @@ impl ApplicationHandler<UserEvent> for App {
                     t.hover_link = None;
                     state_changed = true;
                 }
-                TabEvent::Loaded { url, title, content_height, secure, frame_titles } => {
+                TabEvent::FrameNavigated { frames } => {
+                    let t = &mut bw.tabs[ti];
+                    if let Some(url) = t.url.clone() {
+                        t.history.truncate(t.index + 1);
+                        t.history.push(HistoryEntry { url, frames });
+                        t.index = t.history.len() - 1;
+                        state_changed = true;
+                    }
+                }
+                TabEvent::Loaded { url, title, content_height, secure, frame_titles, frames } => {
                     let t = &mut bw.tabs[ti];
                     t.loading = false;
                     t.frame_titles = frame_titles;
@@ -1242,9 +1261,15 @@ impl ApplicationHandler<UserEvent> for App {
                     // Redirects: replace the current history entry.
                     if t.url.as_ref() != Some(&url) {
                         if let Some(h) = t.history.get_mut(t.index) {
-                            *h = url.clone();
+                            *h = HistoryEntry::new(url.clone());
                         }
                         t.url = Some(url);
+                    }
+                    // Record the document's initial frames in its history entry.
+                    if let Some(h) = t.history.get_mut(t.index) {
+                        if h.frames.is_empty() {
+                            h.frames = frames;
+                        }
                     }
                     if is_active {
                         if !bw.url_focused {
@@ -1851,7 +1876,11 @@ impl App {
             }
             Action::TabDuplicate(i) => {
                 if let Some((history, index)) = bw.tabs.get(i).map(|t| (t.history.clone(), t.index)) {
-                    let mut t = self.new_tab(bw, history.get(index).cloned());
+                    let entry = history.get(index).cloned();
+                    let mut t = self.new_tab(bw, entry.as_ref().map(|e| e.url.clone()));
+                    if let Some(e) = entry.filter(|e| !e.frames.is_empty()) {
+                        let _ = t.tx.send(TabCmd::RestoreFrames(e.frames));
+                    }
                     t.history = history;
                     t.index = index;
                     bw.tabs.insert(i + 1, t);
@@ -1936,8 +1965,11 @@ impl App {
 
     fn reopen_tab(&mut self, bw: &mut BrowserWindow) {
         if let Some(c) = self.closed.pop() {
-            let url = c.history.get(c.index).cloned();
-            let mut t = self.new_tab(bw, url);
+            let entry = c.history.get(c.index).cloned();
+            let mut t = self.new_tab(bw, entry.as_ref().map(|e| e.url.clone()));
+            if let Some(e) = entry.filter(|e| !e.frames.is_empty()) {
+                let _ = t.tx.send(TabCmd::RestoreFrames(e.frames));
+            }
             t.history = c.history;
             t.index = c.index;
             bw.tabs.push(t);
