@@ -357,6 +357,7 @@ pub enum Kind {
     Async(Box<AsyncFn>),
     AsyncGen(Box<AsyncGen>),
     Proxy(Box<super::proxy::ProxyData>),
+    IterHelper(Box<super::builtins::iterator::Helper>),
     ArrayBuffer(Box<super::typed::Buffer>),
     TypedArray(Box<super::typed::TypedArray>),
     DataView(Box<super::typed::DataView>),
@@ -719,6 +720,7 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
         }
         Kind::WeakRef(v) => push_val(v, os),
         Kind::TypedArray(t) => os.push(t.buffer),
+        Kind::IterHelper(h) => h.trace(os),
         Kind::DataView(d) => os.push(d.buffer),
         Kind::Proxy(p) => {
             os.extend(p.target);

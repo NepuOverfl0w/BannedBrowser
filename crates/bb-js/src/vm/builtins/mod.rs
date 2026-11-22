@@ -3,6 +3,7 @@
 mod array;
 mod collections;
 mod date;
+pub(super) mod iterator;
 mod json;
 mod number;
 mod object;
@@ -43,6 +44,7 @@ pub(super) fn install(vm: &mut Vm) {
     collections::install(vm);
     json::install(vm);
     date::install(vm);
+    iterator::install(vm);
     typed::install(vm);
     install_global(vm);
 }
