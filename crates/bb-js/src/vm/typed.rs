@@ -29,9 +29,11 @@ pub enum TaKind {
     Float16,
     Float32,
     Float64,
+    BigInt64,
+    BigUint64,
 }
 
-pub const TA_KINDS: [(TaKind, &str); 10] = [
+pub const TA_KINDS: [(TaKind, &str); 12] = [
     (TaKind::Int8, "Int8Array"),
     (TaKind::Uint8, "Uint8Array"),
     (TaKind::Uint8Clamped, "Uint8ClampedArray"),
@@ -42,6 +44,8 @@ pub const TA_KINDS: [(TaKind, &str); 10] = [
     (TaKind::Float16, "Float16Array"),
     (TaKind::Float32, "Float32Array"),
     (TaKind::Float64, "Float64Array"),
+    (TaKind::BigInt64, "BigInt64Array"),
+    (TaKind::BigUint64, "BigUint64Array"),
 ];
 
 impl TaKind {
@@ -50,8 +54,12 @@ impl TaKind {
             TaKind::Int8 | TaKind::Uint8 | TaKind::Uint8Clamped => 1,
             TaKind::Int16 | TaKind::Uint16 | TaKind::Float16 => 2,
             TaKind::Int32 | TaKind::Uint32 | TaKind::Float32 => 4,
-            TaKind::Float64 => 8,
+            TaKind::Float64 | TaKind::BigInt64 | TaKind::BigUint64 => 8,
         }
+    }
+    /// [[ContentType]] BigInt (§23.2.6).
+    pub fn is_bigint(self) -> bool {
+        matches!(self, TaKind::BigInt64 | TaKind::BigUint64)
     }
     pub fn index(self) -> usize {
         TA_KINDS.iter().position(|(k, _)| *k == self).unwrap_or(0)
@@ -144,8 +152,31 @@ pub fn read_elem(bytes: &[u8], kind: TaKind, at: usize, big: bool) -> f64 {
         TaKind::Int32 => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64,
         TaKind::Uint32 => u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64,
         TaKind::Float32 => f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64,
-        TaKind::Float64 => f64::from_le_bytes(b),
+        TaKind::Float64 | TaKind::BigInt64 | TaKind::BigUint64 => f64::from_le_bytes(b),
     }
+}
+
+/// A BigInt element (BigInt64 / BigUint64), little-endian unless `big`.
+pub fn read_big(bytes: &[u8], kind: TaKind, at: usize, big: bool) -> super::bigint::BigInt {
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&bytes[at..at + 8]);
+    if big {
+        b.reverse();
+    }
+    let u = u64::from_le_bytes(b);
+    if kind == TaKind::BigInt64 {
+        super::bigint::BigInt::from_i64(u as i64)
+    } else {
+        super::bigint::BigInt::from_u64(u)
+    }
+}
+
+pub fn write_big(bytes: &mut [u8], at: usize, v: &super::bigint::BigInt, big: bool) {
+    let mut b = v.to_u64_wrapping().to_le_bytes();
+    if big {
+        b.reverse();
+    }
+    bytes[at..at + 8].copy_from_slice(&b);
 }
 
 /// NumericToRawBytes (§25.1.3.17) after ToNumber.
@@ -171,7 +202,7 @@ pub fn write_elem(bytes: &mut [u8], kind: TaKind, at: usize, v: f64, big: bool) 
         TaKind::Float16 => f64_to_f16_bits(v).to_le_bytes().to_vec(),
         TaKind::Int32 | TaKind::Uint32 => (i as u32).to_le_bytes().to_vec(),
         TaKind::Float32 => (v as f32).to_le_bytes().to_vec(),
-        TaKind::Float64 => v.to_le_bytes().to_vec(),
+        TaKind::Float64 | TaKind::BigInt64 | TaKind::BigUint64 => v.to_le_bytes().to_vec(),
     };
     if big {
         out.reverse();
@@ -273,6 +304,9 @@ impl Vm {
         let Some(i) = self.valid_index(o, n) else { return Value::Undefined };
         let (kind, buf, off, _) = self.ta(o).expect("typed array");
         match self.buffer_bytes(buf) {
+            Some(b) if kind.is_bigint() => {
+                Value::BigInt(std::rc::Rc::new(read_big(b, kind, off + i * kind.size(), false)))
+            }
             Some(b) => Value::Number(read_elem(b, kind, off + i * kind.size(), false)),
             None => Value::Undefined,
         }
@@ -280,14 +314,28 @@ impl Vm {
 
     /// TypedArraySetElement (§10.4.5.16): convert first, then write if still valid.
     pub fn ta_set(&mut self, o: ObjRef, n: f64, v: &Value) -> JsResult<()> {
-        let x = self.to_number(v)?;
+        let x = self.ta_coerce(o, v)?;
         if let Some(i) = self.valid_index(o, n) {
             let (kind, buf, off, _) = self.ta(o).expect("typed array");
             if let Some(b) = self.buffer_bytes_mut(buf) {
-                write_elem(b, kind, off + i * kind.size(), x, false);
+                match &x {
+                    Value::BigInt(big) => write_big(b, off + i * kind.size(), big, false),
+                    Value::Number(num) => write_elem(b, kind, off + i * kind.size(), *num, false),
+                    _ => {}
+                }
             }
         }
         Ok(())
+    }
+
+    /// ToBigInt or ToNumber by the array's content type.
+    pub fn ta_coerce(&mut self, o: ObjRef, v: &Value) -> JsResult<Value> {
+        let kind = self.ta(o).map(|t| t.0).unwrap_or(TaKind::Float64);
+        if kind.is_bigint() {
+            Ok(Value::BigInt(self.to_bigint(v)?))
+        } else {
+            Ok(Value::Number(self.to_number(v)?))
+        }
     }
 
     // ---- the exotic internal methods, called from object.rs for numeric keys ----

@@ -4,7 +4,7 @@
 use super::super::heap::*;
 use super::super::realm::{self, accessor, method};
 use super::super::typed::{
-    read_elem, write_elem, Buffer, DataView, TaKind, TypedArray, MAX_BUFFER, TA_KINDS,
+    read_big, read_elem, write_big, write_elem, Buffer, DataView, TaKind, TypedArray, MAX_BUFFER, TA_KINDS,
 };
 use super::super::value::{js_str, same_value_zero, strict_equals, JsString, PropKey, Value};
 use super::super::{JsResult, Vm};
@@ -342,6 +342,39 @@ fn view_set(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
     Ok(Value::Undefined)
 }
 
+fn view_get_big(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
+    let (buf, off, len) = view_parts(vm, &c.this)?;
+    let idx = vm.to_index(&c.arg(0))?;
+    let little = c.arg(1).truthy();
+    let Some(size) = view_length(vm, buf, off, len) else {
+        return vm.type_error("DataView is detached or out of bounds");
+    };
+    if idx + 8.0 > size as f64 {
+        return vm.range_error("Offset is outside the bounds of the DataView");
+    }
+    let at = off + idx as usize;
+    let b = vm.buffer_bytes(buf).map(|b| read_big(b, kind, at, !little)).unwrap_or_default();
+    Ok(Value::BigInt(std::rc::Rc::new(b)))
+}
+
+fn view_set_big(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+    let (buf, off, len) = view_parts(vm, &c.this)?;
+    let idx = vm.to_index(&c.arg(0))?;
+    let x = vm.to_bigint(&c.arg(1))?;
+    let little = c.arg(2).truthy();
+    let Some(size) = view_length(vm, buf, off, len) else {
+        return vm.type_error("DataView is detached or out of bounds");
+    };
+    if idx + 8.0 > size as f64 {
+        return vm.range_error("Offset is outside the bounds of the DataView");
+    }
+    let at = off + idx as usize;
+    if let Some(b) = vm.buffer_bytes_mut(buf) {
+        write_big(b, at, &x, !little);
+    }
+    Ok(Value::Undefined)
+}
+
 fn install_dataview(vm: &mut Vm) {
     let op = vm.realm.object_proto;
     let dvp = vm.new_object_with_proto(Some(op));
@@ -451,6 +484,10 @@ fn install_dataview(vm: &mut Vm) {
         "getFloat32", "setFloat32", TaKind::Float32;
         "getFloat64", "setFloat64", TaKind::Float64;
     );
+    method(vm, dvp, "getBigInt64", 1, |vm, c| view_get_big(vm, c, TaKind::BigInt64));
+    method(vm, dvp, "getBigUint64", 1, |vm, c| view_get_big(vm, c, TaKind::BigUint64));
+    method(vm, dvp, "setBigInt64", 2, view_set_big);
+    method(vm, dvp, "setBigUint64", 2, view_set_big);
     realm::to_string_tag(vm, dvp, "DataView");
 }
 
@@ -496,8 +533,11 @@ fn ta_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
         return Ok(Value::Object(alloc_ta(vm, kind, proto, len)?));
     };
     let proto = proto_from(vm, nt, default_proto)?;
-    if let Some((_, _, _, _)) = vm.ta(fo) {
+    if let Some((src_kind, _, _, _)) = vm.ta(fo) {
         // From a typed array (§23.2.5.1.2).
+        if src_kind.is_bigint() != kind.is_bigint() {
+            return vm.type_error("Content types of the source and target typed arrays differ");
+        }
         let Some(src_len) = vm.ta_length(fo) else {
             return vm.type_error("source typed array is detached or out of bounds");
         };
@@ -613,7 +653,11 @@ fn species_create(vm: &mut Vm, exemplar: ObjRef, args: Vec<Value>) -> JsResult<O
     let kind = vm.ta(exemplar).expect("typed array").0;
     let default = vm.realm.ta_ctors[kind.index()];
     let c = vm.species_constructor(exemplar, default)?;
-    ta_create(vm, &c, args)
+    let r = ta_create(vm, &c, args)?;
+    if vm.ta(r).is_some_and(|t| t.0.is_bigint() != kind.is_bigint()) {
+        return vm.type_error("Content types of the species-created and source typed arrays differ");
+    }
+    Ok(r)
 }
 
 fn this_ta(vm: &mut Vm, c: &NativeCall) -> JsResult<(ObjRef, usize)> {
@@ -654,6 +698,14 @@ fn numeric_cmp(a: f64, b: f64) -> std::cmp::Ordering {
 }
 
 fn sorted(vm: &mut Vm, vals: Vec<Value>, cmp: &Value) -> JsResult<Vec<Value>> {
+    if cmp.is_undefined() && vals.iter().any(|v| matches!(v, Value::BigInt(_))) {
+        let mut v = vals;
+        v.sort_by(|a, b| match (a, b) {
+            (Value::BigInt(x), Value::BigInt(y)) => x.cmp(y),
+            _ => std::cmp::Ordering::Equal,
+        });
+        return Ok(v);
+    }
     if cmp.is_undefined() {
         let mut nums: Vec<f64> =
             vals.iter().map(|v| if let Value::Number(n) = v { *n } else { f64::NAN }).collect();
@@ -892,7 +944,7 @@ fn install_typed_arrays(vm: &mut Vm) {
     }
     method(vm, tap, "fill", 1, |vm, c| {
         let (o, len) = this_ta(vm, &c)?;
-        let v = Value::Number(vm.to_number(&c.arg(0))?);
+        let v = vm.ta_coerce(o, &c.arg(0))?;
         let lf = len as f64;
         let k = rel(vm, &c.arg(1), lf, 0.0)?;
         let fin = rel(vm, &c.arg(2), lf, lf)?;
@@ -1116,7 +1168,7 @@ fn install_typed_arrays(vm: &mut Vm) {
         let (o, len) = this_ta(vm, &c)?;
         let r = vm.to_integer_or_infinity(&c.arg(0))?;
         let idx = if r >= 0.0 { r } else { len as f64 + r };
-        let v = Value::Number(vm.to_number(&c.arg(1))?);
+        let v = vm.ta_coerce(o, &c.arg(1))?;
         if !vm.ta_length(o).is_some_and(|l| idx >= 0.0 && idx < l as f64) {
             return vm.range_error("Invalid typed array index");
         }

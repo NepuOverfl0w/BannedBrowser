@@ -13,6 +13,8 @@ pub enum Op {
     True,
     False,
     Num(f64),
+    /// BigInt constant `bigints[i]`.
+    BigInt(u32),
     /// String constant.
     Str(u32),
     Pop,
@@ -287,6 +289,7 @@ pub struct Code {
     pub strings: Vec<JsString>,
     pub names: Vec<Rc<str>>,
     pub keys: Vec<super::value::PropKey>,
+    pub bigints: Vec<Rc<super::bigint::BigInt>>,
     pub funcs: Vec<Rc<FuncTemplate>>,
     /// Tagged templates: (cooked, raw) strings; the object is cached per site.
     pub templates: Vec<(Vec<Option<JsString>>, Vec<JsString>)>,

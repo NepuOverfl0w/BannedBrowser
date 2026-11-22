@@ -331,6 +331,7 @@ pub enum Kind {
     Number(f64),
     String(JsString),
     Symbol(Sym),
+    BigInt(Rc<super::bigint::BigInt>),
     Error,
     Date(f64),
     RegExp {
@@ -434,6 +435,7 @@ pub enum MapKey {
     Number(u64),
     String(JsString),
     Symbol(Sym),
+    BigInt(Rc<super::bigint::BigInt>),
     Object(ObjRef),
 }
 
@@ -449,6 +451,7 @@ impl MapKey {
             }
             Value::String(s) => MapKey::String(s.clone()),
             Value::Symbol(s) => MapKey::Symbol(s.clone()),
+            Value::BigInt(b) => MapKey::BigInt(b.clone()),
             Value::Object(o) => MapKey::Object(*o),
         }
     }

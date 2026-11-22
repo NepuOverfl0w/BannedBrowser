@@ -305,7 +305,7 @@ impl Ser {
     /// SerializeJSONProperty (§25.5.2.2): `None` = undefined (skipped).
     fn property(&mut self, vm: &mut Vm, key: PropKey, holder: ObjRef) -> JsResult<Option<Vec<u16>>> {
         let mut v = vm.get(holder, &key)?;
-        if matches!(v, Value::Object(_)) {
+        if matches!(v, Value::Object(_) | Value::BigInt(_)) {
             let tj = vm.get_value_key(&v, &PropKey::named("toJSON"))?;
             if vm.is_callable(&tj) {
                 v = vm.call(&tj, v, vec![key.to_value()])?;
@@ -317,6 +317,7 @@ impl Ser {
         }
         if let Value::Object(o) = v {
             v = match vm.heap.obj(o).kind {
+                Kind::BigInt(ref b) => Value::BigInt(b.clone()),
                 Kind::Number(_) => Value::Number(vm.to_number(&v)?),
                 Kind::String(_) => Value::String(vm.to_string(&v)?),
                 Kind::Boolean(b) => Value::Bool(b),
@@ -331,6 +332,7 @@ impl Ser {
                 quote(s, &mut out);
                 Some(out)
             }
+            Value::BigInt(_) => return vm.type_error("Do not know how to serialize a BigInt"),
             Value::Number(n) => Some(
                 if n.is_finite() { number_to_string(*n) } else { "null".into() }.encode_utf16().collect(),
             ),

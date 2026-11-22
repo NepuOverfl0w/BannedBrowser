@@ -1432,7 +1432,12 @@ impl<'a> Compiler<'a> {
             Expr::Num(n) => {
                 self.emit(Op::Num(*n));
             }
-            Expr::BigInt(_) => self.unsupported("BigInt"),
+            Expr::BigInt(digits) => {
+                let b = super::bigint::BigInt::parse_radix(digits, 10).unwrap_or_default();
+                self.code.bigints.push(Rc::new(b));
+                let i = self.code.bigints.len() as u32 - 1;
+                self.emit(Op::BigInt(i));
+            }
             Expr::Str(s) => {
                 let i = self.string(s);
                 self.emit(Op::Str(i));

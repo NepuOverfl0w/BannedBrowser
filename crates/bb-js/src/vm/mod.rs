@@ -13,6 +13,7 @@
 //! calling back) defer it.
 
 mod async_gen;
+pub mod bigint;
 pub mod builtins;
 mod class;
 pub mod code;
@@ -1140,13 +1141,26 @@ impl Vm {
             }
             Op::Neg => {
                 let a = self.pop();
-                let n = self.to_number(&a)?;
-                self.push(Value::Number(-n));
+                let v = match self.to_numeric(&a)? {
+                    Value::BigInt(b) => Value::BigInt(Rc::new(b.neg())),
+                    Value::Number(n) => Value::Number(-n),
+                    v => v,
+                };
+                self.push(v);
             }
-            Op::Plus | Op::ToNumeric => {
+            Op::Plus => {
                 let a = self.pop();
                 let n = self.to_number(&a)?;
                 self.push(Value::Number(n));
+            }
+            Op::ToNumeric => {
+                let a = self.pop();
+                let v = self.to_numeric(&a)?;
+                self.push(v);
+            }
+            Op::BigInt(i) => {
+                let b = self.top().code.bigints[i as usize].clone();
+                self.push(Value::BigInt(b));
             }
             Op::Not => {
                 let a = self.pop();
@@ -1154,8 +1168,11 @@ impl Vm {
             }
             Op::BitNot => {
                 let a = self.pop();
-                let n = self.to_int32(&a)?;
-                self.push(Value::Number(!n as f64));
+                let v = match self.to_numeric(&a)? {
+                    Value::BigInt(b) => Value::BigInt(Rc::new(b.not())),
+                    v => Value::Number(!ops::f64_to_int32(self.to_number(&v)?) as f64),
+                };
+                self.push(v);
             }
             Op::TypeOf => {
                 let a = self.pop();
@@ -1164,8 +1181,17 @@ impl Vm {
             }
             Op::Inc | Op::Dec => {
                 let a = self.pop();
-                let n = self.to_number(&a)?;
-                self.push(Value::Number(if op == Op::Inc { n + 1.0 } else { n - 1.0 }));
+                let v = match self.to_numeric(&a)? {
+                    Value::BigInt(b) => {
+                        let one = bigint::BigInt::from_i64(if op == Op::Inc { 1 } else { -1 });
+                        Value::BigInt(Rc::new(b.add(&one)))
+                    }
+                    v => {
+                        let n = self.to_number(&v)?;
+                        Value::Number(if op == Op::Inc { n + 1.0 } else { n - 1.0 })
+                    }
+                };
+                self.push(v);
             }
             Op::ToKey => {
                 let a = self.pop();
@@ -1507,6 +1533,7 @@ impl Vm {
             Value::Number(n) => value::number_to_string(*n),
             Value::String(s) => format!("\"{}\"", to_rust(s)),
             Value::Symbol(_) => "a symbol".into(),
+            Value::BigInt(b) => format!("{}n", b.to_string_radix(10)),
             Value::Object(o) => {
                 if self.heap.obj(*o).is_callable() {
                     "function".into()

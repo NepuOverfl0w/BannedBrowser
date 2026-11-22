@@ -1,9 +1,11 @@
 //! Type conversion (ECMA-262 §7.1), testing and comparison (§7.2) and the operators (§13).
 
+use super::bigint::BigInt;
 use super::code::Op;
 use super::heap::*;
 use super::value::{js_str, number_to_string, string_to_number, JsString, PropKey, Value};
 use super::{JsResult, Vm};
+use std::rc::Rc;
 
 pub fn nullish_name(v: &Value) -> &'static str {
     if matches!(v, Value::Null) {
@@ -46,6 +48,7 @@ impl Vm {
             Value::Number(_) => "number",
             Value::String(_) => "string",
             Value::Symbol(_) => "symbol",
+            Value::BigInt(_) => "bigint",
             Value::Object(o) => {
                 if self.heap.obj(*o).is_callable() {
                     "function"
@@ -99,6 +102,7 @@ impl Vm {
             Value::Number(n) => *n,
             Value::String(s) => string_to_number(s),
             Value::Symbol(_) => return self.type_error("Cannot convert a Symbol value to a number"),
+            Value::BigInt(_) => return self.type_error("Cannot convert a BigInt value to a number"),
             Value::Object(_) => {
                 let p = self.to_primitive(v, Hint::Number)?;
                 return self.to_number(&p);
@@ -157,6 +161,7 @@ impl Vm {
             Value::Number(n) => js_str(&number_to_string(*n)),
             Value::String(s) => s.clone(),
             Value::Symbol(_) => return self.type_error("Cannot convert a Symbol value to a string"),
+            Value::BigInt(b) => js_str(&b.to_string_radix(10)),
             Value::Object(_) => {
                 let p = self.to_primitive(v, Hint::String)?;
                 return self.to_string(&p);
@@ -189,6 +194,7 @@ impl Vm {
             Value::Number(n) => (self.realm.number_proto, Kind::Number(*n)),
             Value::String(s) => (self.realm.string_proto, Kind::String(s.clone())),
             Value::Symbol(s) => (self.realm.symbol_proto, Kind::Symbol(s.clone())),
+            Value::BigInt(b) => (self.realm.bigint_proto, Kind::BigInt(b.clone())),
         };
         let o = self.heap.alloc(Object::new(Some(proto), kind));
         if let Value::String(s) = v {
@@ -218,14 +224,57 @@ impl Vm {
             v.extend_from_slice(&sb);
             return Ok(Value::String(v.into()));
         }
-        let x = self.to_number(&pa)?;
-        let y = self.to_number(&pb)?;
-        Ok(Value::Number(x + y))
+        let x = self.to_numeric(&pa)?;
+        let y = self.to_numeric(&pb)?;
+        match (x, y) {
+            (Value::Number(x), Value::Number(y)) => Ok(Value::Number(x + y)),
+            (Value::BigInt(x), Value::BigInt(y)) => Ok(Value::BigInt(Rc::new(x.add(&y)))),
+            _ => self.type_error("Cannot mix BigInt and other types, use explicit conversions"),
+        }
+    }
+
+    /// ToNumeric (§7.1.3): a Number or a BigInt.
+    pub fn to_numeric(&mut self, v: &Value) -> JsResult<Value> {
+        let p = self.to_primitive(v, Hint::Number)?;
+        if let Value::BigInt(_) = p {
+            return Ok(p);
+        }
+        Ok(Value::Number(self.to_number(&p)?))
+    }
+
+    /// ToBigInt (§7.1.13).
+    pub fn to_bigint(&mut self, v: &Value) -> JsResult<Rc<BigInt>> {
+        let p = self.to_primitive(v, Hint::Number)?;
+        match p {
+            Value::BigInt(b) => Ok(b),
+            Value::Bool(b) => Ok(Rc::new(BigInt::from_i64(b as i64))),
+            Value::String(s) => match BigInt::parse_js(&s) {
+                Some(b) => Ok(Rc::new(b)),
+                None => self.syntax_error(&format!("Cannot convert {} to a BigInt", super::to_rust(&s))),
+            },
+            Value::Undefined | Value::Null => {
+                self.type_error(&format!("Cannot convert {} to a BigInt", nullish_name(&p)))
+            }
+            Value::Number(n) => {
+                self.type_error(&format!("Cannot convert {} to a BigInt", number_to_string(n)))
+            }
+            _ => self.type_error("Cannot convert value to a BigInt"),
+        }
     }
 
     pub(super) fn arith(&mut self, op: Op, a: &Value, b: &Value) -> JsResult<Value> {
-        let x = self.to_number(a)?;
-        let y = self.to_number(b)?;
+        let na = self.to_numeric(a)?;
+        let nb = self.to_numeric(b)?;
+        match (&na, &nb) {
+            (Value::BigInt(x), Value::BigInt(y)) => {
+                return self.bigint_arith(op, x, y).map(|r| Value::BigInt(Rc::new(r)))
+            }
+            (Value::BigInt(_), _) | (_, Value::BigInt(_)) => {
+                return self.type_error("Cannot mix BigInt and other types, use explicit conversions")
+            }
+            _ => {}
+        }
+        let (Value::Number(x), Value::Number(y)) = (na, nb) else { return Ok(Value::Number(f64::NAN)) };
         Ok(Value::Number(match op {
             Op::Sub => x - y,
             Op::Mul => x * y,
@@ -242,7 +291,68 @@ impl Vm {
         }))
     }
 
-    /// Relational operators via IsLessThan (§7.2.13).
+    /// The BigInt operations of §6.1.6.2.
+    fn bigint_arith(&mut self, op: Op, x: &BigInt, y: &BigInt) -> JsResult<BigInt> {
+        let shift = |vm: &mut Vm, x: &BigInt, y: &BigInt, left: bool| -> JsResult<BigInt> {
+            let left = left != y.neg;
+            if y.bit_len() > 40 {
+                if left && !x.is_zero() {
+                    return vm.range_error("Maximum BigInt size exceeded");
+                }
+                return Ok(if left || !x.neg { BigInt::zero() } else { BigInt::from_i64(-1) });
+            }
+            let n = y.mag.iter().enumerate().fold(0u64, |a, (i, &l)| a | (l as u64) << (32 * i));
+            if left {
+                if x.bit_len() + n > (1 << 30) {
+                    return vm.range_error("Maximum BigInt size exceeded");
+                }
+                Ok(x.shl(n))
+            } else {
+                Ok(x.shr(n))
+            }
+        };
+        Ok(match op {
+            Op::Sub => x.sub(y),
+            Op::Mul => {
+                if x.bit_len() + y.bit_len() > (1 << 30) {
+                    return self.range_error("Maximum BigInt size exceeded");
+                }
+                x.mul(y)
+            }
+            Op::Div => match x.divrem(y) {
+                Some((q, _)) => q,
+                None => return self.range_error("Division by zero"),
+            },
+            Op::Mod => match x.divrem(y) {
+                Some((_, r)) => r,
+                None => return self.range_error("Division by zero"),
+            },
+            Op::Exp => {
+                if y.neg {
+                    return self.range_error("Exponent must be non-negative");
+                }
+                if y.is_zero() {
+                    return Ok(BigInt::from_i64(1));
+                }
+                if x.is_zero() || x.bit_len() == 1 && x.mag == [1] {
+                    let odd = y.mag[0] & 1 == 1;
+                    return Ok(if x.neg && !odd { x.neg() } else { x.clone() });
+                }
+                if y.bit_len() > 32 || x.bit_len() * y.mag[0] as u64 > (1 << 30) {
+                    return self.range_error("Maximum BigInt size exceeded");
+                }
+                x.pow(y.mag[0] as u64)
+            }
+            Op::Shl => shift(self, x, y, true)?,
+            Op::Shr => shift(self, x, y, false)?,
+            Op::UShr => return self.type_error("BigInts have no unsigned right shift, use >> instead"),
+            Op::BitAnd => x.bitop(y, |a, b| a & b),
+            Op::BitOr => x.bitop(y, |a, b| a | b),
+            Op::BitXor => x.bitop(y, |a, b| a ^ b),
+            _ => BigInt::zero(),
+        })
+    }
+
     pub(super) fn compare(&mut self, op: Op, a: &Value, b: &Value) -> JsResult<bool> {
         let (pa, pb) = if matches!(op, Op::Lt | Op::Le) {
             let pa = self.to_primitive(a, Hint::Number)?;
@@ -258,8 +368,31 @@ impl Vm {
             if let (Value::String(s), Value::String(t)) = (x, y) {
                 return Ok(Some(s[..] < t[..]));
             }
-            let nx = vm.to_number(x)?;
-            let ny = vm.to_number(y)?;
+            // BigInt comparisons are exact (§7.2.13 steps 3–4).
+            match (x, y) {
+                (Value::BigInt(a), Value::BigInt(b)) => {
+                    return Ok(Some(a.cmp(b) == std::cmp::Ordering::Less))
+                }
+                (Value::BigInt(a), Value::String(s)) => {
+                    return Ok(BigInt::parse_js(s).map(|b| a.cmp(&b) == std::cmp::Ordering::Less))
+                }
+                (Value::String(s), Value::BigInt(b)) => {
+                    return Ok(BigInt::parse_js(s).map(|a| a.cmp(b) == std::cmp::Ordering::Less))
+                }
+                _ => {}
+            }
+            let nx = vm.to_numeric(x)?;
+            let ny = vm.to_numeric(y)?;
+            match (&nx, &ny) {
+                (Value::BigInt(a), Value::Number(n)) => {
+                    return Ok(a.cmp_f64(*n).map(|o| o == std::cmp::Ordering::Less))
+                }
+                (Value::Number(n), Value::BigInt(b)) => {
+                    return Ok(b.cmp_f64(*n).map(|o| o == std::cmp::Ordering::Greater))
+                }
+                _ => {}
+            }
+            let (Value::Number(nx), Value::Number(ny)) = (nx, ny) else { return Ok(None) };
             if nx.is_nan() || ny.is_nan() {
                 return Ok(None);
             }
@@ -288,13 +421,20 @@ impl Vm {
                 let n = string_to_number(s);
                 return self.loosely_equal(&Number(n), b);
             }
+            (BigInt(x), BigInt(y)) => x == y,
+            (BigInt(x), Number(n)) | (Number(n), BigInt(x)) => {
+                x.cmp_f64(*n) == Some(std::cmp::Ordering::Equal)
+            }
+            (BigInt(x), String(s)) | (String(s), BigInt(x)) => {
+                super::bigint::BigInt::parse_js(s).is_some_and(|y| **x == y)
+            }
             (Bool(x), _) => return self.loosely_equal(&Number(*x as u8 as f64), b),
             (_, Bool(y)) => return self.loosely_equal(a, &Number(*y as u8 as f64)),
-            (Object(_), Number(_) | String(_) | Symbol(_)) => {
+            (Object(_), Number(_) | String(_) | Symbol(_) | BigInt(_)) => {
                 let p = self.to_primitive(a, Hint::Default)?;
                 return self.loosely_equal(&p, b);
             }
-            (Number(_) | String(_) | Symbol(_), Object(_)) => {
+            (Number(_) | String(_) | Symbol(_) | BigInt(_), Object(_)) => {
                 let p = self.to_primitive(b, Hint::Default)?;
                 return self.loosely_equal(a, &p);
             }

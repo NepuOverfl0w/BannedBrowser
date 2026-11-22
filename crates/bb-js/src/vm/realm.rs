@@ -11,8 +11,8 @@ macro_rules! realm_objects {
         pub struct Realm {
             $(pub $f: ObjRef,)*
             pub error_protos: [ObjRef; 7],
-            pub ta_protos: [ObjRef; 10],
-            pub ta_ctors: [ObjRef; 10],
+            pub ta_protos: [ObjRef; 12],
+            pub ta_ctors: [ObjRef; 12],
             pub global_env: EnvRef,
             pub global_this: Value,
             pub sym_iterator: Sym,
@@ -39,8 +39,8 @@ macro_rules! realm_objects {
                 Realm {
                     $($f: d,)*
                     error_protos: [d; 7],
-                    ta_protos: [d; 10],
-                    ta_ctors: [d; 10],
+                    ta_protos: [d; 12],
+                    ta_ctors: [d; 12],
                     global_env: genv,
                     global_this: Value::Undefined,
                     sym_iterator: s("Symbol.iterator"),
@@ -91,6 +91,7 @@ realm_objects!(
     weakset_proto,
     weakref_proto,
     finreg_proto,
+    bigint_proto,
     array_buffer_proto,
     shared_array_buffer_proto,
     dataview_proto,

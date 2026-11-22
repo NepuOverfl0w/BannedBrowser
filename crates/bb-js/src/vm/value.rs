@@ -62,6 +62,7 @@ pub enum Value {
     Number(f64),
     String(JsString),
     Symbol(Sym),
+    BigInt(Rc<super::bigint::BigInt>),
     Object(ObjRef),
 }
 
@@ -88,6 +89,7 @@ impl Value {
             Value::Bool(b) => *b,
             Value::Number(n) => !(*n == 0.0 || n.is_nan()),
             Value::String(s) => !s.is_empty(),
+            Value::BigInt(b) => !b.is_zero(),
             Value::Symbol(_) | Value::Object(_) => true,
         }
     }
@@ -119,6 +121,7 @@ pub fn strict_equals(a: &Value, b: &Value) -> bool {
         (Value::Number(x), Value::Number(y)) => x == y,
         (Value::String(x), Value::String(y)) => x == y,
         (Value::Symbol(x), Value::Symbol(y)) => x == y,
+        (Value::BigInt(x), Value::BigInt(y)) => x == y,
         (Value::Object(x), Value::Object(y)) => x == y,
         _ => false,
     }

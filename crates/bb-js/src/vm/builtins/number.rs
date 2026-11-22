@@ -1,5 +1,6 @@
 //! Number (§21.1), Math (§21.3), `parseInt`/`parseFloat` (§19.2.4–5).
 
+use super::super::bigint::BigInt;
 use super::super::heap::*;
 use super::super::realm::{self, constant, method};
 use super::super::value::{digits_to_f64, is_js_space, number_to_string, Value};
@@ -322,7 +323,15 @@ pub(super) fn install(vm: &mut Vm) {
         "Number",
         1,
         |vm, c| {
-            let n = if c.args.is_empty() { 0.0 } else { vm.to_number(&c.args[0])? };
+            // §21.1.1.1: ToNumeric, and a BigInt becomes the Number with its value.
+            let n = if c.args.is_empty() {
+                0.0
+            } else {
+                match vm.to_numeric(&c.args[0])? {
+                    Value::BigInt(b) => b.to_f64(),
+                    v => vm.to_number(&v)?,
+                }
+            };
             let Some(nt) = c.new_target else { return Ok(Value::Number(n)) };
             let proto = vm.prototype_from_ctor(nt, |r| r.number_proto)?;
             Ok(Value::Object(vm.heap.alloc(Object::new(Some(proto), Kind::Number(n)))))
@@ -438,6 +447,7 @@ pub(super) fn install(vm: &mut Vm) {
     });
 
     install_math(vm);
+    install_bigint(vm);
 }
 
 fn num(vm: &mut Vm, c: &NativeCall, i: usize) -> JsResult<f64> {
@@ -605,4 +615,69 @@ mod tests {
         assert_eq!(to_radix(-255.0, 2), "-11111111");
         assert_eq!(to_radix(0.5, 2), "0.1");
     }
+}
+
+fn this_bigint(vm: &mut Vm, v: &Value) -> JsResult<std::rc::Rc<BigInt>> {
+    match v {
+        Value::BigInt(b) => Ok(b.clone()),
+        Value::Object(o) => match &vm.heap.obj(*o).kind {
+            Kind::BigInt(b) => Ok(b.clone()),
+            _ => vm.type_error("not a BigInt"),
+        },
+        _ => vm.type_error("not a BigInt"),
+    }
+}
+
+/// BigInt (§21.2).
+fn install_bigint(vm: &mut Vm) {
+    let op = vm.realm.object_proto;
+    let bp = vm.new_object_with_proto(Some(op));
+    vm.realm.bigint_proto = bp;
+    let c = realm::constructor(
+        vm,
+        "BigInt",
+        1,
+        |vm, c| {
+            if c.new_target.is_some() {
+                return vm.type_error("BigInt is not a constructor");
+            }
+            let prim = vm.to_primitive(&c.arg(0), super::super::ops::Hint::Number)?;
+            if let Value::Number(n) = prim {
+                // NumberToBigInt (§21.2.1.1.1).
+                return match BigInt::from_f64(n) {
+                    Some(b) => Ok(Value::BigInt(std::rc::Rc::new(b))),
+                    None => vm.range_error(&format!(
+                        "The number {} cannot be converted to a BigInt because it is not an integer",
+                        number_to_string(n)
+                    )),
+                };
+            }
+            Ok(Value::BigInt(vm.to_bigint(&prim)?))
+        },
+        bp,
+    );
+    method(vm, c, "asIntN", 2, |vm, c| {
+        let bits = vm.to_index(&c.arg(0))?;
+        let b = vm.to_bigint(&c.arg(1))?;
+        Ok(Value::BigInt(std::rc::Rc::new(b.as_int_n(bits as u64))))
+    });
+    method(vm, c, "asUintN", 2, |vm, c| {
+        let bits = vm.to_index(&c.arg(0))?;
+        let b = vm.to_bigint(&c.arg(1))?;
+        Ok(Value::BigInt(std::rc::Rc::new(b.as_uint_n(bits as u64))))
+    });
+    method(vm, bp, "toString", 0, |vm, c| {
+        let b = this_bigint(vm, &c.this)?;
+        let r = if c.arg(0).is_undefined() { 10.0 } else { vm.to_integer_or_infinity(&c.arg(0))? };
+        if !(2.0..=36.0).contains(&r) {
+            return vm.range_error("toString() radix must be between 2 and 36");
+        }
+        Ok(Value::str(&b.to_string_radix(r as u32)))
+    });
+    method(vm, bp, "toLocaleString", 0, |vm, c| {
+        let b = this_bigint(vm, &c.this)?;
+        Ok(Value::str(&b.to_string_radix(10)))
+    });
+    method(vm, bp, "valueOf", 0, |vm, c| Ok(Value::BigInt(this_bigint(vm, &c.this)?)));
+    realm::to_string_tag(vm, bp, "BigInt");
 }

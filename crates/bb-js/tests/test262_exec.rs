@@ -6,7 +6,7 @@
 //! error its `negative` metadata names in the named phase.
 //!
 //! Not supported yet, and failing for it: modules,
-//! BigInt, RegExp matching, and more built-ins (see PROGRESS.md).
+//! RegExp matching, and more built-ins (see PROGRESS.md).
 //! `FLOOR` only ever goes up; the goal is all of it.
 //!
 //! `cargo test -p bb-js --test test262_exec -- --nocapture` prints the numbers; failures go to
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 36_297;
+const FLOOR: usize = 37_614;
 
 /// Instructions per test variant before it counts as hung.
 const FUEL: u64 = 20_000_000;
