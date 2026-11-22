@@ -70,6 +70,8 @@ pub struct Frame {
     pub generator: Option<ObjRef>,
     /// How the frame was resumed after its last `yield`.
     pub resume: Resume,
+    /// Evaluating parameter initializers.
+    pub in_params: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -236,6 +238,7 @@ impl Vm {
             construct: None,
             generator: None,
             resume: Resume::Next,
+            in_params: false,
         }
     }
 
@@ -1383,6 +1386,8 @@ impl Vm {
                 return self.syntax_error(&s);
             }
             Op::GeneratorStart => return self.generator_start(base),
+            Op::ParamsStart => self.top().in_params = true,
+            Op::ParamsEnd => self.top().in_params = false,
             Op::ImportCall => {
                 let opts = self.pop();
                 let spec = self.pop();
@@ -1611,6 +1616,14 @@ impl Vm {
         let source: Rc<[char]> = src.chars().collect::<Vec<_>>().into();
         let referrer = self.current_referrer();
         let code = Rc::new(Compiler::compile_unit(Unit::Eval(&prog), source, referrer));
+        // Only when the parameter scope binds `arguments` (a parameter or the object).
+        let params_bind_arguments = self.heap.env(var_env).bindings.contains_key("arguments");
+        if self.top().in_params && !prog.strict && params_bind_arguments {
+            let d = &code.decls;
+            if d.vars.iter().chain(d.functions.iter().map(|f| &f.0)).any(|n| &**n == "arguments") {
+                return self.syntax_error("'arguments' can't be declared by eval in parameter initializers");
+            }
+        }
         let lex = self.heap.alloc_env(Env {
             outer: Some(env),
             kind: EnvKind::Declarative,

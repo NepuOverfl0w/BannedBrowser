@@ -193,6 +193,10 @@ pub enum Op {
     IterCloseThrow,
     /// `[v] → []` completion value of script/eval code.
     SetCompletion,
+    /// Parameter initializers run between these: a direct eval there may not declare
+    /// `var arguments` (§19.2.1.3 step 3).
+    ParamsStart,
+    ParamsEnd,
     // Modules (§16.2).
     /// `[specifier options] → [promise]` dynamic `import()` (§13.3.10).
     ImportCall,

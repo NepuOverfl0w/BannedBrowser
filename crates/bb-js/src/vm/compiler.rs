@@ -480,6 +480,9 @@ impl<'a> Compiler<'a> {
             c.emit(if f.strict { Op::DeclareConst(i) } else { Op::DeclareLet(i) });
             c.emit(Op::InitBinding(i));
         }
+        if has_param_exprs {
+            c.emit(Op::ParamsStart);
+        }
         for (i, p) in f.params.iter().enumerate() {
             c.emit(Op::Arg(i as u32));
             c.bind(p, Bind::Init);
@@ -487,6 +490,9 @@ impl<'a> Compiler<'a> {
         if let Some(r) = &f.rest {
             c.emit(Op::RestArgs(f.params.len() as u32));
             c.bind(r, Bind::Init);
+        }
+        if has_param_exprs {
+            c.emit(Op::ParamsEnd);
         }
         let mut vars = Vec::new();
         var_names(&f.body, &mut vars, true);
@@ -657,11 +663,11 @@ impl<'a> Compiler<'a> {
                 self.set_completion_undefined();
                 self.expr(t);
                 let j = self.emit(Op::JumpIfFalse(0));
-                self.stmt(a);
+                self.branch(a);
                 if let Some(b) = b {
                     let k = self.emit(Op::Jump(0));
                     self.patch(j);
-                    self.stmt(b);
+                    self.branch(b);
                     self.patch(k);
                 } else {
                     self.patch(j);
@@ -832,6 +838,17 @@ impl<'a> Compiler<'a> {
             self.return_top();
             self.patch(cont);
             self.code.ops[r] = Op::Resume(ret);
+        }
+    }
+
+    /// An `if` branch; a bare function declaration there is as if in a block (B.3.3).
+    fn branch(&mut self, s: &'a Stmt) {
+        if matches!(s, Stmt::Function(_)) {
+            let had = self.block_scope(std::slice::from_ref(s));
+            self.stmt(s);
+            self.end_scope(had);
+        } else {
+            self.stmt(s);
         }
     }
 
