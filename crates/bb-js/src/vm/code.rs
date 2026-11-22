@@ -196,6 +196,30 @@ pub enum Op {
     AsyncStart,
     /// `[v] →` park until `v` (as a promise) settles; followed by `Resume`.
     Await,
+    // Async generators and async iteration (§27.6, §14.7.5).
+    /// Park the frame in a new async generator object and return that.
+    AsyncGenStart,
+    /// `[v] →` AsyncGeneratorYield: settle the front request, then continue with the next
+    /// one (resumption value on the stack) or suspend.
+    AsyncYield,
+    /// `[rec received] → [rec mode innerResult]`: call next/throw/return of the delegate;
+    /// a return without a `return` method jumps to the target with the value.
+    YieldStarAsync(u32),
+    /// `[rec mode result] → [rec value]`, or done: the value, to the first target (or the
+    /// second for a return completion).
+    YieldStarAsyncCheck(u32, u32),
+    /// `[iterable] → [record]` via @@asyncIterator or CreateAsyncFromSyncIterator.
+    GetAsyncIter,
+    /// `[rec] → [rec result]` (calls `next`, the result still to be awaited).
+    IterNextAsync,
+    /// `[rec result] → [rec value]`, or when done pop both and jump.
+    IterResultCheck(u32),
+    /// `[rec] → [returnResult]` (to await), or jump when there is nothing to close.
+    AsyncIterClose(u32),
+    /// `[rec exc] →` call `return` (ignoring its errors), rethrow.
+    AsyncIterCloseThrow,
+    /// `[v] →` TypeError unless an object.
+    CheckObject,
     // Generators (§27.5).
     /// Park the frame in a new generator object and return that (after the parameters).
     GeneratorStart,

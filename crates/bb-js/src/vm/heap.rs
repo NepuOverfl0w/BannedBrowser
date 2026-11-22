@@ -259,6 +259,29 @@ pub struct PromiseData {
     pub handled: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AgPhase {
+    Start,
+    Yield,
+    Executing,
+    AwaitingReturn,
+    Completed,
+}
+
+/// An AsyncGeneratorRequest (§27.6.3.1): the completion and its promise capability.
+pub struct AgRequest {
+    pub mode: super::Resume,
+    pub value: Value,
+    pub resolve: Value,
+    pub reject: Value,
+}
+
+pub struct AsyncGen {
+    pub frame: Option<Box<Frame>>,
+    pub phase: AgPhase,
+    pub queue: std::collections::VecDeque<AgRequest>,
+}
+
 pub struct AsyncFn {
     pub state: GenState,
     pub resolve: Value,
@@ -331,6 +354,7 @@ pub enum Kind {
     Promise(Box<PromiseData>),
     /// A running async function: its parked frame and its promise's resolving functions.
     Async(Box<AsyncFn>),
+    AsyncGen(Box<AsyncGen>),
     Map(Box<OrderedMap>),
     Set(Box<OrderedMap>),
     MapIter {
@@ -616,6 +640,16 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
             }
             push_val(&a.resolve, os);
             push_val(&a.reject, os);
+        }
+        Kind::AsyncGen(a) => {
+            if let Some(f) = &a.frame {
+                f.trace(os, es);
+            }
+            for r in &a.queue {
+                push_val(&r.value, os);
+                push_val(&r.resolve, os);
+                push_val(&r.reject, os);
+            }
         }
         Kind::Promise(p) => {
             push_val(&p.result, os);

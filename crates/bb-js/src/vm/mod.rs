@@ -12,6 +12,7 @@
 //! then holds a heap reference that isn't on a VM stack); nested runs (getters, natives
 //! calling back) defer it.
 
+mod async_gen;
 pub mod builtins;
 mod class;
 pub mod code;
@@ -1308,6 +1309,63 @@ impl Vm {
             }
             Op::GeneratorStart => return self.generator_start(base),
             Op::AsyncStart => return self.async_start(base),
+            Op::AsyncGenStart => return self.async_gen_start(base),
+            Op::AsyncYield => return self.async_yield(base),
+            Op::YieldStarAsync(t) => self.yield_star_async(t)?,
+            Op::YieldStarAsyncCheck(d, r) => self.yield_star_async_check(d, r)?,
+            Op::GetAsyncIter => {
+                let v = self.pop();
+                let r = self.get_async_iterator(&v)?;
+                self.push(Value::Object(r));
+            }
+            Op::IterNextAsync => {
+                let Value::Object(r) = self.peek(0) else { return Ok(None) };
+                let (it, next) = self.iter_parts(r);
+                let res = self.call(&next, it, Vec::new())?;
+                self.push(res);
+            }
+            Op::IterResultCheck(t) => {
+                let res = self.pop();
+                let Value::Object(ro) = res else {
+                    return self.type_error("Iterator result is not an object");
+                };
+                if self.get(ro, &PropKey::named("done"))?.truthy() {
+                    self.pop();
+                    self.jump(t);
+                } else {
+                    let v = self.get(ro, &PropKey::named("value"))?;
+                    self.push(v);
+                }
+            }
+            Op::AsyncIterClose(t) => {
+                let Value::Object(r) = self.pop() else { return Ok(None) };
+                let (it, _) = self.iter_parts(r);
+                match self.get_method(&it, &PropKey::named("return"))? {
+                    Some(f) => {
+                        let res = self.call(&f, it, Vec::new())?;
+                        self.push(res);
+                    }
+                    None => self.jump(t),
+                }
+            }
+            Op::AsyncIterCloseThrow => {
+                let exc = self.pop();
+                if let Value::Object(r) = self.pop() {
+                    let (it, _) = self.iter_parts(r);
+                    if let Ok(Some(f)) = self.get_method(&it, &PropKey::named("return")) {
+                        let _ = self.call(&f, it, Vec::new());
+                    }
+                }
+                if self.terminated {
+                    return Err(Value::Undefined);
+                }
+                return Err(exc);
+            }
+            Op::CheckObject => {
+                if !matches!(self.pop(), Value::Object(_)) {
+                    return self.type_error("Iterator result is not an object");
+                }
+            }
             Op::Await => return self.await_value(base),
             Op::Yield => {
                 let v = self.pop();
@@ -1515,6 +1573,7 @@ impl Vm {
         let constructor =
             may_construct && f.kind == crate::ast::FuncKind::Normal && !f.is_generator && !f.is_async;
         let length = tmpl.length;
+        let (f_gen, f_async) = (f.is_generator, f.is_async);
         let name: JsString = match (&f.name, &tmpl.given_name) {
             (Some(n), _) => js_str(n),
             (None, Some(g)) => js_str(g),
@@ -1527,7 +1586,6 @@ impl Vm {
         } else {
             self.realm.function_proto
         };
-        let is_gen = f.is_generator && !f.is_async;
         let closure = Closure {
             tmpl,
             env,
@@ -1553,9 +1611,9 @@ impl Vm {
                 .obj_mut(fo)
                 .props
                 .insert(PropKey::named("prototype"), Prop::data(Value::Object(p), true, false, false));
-        } else if is_gen {
+        } else if f_gen {
             // Generator functions get a prototype for their generators (§15.5.3), no constructor.
-            let gp = self.realm.generator_proto;
+            let gp = if f_async { self.realm.async_generator_proto } else { self.realm.generator_proto };
             let p = self.new_object_with_proto(Some(gp));
             self.heap
                 .obj_mut(fo)

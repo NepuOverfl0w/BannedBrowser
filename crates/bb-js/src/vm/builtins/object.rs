@@ -533,6 +533,8 @@ fn function_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
                 vm.prototype_from_ctor(nt, |r| r.generator_function_proto)?
             } else if kind == 2 {
                 vm.prototype_from_ctor(nt, |r| r.async_function_proto)?
+            } else if kind == 3 {
+                vm.prototype_from_ctor(nt, |r| r.async_generator_function_proto)?
             } else {
                 vm.prototype_from_ctor(nt, |r| r.function_proto)?
             };
@@ -671,4 +673,16 @@ pub(super) fn install_dynamic_kinds(vm: &mut Vm) {
         .obj_mut(afp)
         .props
         .insert(PropKey::named("constructor"), Prop::data(Value::Object(af), false, false, true));
+    let agfp = vm.realm.async_generator_function_proto;
+    let ag =
+        realm::native_with(vm, "AsyncGeneratorFunction", 1, function_ctor, true, vec![Value::Number(3.0)]);
+    vm.heap.obj_mut(ag).proto = Some(fc);
+    vm.heap
+        .obj_mut(ag)
+        .props
+        .insert(PropKey::named("prototype"), Prop::data(Value::Object(agfp), false, false, false));
+    vm.heap
+        .obj_mut(agfp)
+        .props
+        .insert(PropKey::named("constructor"), Prop::data(Value::Object(ag), false, false, true));
 }

@@ -306,6 +306,13 @@ impl Vm {
     fn async_resume(&mut self, st: ObjRef, mode: Resume, v: Value) -> JsResult<Value> {
         let state = match &mut self.heap.obj_mut(st).kind {
             Kind::Async(a) => std::mem::replace(&mut a.state, GenState::Executing),
+            Kind::AsyncGen(a) => {
+                let Some(mut frame) = a.frame.take() else { return Ok(Value::Undefined) };
+                frame.stack.push(v);
+                frame.resume = mode;
+                self.async_gen_run(st, *frame)?;
+                return Ok(Value::Undefined);
+            }
             _ => return Ok(Value::Undefined),
         };
         let GenState::SuspendedYield(mut frame) = state else { return Ok(Value::Undefined) };

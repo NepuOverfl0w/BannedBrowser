@@ -47,6 +47,7 @@ impl Vm {
         match &mut self.heap.obj_mut(g).kind {
             Kind::Generator(st) => **st = GenState::SuspendedYield(Box::new(frame)),
             Kind::Async(a) => a.state = GenState::SuspendedYield(Box::new(frame)),
+            Kind::AsyncGen(a) => a.frame = Some(Box::new(frame)),
             _ => {}
         }
         if self.frames.len() <= base {
@@ -61,6 +62,7 @@ impl Vm {
         match &mut self.heap.obj_mut(g).kind {
             Kind::Generator(st) if matches!(**st, GenState::Executing) => **st = GenState::Completed,
             Kind::Async(a) if matches!(a.state, GenState::Executing) => a.state = GenState::Completed,
+            Kind::AsyncGen(a) if a.phase == AgPhase::Executing => a.phase = AgPhase::Completed,
             _ => {}
         }
     }

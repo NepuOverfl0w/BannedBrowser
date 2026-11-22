@@ -28,6 +28,7 @@ pub(super) fn install(vm: &mut Vm) {
     install_symbol(vm);
     install_iterators(vm);
     super::generator::install(vm);
+    super::async_gen::install(vm);
     object::install_dynamic_kinds(vm);
     install_reflect(vm);
     super::promise::install(vm);

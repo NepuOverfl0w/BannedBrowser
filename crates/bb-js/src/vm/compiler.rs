@@ -24,6 +24,8 @@ enum Ctl<'a> {
     Pop,
     /// An iterator record to close when jumping out.
     Iter,
+    /// An async iterator record (for await): close and await the result.
+    AsyncIter,
     Break {
         kind: BreakKind,
         labels: Vec<String>,
@@ -53,6 +55,8 @@ pub struct Compiler<'a> {
     chain: Vec<Vec<usize>>,
     /// Annex B.3.2 block functions that also assign the var binding when evaluated.
     annex_b: HashSet<*const Function>,
+    /// Compiling an async generator body: `return` and `yield` await (§15.6, §27.6.3.8).
+    async_gen: bool,
 }
 
 pub enum Unit<'a> {
@@ -72,6 +76,7 @@ impl<'a> Compiler<'a> {
             keys: HashMap::new(),
             chain: Vec::new(),
             annex_b: HashSet::new(),
+            async_gen: false,
         }
     }
 
@@ -102,6 +107,8 @@ impl<'a> Compiler<'a> {
             Op::TryStart(_) => Op::TryStart(to),
             Op::ForInNext(_) => Op::ForInNext(to),
             Op::IterNext(_) => Op::IterNext(to),
+            Op::IterResultCheck(_) => Op::IterResultCheck(to),
+            Op::AsyncIterClose(_) => Op::AsyncIterClose(to),
             o => o,
         };
     }
@@ -235,11 +242,8 @@ impl<'a> Compiler<'a> {
         let f = &t.ast;
         let mut c = Compiler::new(t.source.clone(), f.strict, false);
         let is_arrow = f.kind == FuncKind::Arrow;
-        if f.is_async && f.is_generator {
-            c.unsupported("async generators");
-            return c.code;
-        }
-        if f.is_async {
+        c.async_gen = f.is_async && f.is_generator;
+        if f.is_async && !f.is_generator {
             // Errors from here on (parameters included) reject the promise (§27.7.5.1).
             c.emit(Op::AsyncStart);
         }
@@ -384,7 +388,7 @@ impl<'a> Compiler<'a> {
             c.emit(Op::SetVarEnv(ni));
         }
         if f.is_generator {
-            c.emit(Op::GeneratorStart);
+            c.emit(if f.is_async { Op::AsyncGenStart } else { Op::GeneratorStart });
         }
         for s in &f.body {
             c.stmt(s);
@@ -559,8 +563,27 @@ impl<'a> Compiler<'a> {
 
     /// Return the value on top of the stack, running the `finally` blocks and iterator
     /// closes between here and the function body.
+    /// `Await` and handle its resumption: `[v] → [awaited]`.
+    fn await_top(&mut self) {
+        self.emit(Op::Await);
+        let r = self.emit(Op::Resume(0));
+        self.code.ops[r] = Op::Resume(r as u32 + 1);
+    }
+
+    /// AsyncIteratorClose for a normal completion: `[rec] → []`.
+    fn async_close(&mut self) {
+        let skip = self.emit(Op::AsyncIterClose(0));
+        self.await_top();
+        self.emit(Op::CheckObject);
+        self.patch(skip);
+    }
+
     fn return_top(&mut self) {
-        let needs_cleanup = self.ctl.iter().any(|c| matches!(c, Ctl::Finally(_) | Ctl::Iter | Ctl::Pop));
+        if self.async_gen {
+            self.await_top();
+        }
+        let needs_cleanup =
+            self.ctl.iter().any(|c| matches!(c, Ctl::Finally(_) | Ctl::Iter | Ctl::AsyncIter | Ctl::Pop));
         if needs_cleanup {
             self.emit(Op::SetRet);
             self.cleanup_to(0);
@@ -576,6 +599,33 @@ impl<'a> Compiler<'a> {
             None => {
                 self.emit(Op::Undef);
             }
+        }
+        if self.async_gen {
+            if delegate {
+                self.emit(Op::GetAsyncIter);
+                self.emit(Op::Undef);
+                let top = self.here();
+                let ys = self.emit(Op::YieldStarAsync(0));
+                self.await_top();
+                let check = self.emit(Op::YieldStarAsyncCheck(0, 0));
+                self.emit(Op::AsyncYield);
+                self.emit(Op::Jump(top));
+                let ret = self.here();
+                self.return_top();
+                let done = self.here();
+                self.code.ops[ys] = Op::YieldStarAsync(ret);
+                self.code.ops[check] = Op::YieldStarAsyncCheck(done, ret);
+            } else {
+                self.await_top();
+                self.emit(Op::AsyncYield);
+                let r = self.emit(Op::Resume(0));
+                let cont = self.emit(Op::Jump(0));
+                let ret = self.here();
+                self.return_top();
+                self.patch(cont);
+                self.code.ops[r] = Op::Resume(ret);
+            }
+            return;
         }
         if delegate {
             self.emit(Op::GetIter);
@@ -651,6 +701,7 @@ impl<'a> Compiler<'a> {
                 Ctl::Iter => {
                     self.emit(Op::IterClose);
                 }
+                Ctl::AsyncIter => self.async_close(),
                 Ctl::Finally(body) => {
                     let body: &'a [Stmt] = body;
                     // The finally block runs in the context outside its try statement.
@@ -831,7 +882,7 @@ impl<'a> Compiler<'a> {
             }
             Stmt::ForOf { head, right, body, is_await } => {
                 if *is_await {
-                    self.unsupported("for await");
+                    self.for_await(head, right, body, labels);
                     return;
                 }
                 self.for_head_tdz(head, right);
@@ -860,6 +911,35 @@ impl<'a> Compiler<'a> {
             }
             _ => unreachable!("not a loop"),
         }
+    }
+
+    /// `for await (… of …)` (§14.7.5.6 with iteratorKind async).
+    fn for_await(&mut self, head: &'a ForHead, right: &'a Expr, body: &'a Stmt, labels: Vec<String>) {
+        self.for_head_tdz(head, right);
+        self.emit(Op::GetAsyncIter);
+        self.ctl.push(Ctl::AsyncIter);
+        let top = self.here();
+        self.emit(Op::IterNextAsync);
+        self.await_top();
+        let next = self.emit(Op::IterResultCheck(0));
+        self.push_loop(labels);
+        let try_at = self.emit(Op::TryStart(0));
+        self.ctl.push(Ctl::Handler);
+        self.for_binding(head);
+        self.stmt(body);
+        self.end_for_binding(head);
+        self.ctl.pop();
+        self.emit(Op::TryEnd);
+        for c in self.take_continues() {
+            self.patch_to(c, top);
+        }
+        self.emit(Op::Jump(top));
+        self.patch(try_at);
+        self.emit(Op::AsyncIterCloseThrow);
+        self.pop_loop_patch_breaks();
+        self.async_close();
+        self.ctl.pop();
+        self.patch(next);
     }
 
     /// The right-hand side of for-in/of, with the loop's let/const names in TDZ (§14.7.5.6).
