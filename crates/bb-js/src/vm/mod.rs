@@ -25,6 +25,7 @@ pub mod ops;
 pub mod promise;
 mod proxy;
 pub mod realm;
+pub mod typed;
 pub mod value;
 
 use code::{Code, FuncTemplate, Op};

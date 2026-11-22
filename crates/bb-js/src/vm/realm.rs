@@ -11,6 +11,8 @@ macro_rules! realm_objects {
         pub struct Realm {
             $(pub $f: ObjRef,)*
             pub error_protos: [ObjRef; 7],
+            pub ta_protos: [ObjRef; 10],
+            pub ta_ctors: [ObjRef; 10],
             pub global_env: EnvRef,
             pub global_this: Value,
             pub sym_iterator: Sym,
@@ -37,6 +39,8 @@ macro_rules! realm_objects {
                 Realm {
                     $($f: d,)*
                     error_protos: [d; 7],
+                    ta_protos: [d; 10],
+                    ta_ctors: [d; 10],
                     global_env: genv,
                     global_this: Value::Undefined,
                     sym_iterator: s("Symbol.iterator"),
@@ -58,6 +62,8 @@ macro_rules! realm_objects {
             pub fn trace(&self, roots: &mut Roots) {
                 $(roots.objects.push(self.$f);)*
                 roots.objects.extend(self.error_protos);
+                roots.objects.extend(self.ta_protos);
+                roots.objects.extend(self.ta_ctors);
                 roots.envs.push(self.global_env);
                 roots.values.push(self.global_this.clone());
             }
@@ -85,6 +91,11 @@ realm_objects!(
     weakset_proto,
     weakref_proto,
     finreg_proto,
+    array_buffer_proto,
+    shared_array_buffer_proto,
+    dataview_proto,
+    typed_array_ctor,
+    typed_array_proto,
     map_iterator_proto,
     generator_function_proto,
     generator_proto,

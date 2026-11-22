@@ -73,6 +73,15 @@ impl PropDesc {
 }
 
 impl Vm {
+    /// A canonical numeric key on a typed array (handled by its exotic methods).
+    fn ta_numeric(&self, o: ObjRef, k: &PropKey) -> Option<f64> {
+        if matches!(self.heap.obj(o).kind, Kind::TypedArray(_)) {
+            super::typed::canonical_numeric(k)
+        } else {
+            None
+        }
+    }
+
     pub fn new_object(&mut self) -> ObjRef {
         let p = self.realm.object_proto;
         self.heap.alloc(Object::new(Some(p), Kind::Ordinary))
@@ -179,6 +188,9 @@ impl Vm {
         if self.is_proxy(o) {
             return self.proxy_get_own_property(o, k);
         }
+        if let Some(n) = self.ta_numeric(o, k) {
+            return Ok(self.ta_get_own(o, n));
+        }
         let obj = self.heap.obj(o);
         if let Some(p) = obj.props.get(k) {
             return Ok(Some(PropDesc::from_prop(p)));
@@ -195,6 +207,11 @@ impl Vm {
     pub fn define_own_property(&mut self, o: ObjRef, k: PropKey, d: PropDesc) -> JsResult<bool> {
         match &self.heap.obj(o).kind {
             Kind::Proxy(_) => return self.proxy_define_own_property(o, k, d),
+            Kind::TypedArray(_) => {
+                if let Some(n) = super::typed::canonical_numeric(&k) {
+                    return self.ta_define(o, n, d);
+                }
+            }
             Kind::Array => {
                 if k.is_str("length") {
                     return self.array_set_length(o, d);
@@ -295,6 +312,9 @@ impl Vm {
             if self.is_proxy(c) {
                 return self.proxy_has(c, k);
             }
+            if let Some(n) = self.ta_numeric(c, k) {
+                return Ok(self.ta_has(c, n));
+            }
             if self.get_own_property(c, k)?.is_some() {
                 return Ok(true);
             }
@@ -318,6 +338,9 @@ impl Vm {
         loop {
             if self.is_proxy(cur) {
                 return self.proxy_get(cur, k, receiver);
+            }
+            if let Some(n) = self.ta_numeric(cur, k) {
+                return Ok(self.ta_get(cur, n));
             }
             match self.get_own_property(cur, k)? {
                 Some(d) => {
@@ -343,6 +366,17 @@ impl Vm {
         let own = loop {
             if self.is_proxy(cur) {
                 return self.proxy_set(cur, k, v, receiver);
+            }
+            if let Some(n) = self.ta_numeric(cur, &k) {
+                // §10.4.5.5: the typed array itself as receiver writes the element.
+                if matches!(&receiver, Value::Object(r) if *r == cur) {
+                    self.ta_set(cur, n, &v)?;
+                    return Ok(true);
+                }
+                match self.ta_get_own(cur, n) {
+                    Some(d) => break d,
+                    None => return Ok(true),
+                }
             }
             match self.get_own_property(cur, &k)? {
                 Some(d) => break d,
@@ -382,6 +416,9 @@ impl Vm {
         if self.is_proxy(o) {
             return self.proxy_delete(o, k);
         }
+        if let Some(n) = self.ta_numeric(o, k) {
+            return Ok(!self.ta_has(o, n));
+        }
         match self.get_own_property(o, k)? {
             None => Ok(true),
             Some(d) if d.configurable == Some(true) => {
@@ -396,6 +433,11 @@ impl Vm {
     pub fn own_property_keys(&mut self, o: ObjRef) -> JsResult<Vec<PropKey>> {
         if self.is_proxy(o) {
             return self.proxy_own_keys(o);
+        }
+        if matches!(self.heap.obj(o).kind, Kind::TypedArray(_)) {
+            let mut keys = self.ta_keys(o);
+            keys.extend(self.heap.obj(o).props.keys());
+            return Ok(keys);
         }
         let obj = self.heap.obj(o);
         let mut keys = obj.props.keys();

@@ -6,7 +6,7 @@
 //! error its `negative` metadata names in the named phase.
 //!
 //! Not supported yet, and failing for it: modules,
-//! BigInt, typed arrays, RegExp matching, and more built-ins (see PROGRESS.md).
+//! BigInt, RegExp matching, and more built-ins (see PROGRESS.md).
 //! `FLOOR` only ever goes up; the goal is all of it.
 //!
 //! `cargo test -p bb-js --test test262_exec -- --nocapture` prints the numbers; failures go to
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 34_142;
+const FLOOR: usize = 36_297;
 
 /// Instructions per test variant before it counts as hung.
 const FUEL: u64 = 20_000_000;
@@ -123,8 +123,12 @@ fn install_262(vm: &mut Vm) {
     realm::method(vm, o, "createRealm", 0, |vm: &mut Vm, _: NativeCall| {
         vm.type_error("$262.createRealm is not supported yet")
     });
-    realm::method(vm, o, "detachArrayBuffer", 1, |vm: &mut Vm, _: NativeCall| {
-        vm.type_error("$262.detachArrayBuffer is not supported yet")
+    realm::method(vm, o, "detachArrayBuffer", 1, |vm: &mut Vm, c: NativeCall| -> JsResult<Value> {
+        match c.arg(0) {
+            Value::Object(b) => vm.detach_array_buffer(b)?,
+            _ => return vm.type_error("not an ArrayBuffer"),
+        }
+        Ok(Value::Null)
     });
 }
 

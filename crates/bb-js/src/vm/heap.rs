@@ -356,6 +356,9 @@ pub enum Kind {
     Async(Box<AsyncFn>),
     AsyncGen(Box<AsyncGen>),
     Proxy(Box<super::proxy::ProxyData>),
+    ArrayBuffer(Box<super::typed::Buffer>),
+    TypedArray(Box<super::typed::TypedArray>),
+    DataView(Box<super::typed::DataView>),
     Map(Box<OrderedMap>),
     Set(Box<OrderedMap>),
     /// Weak collections hold their entries strongly: unobservable except as memory (the
@@ -712,6 +715,8 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
             }
         }
         Kind::WeakRef(v) => push_val(v, os),
+        Kind::TypedArray(t) => os.push(t.buffer),
+        Kind::DataView(d) => os.push(d.buffer),
         Kind::Proxy(p) => {
             os.extend(p.target);
             os.extend(p.handler);

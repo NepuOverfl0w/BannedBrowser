@@ -5,6 +5,7 @@ mod collections;
 mod json;
 mod number;
 mod object;
+mod typed;
 pub(super) use object::{from_property_descriptor, to_property_descriptor};
 mod string;
 
@@ -40,6 +41,7 @@ pub(super) fn install(vm: &mut Vm) {
     install_regexp(vm);
     collections::install(vm);
     json::install(vm);
+    typed::install(vm);
     install_global(vm);
 }
 
@@ -435,7 +437,14 @@ fn array_iterator_next(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let (Some(t), i, k) = (*target, *index, *kind) else {
         return Ok(vm.iter_result(Value::Undefined, true));
     };
-    let len = vm.length_of_array_like(t)?;
+    let len = if vm.ta(t).is_some() {
+        match vm.ta_length(t) {
+            Some(l) => l as f64,
+            None => return vm.type_error("typed array is detached or out of bounds"),
+        }
+    } else {
+        vm.length_of_array_like(t)?
+    };
     if i as f64 >= len {
         if let Kind::ArrayIter { target, .. } = &mut vm.heap.obj_mut(o).kind {
             *target = None;
