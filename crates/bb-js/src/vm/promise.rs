@@ -452,6 +452,8 @@ enum Combinator {
     AllSettled,
     Any,
     Race,
+    AllKeyed,
+    AllSettledKeyed,
 }
 
 /// Promise.all / allSettled / any / race (§27.2.4.1–5): the shared iteration.
@@ -587,13 +589,15 @@ fn element(vm: &mut Vm, c: NativeCall, fulfilled: bool) -> JsResult<Value> {
     let kind = match s[6] {
         Value::Number(1.0) => Combinator::AllSettled,
         Value::Number(2.0) => Combinator::Any,
+        Value::Number(4.0) => Combinator::AllKeyed,
+        Value::Number(5.0) => Combinator::AllSettledKeyed,
         _ => Combinator::All,
     };
     let idx = match s[1] {
         Value::Number(n) => n as u32,
         _ => 0,
     };
-    let v = if kind == Combinator::AllSettled {
+    let v = if matches!(kind, Combinator::AllSettled | Combinator::AllSettledKeyed) {
         let o = vm.new_object();
         let st = if fulfilled { "fulfilled" } else { "rejected" };
         vm.create_data_property_or_throw(o, PropKey::lit("status"), Value::str(st))?;
@@ -610,9 +614,104 @@ fn element(vm: &mut Vm, c: NativeCall, fulfilled: bool) -> JsResult<Value> {
         vm.create_data_property_or_throw(a, PropKey::from_u32(idx), v)?;
     }
     if dec(vm, &s[5]) == 0.0 {
-        finish(vm, kind, &s[2], &s[3], &s[4])?;
+        match s.get(7) {
+            Some(keys) => finish_keyed(vm, keys, &s[2], &s[3])?,
+            None => finish(vm, kind, &s[2], &s[3], &s[4])?,
+        }
     }
     Ok(Value::Undefined)
+}
+
+/// CreateKeyedPromiseCombinatorResultObject, then resolve.
+fn finish_keyed(vm: &mut Vm, keys: &Value, values: &Value, res: &Value) -> JsResult<()> {
+    let keys = vm.list_from_array_like(keys)?;
+    let vals = vm.list_from_array_like(values)?;
+    let o = vm.heap.alloc(Object::new(None, Kind::Ordinary));
+    for (k, v) in keys.into_iter().zip(vals) {
+        let k = vm.to_property_key(&k)?;
+        vm.create_data_property_or_throw(o, k, v)?;
+    }
+    vm.call(res, Value::Undefined, vec![Value::Object(o)])?;
+    Ok(())
+}
+
+/// Promise.allKeyed / Promise.allSettledKeyed (await-dictionary, PerformPromiseAllKeyed).
+fn combinator_keyed(vm: &mut Vm, c: NativeCall, settled: bool) -> JsResult<Value> {
+    let ctor = c.this.clone();
+    let (p, res, rej) = vm.new_promise_capability(&ctor)?;
+    let resolve_fn = match vm.get_value_key(&ctor, &PropKey::lit("resolve")) {
+        Ok(f) if vm.is_callable(&f) => f,
+        Ok(_) => {
+            let e = vm.error(ErrorKind::Type, "Promise resolve is not a function");
+            vm.call(&rej, Value::Undefined, vec![e])?;
+            return Ok(p);
+        }
+        Err(e) if vm.terminated => return Err(e),
+        Err(e) => {
+            vm.call(&rej, Value::Undefined, vec![e])?;
+            return Ok(p);
+        }
+    };
+    let Value::Object(promises) = c.arg(0) else {
+        let e = vm.error(ErrorKind::Type, "the argument must be an object");
+        vm.call(&rej, Value::Undefined, vec![e])?;
+        return Ok(p);
+    };
+    let kind = if settled { Combinator::AllSettledKeyed } else { Combinator::AllKeyed };
+    let values = Value::Object(vm.new_array(Vec::new()));
+    let keys = Value::Object(vm.new_array(Vec::new()));
+    let remaining = Value::Object(vm.heap.alloc(Object::new(None, Kind::Number(1.0))));
+    let r = (|| -> JsResult<()> {
+        let mut index = 0u32;
+        for key in vm.own_property_keys(promises)? {
+            let Some(d) = vm.get_own_property(promises, &key)? else { continue };
+            if d.enumerable != Some(true) {
+                continue;
+            }
+            let v = vm.get(promises, &key)?;
+            if let (Value::Object(ka), Value::Object(va)) = (&keys, &values) {
+                vm.create_data_property_or_throw(*ka, PropKey::from_u32(index), key.to_value())?;
+                vm.create_data_property_or_throw(*va, PropKey::from_u32(index), Value::Undefined)?;
+            }
+            let np = vm.call(&resolve_fn, ctor.clone(), vec![v])?;
+            let flag = new_flag(vm);
+            let el = |vm: &mut Vm, f: NativeFn| {
+                Value::Object(native_with(
+                    vm,
+                    "",
+                    1,
+                    f,
+                    false,
+                    vec![
+                        flag.clone(),
+                        Value::Number(index as f64),
+                        values.clone(),
+                        res.clone(),
+                        rej.clone(),
+                        remaining.clone(),
+                        Value::Number(kind as u8 as f64),
+                        keys.clone(),
+                    ],
+                ))
+            };
+            let on_ful = el(vm, element_fulfilled);
+            let on_rej = if settled { el(vm, element_rejected) } else { rej.clone() };
+            inc(vm, &remaining);
+            invoke(vm, &np, "then", vec![on_ful, on_rej])?;
+            index += 1;
+        }
+        if dec(vm, &remaining) == 0.0 {
+            finish_keyed(vm, &keys, &values, &res)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = r {
+        if vm.terminated {
+            return Err(e);
+        }
+        vm.call(&rej, Value::Undefined, vec![e])?;
+    }
+    Ok(p)
 }
 
 fn element_fulfilled(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
@@ -687,4 +786,6 @@ pub(super) fn install(vm: &mut Vm) {
     method(vm, ctor, "allSettled", 1, |vm, c| combinator(vm, c, Combinator::AllSettled));
     method(vm, ctor, "any", 1, |vm, c| combinator(vm, c, Combinator::Any));
     method(vm, ctor, "race", 1, |vm, c| combinator(vm, c, Combinator::Race));
+    method(vm, ctor, "allKeyed", 1, |vm, c| combinator_keyed(vm, c, false));
+    method(vm, ctor, "allSettledKeyed", 1, |vm, c| combinator_keyed(vm, c, true));
 }
