@@ -60,6 +60,8 @@ pub struct Compiler<'a> {
     /// Compiling an async generator body: `return` and `yield` await (§15.6, §27.6.3.8).
     async_gen: bool,
     referrer: Option<Rc<str>>,
+    /// Inside `with` or code with a direct eval: resolve assignment references once.
+    dynamic: bool,
 }
 
 pub enum Unit<'a> {
@@ -82,6 +84,7 @@ impl<'a> Compiler<'a> {
             annex_b: HashSet::new(),
             async_gen: false,
             referrer: None,
+            dynamic: false,
         }
     }
 
@@ -168,6 +171,7 @@ impl<'a> Compiler<'a> {
             referrer: self.referrer.clone(),
             default_ctor: false,
             text_span: None,
+            dynamic: self.dynamic,
         };
         self.code.funcs.push(Rc::new(t));
         self.code.funcs.len() as u32 - 1
@@ -188,7 +192,11 @@ impl<'a> Compiler<'a> {
             Unit::Eval(p) => (p, true),
             Unit::Module(p) => return Self::compile_module(p, source, referrer),
         };
+        // Eval code may run inside `with`; a script is dynamic when it has a sloppy eval.
+        let has_eval = source.windows(4).any(|w| w == ['e', 'v', 'a', 'l']);
+        let dynamic = !prog.strict && (is_eval || has_eval);
         let mut c = Compiler::new(source, prog.strict, true);
+        c.dynamic = dynamic;
         c.referrer = referrer.clone();
         c.code.referrer = referrer;
         let body = &prog.body;
@@ -416,6 +424,7 @@ impl<'a> Compiler<'a> {
     pub fn compile_function(t: &FuncTemplate) -> Code {
         let f = &t.ast;
         let mut c = Compiler::new(t.source.clone(), f.strict, false);
+        c.dynamic = t.dynamic || (!f.strict && t.source_text().contains("eval"));
         c.referrer = t.referrer.clone();
         c.code.referrer = t.referrer.clone();
         let is_arrow = f.kind == FuncKind::Arrow;
@@ -782,7 +791,9 @@ impl<'a> Compiler<'a> {
                 self.expr(o);
                 self.emit(Op::PushWith);
                 self.ctl.push(Ctl::Scope);
+                let dynamic = std::mem::replace(&mut self.dynamic, true);
                 self.stmt(body);
+                self.dynamic = dynamic;
                 self.ctl.pop();
                 self.emit(Op::PopScope);
             }
@@ -1590,7 +1601,7 @@ impl<'a> Compiler<'a> {
                 if *computed {
                     self.expr(prop);
                     if convert {
-                        self.emit(Op::ToKey);
+                        self.emit(Op::ToKeyOfBase);
                     }
                     Some(MRef::Computed)
                 } else {
@@ -2223,6 +2234,21 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// GetValue of an identifier that is then assigned (resolved once when dynamic).
+    fn ident_get(&mut self, i: u32) {
+        if self.dynamic {
+            self.emit(Op::ResolveVar(i));
+            self.emit(Op::GetResolved(i));
+        } else {
+            self.emit(Op::GetVar(i));
+        }
+    }
+
+    /// PutValue to the identifier `ident_get` (or a ResolveVar) resolved.
+    fn ident_set(&mut self, i: u32) {
+        self.emit(if self.dynamic { Op::SetResolved(i) } else { Op::SetVar(i) });
+    }
+
     fn update(&mut self, op: &str, prefix: bool, target: &'a Expr) {
         let step = if op == "++" { Op::Inc } else { Op::Dec };
         let mut t = target;
@@ -2232,15 +2258,15 @@ impl<'a> Compiler<'a> {
         match t {
             Expr::Ident(n) => {
                 let i = self.name(n);
-                self.emit(Op::GetVar(i));
+                self.ident_get(i);
                 self.emit(Op::ToNumeric);
                 if prefix {
                     self.emit(step);
-                    self.emit(Op::SetVar(i));
+                    self.ident_set(i);
                 } else {
                     self.emit(Op::Dup);
                     self.emit(step);
-                    self.emit(Op::SetVar(i));
+                    self.ident_set(i);
                     self.emit(Op::Pop);
                 }
             }
@@ -2274,9 +2300,12 @@ impl<'a> Compiler<'a> {
         if op == "=" {
             match target {
                 Pat::Ident(n) => {
-                    self.named_expr(value, n);
                     let i = self.name(n);
-                    self.emit(Op::SetVar(i));
+                    if self.dynamic {
+                        self.emit(Op::ResolveVar(i));
+                    }
+                    self.named_expr(value, n);
+                    self.ident_set(i);
                 }
                 Pat::Expr(e) => self.assign_expr_target(e, value),
                 _ => {
@@ -2297,16 +2326,23 @@ impl<'a> Compiler<'a> {
         let target_expr = match target {
             Pat::Ident(n) => {
                 let i = self.name(n);
-                self.emit(Op::GetVar(i));
+                self.ident_get(i);
                 if logical {
                     let j = self.emit(jump(op));
                     self.named_expr(value, n);
-                    self.emit(Op::SetVar(i));
-                    self.patch(j);
+                    self.ident_set(i);
+                    if self.dynamic {
+                        let k = self.emit(Op::Jump(0));
+                        self.patch(j);
+                        self.emit(Op::DropRef);
+                        self.patch(k);
+                    } else {
+                        self.patch(j);
+                    }
                 } else {
                     self.expr(value);
                     self.emit(bin);
-                    self.emit(Op::SetVar(i));
+                    self.ident_set(i);
                 }
                 return;
             }
@@ -2323,10 +2359,10 @@ impl<'a> Compiler<'a> {
         match t {
             Expr::Ident(n) => {
                 let i = self.name(n);
-                self.emit(Op::GetVar(i));
+                self.ident_get(i);
                 self.expr(value);
                 self.emit(bin);
-                self.emit(Op::SetVar(i));
+                self.ident_set(i);
             }
             Expr::Call { .. } => {
                 self.expr(t);
@@ -2448,6 +2484,7 @@ impl<'a> Compiler<'a> {
             referrer: self.referrer.clone(),
             default_ctor: c.constructor.is_none(),
             text_span: Some(c.span),
+            dynamic: self.dynamic,
         };
         self.code.funcs.push(Rc::new(t));
         let ti = self.code.funcs.len() as u32 - 1;

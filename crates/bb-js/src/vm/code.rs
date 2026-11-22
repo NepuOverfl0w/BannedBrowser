@@ -22,6 +22,15 @@ pub enum Op {
     /// `[a b] → [a b a b]`
     Dup2,
     Swap,
+    /// ResolveBinding, kept on the frame's reference stack (§6.2.5, for assignments whose
+    /// environment can change while the right-hand side runs: `with`, sloppy eval).
+    ResolveVar(u32),
+    /// `[] → [v]`: GetValue of the top resolved reference.
+    GetResolved(u32),
+    /// `[v] → [v]`: PutValue to the top resolved reference, which is dropped.
+    SetResolved(u32),
+    /// Drop the top resolved reference.
+    DropRef,
     /// `[] → [cap]`: a `using` scope's DisposeCapability.
     DisposeScope,
     /// `[cap v] → [cap v]`: AddDisposableResource (true: async-dispose).
@@ -159,6 +168,9 @@ pub enum Op {
     Dec,
     ToNumeric,
     ToKey,
+    /// `[base key] → [base key']`: GetValue's order, ToObject(base) (TypeError for null or
+    /// undefined) before ToPropertyKey (§6.2.5.5 steps 3.a–b).
+    ToKeyOfBase,
     /// ToString for template substitutions.
     ToStr,
 
@@ -360,6 +372,9 @@ pub struct FuncTemplate {
     pub default_ctor: bool,
     /// Source text for `toString` when it isn't the function's own (class constructors).
     pub text_span: Option<(usize, usize)>,
+    /// Defined inside `with` or in code with a direct eval: identifier references in
+    /// assignments are resolved once (`Op::ResolveVar`).
+    pub dynamic: bool,
 }
 
 impl FuncTemplate {

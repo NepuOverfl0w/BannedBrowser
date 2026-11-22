@@ -49,6 +49,7 @@ pub struct Handler {
     pc: u32,
     stack: usize,
     env: EnvRef,
+    refs: usize,
 }
 
 /// An activation: a function body, script or eval code being run.
@@ -75,6 +76,8 @@ pub struct Frame {
     pub in_params: bool,
     /// The realm the frame's code runs in.
     pub realm: u32,
+    /// Resolved identifier references (`Op::ResolveVar`); `None` is unresolvable.
+    pub refs: Vec<Option<EnvRef>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -94,6 +97,7 @@ impl Frame {
         };
         self.stack.iter().for_each(|v| push(v, os));
         self.args.iter().for_each(|v| push(v, os));
+        es.extend(self.refs.iter().flatten());
         push(&self.ret, os);
         push(&self.completion, os);
         if let Some(Some(v)) = &self.construct {
@@ -316,6 +320,7 @@ impl Vm {
             resume: Resume::Next,
             in_params: false,
             realm: self.cur_realm,
+            refs: Vec::new(),
         }
     }
 
@@ -648,6 +653,7 @@ impl Vm {
                         let f = self.frames.last_mut().expect("frame");
                         if let Some(h) = f.handlers.pop() {
                             f.stack.truncate(h.stack);
+                            f.refs.truncate(h.refs);
                             f.env = h.env;
                             f.pc = h.pc as usize;
                             f.stack.push(e);
@@ -843,6 +849,42 @@ impl Vm {
                 };
                 self.push(v);
                 self.push(this);
+            }
+            Op::ResolveVar(i) => {
+                let name = self.name(i);
+                let env = self.top().env;
+                let r = self.resolve(env, &name)?;
+                self.top().refs.push(r);
+            }
+            Op::GetResolved(i) => {
+                let name = self.name(i);
+                let v = match self.top().refs.last().copied().flatten() {
+                    None => return self.reference_error(&format!("{name} is not defined")),
+                    Some(r) => {
+                        let strict = self.strict();
+                        self.get_binding_value(r, &name, strict)?
+                    }
+                };
+                self.push(v);
+            }
+            Op::SetResolved(i) => {
+                let name = self.name(i);
+                let v = self.peek(0);
+                let strict = self.strict();
+                match self.top().refs.pop().flatten() {
+                    None => {
+                        if strict {
+                            return self.reference_error(&format!("{name} is not defined"));
+                        }
+                        let g = self.realm.global;
+                        let k = self.name_key(&name);
+                        self.set(g, k, v, Value::Object(g))?;
+                    }
+                    Some(r) => self.set_mutable_binding(r, &name, v, strict)?,
+                }
+            }
+            Op::DropRef => {
+                self.top().refs.pop();
             }
             Op::SetVar(i) => {
                 let name = self.name(i);
@@ -1356,6 +1398,18 @@ impl Vm {
                 };
                 self.push(v);
             }
+            Op::ToKeyOfBase => {
+                let base = self.peek(1);
+                if base.is_nullish() {
+                    let k = self.peek(0);
+                    let what = if matches!(base, Value::Null) { "null" } else { "undefined" };
+                    let ks = if let Value::String(s) = &k { to_rust(s) } else { String::new() };
+                    return self.type_error(&format!("Cannot read properties of {what} (reading '{ks}')"));
+                }
+                let a = self.pop();
+                let k = self.to_property_key(&a)?;
+                self.push(k.to_value());
+            }
             Op::ToKey => {
                 let a = self.pop();
                 let k = self.to_property_key(&a)?;
@@ -1434,7 +1488,7 @@ impl Vm {
             }
             Op::TryStart(t) => {
                 let f = self.top();
-                let h = Handler { pc: t, stack: f.stack.len(), env: f.env };
+                let h = Handler { pc: t, stack: f.stack.len(), env: f.env, refs: f.refs.len() };
                 f.handlers.push(h);
             }
             Op::TryEnd => {

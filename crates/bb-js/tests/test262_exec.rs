@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 42_767;
+const FLOOR: usize = 42_865;
 
 /// Instructions per test variant before it counts as hung.
 const FUEL: u64 = 20_000_000;
