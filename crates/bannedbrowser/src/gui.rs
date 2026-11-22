@@ -744,6 +744,7 @@ impl BrowserWindow {
 
     /// Reload: revalidate everything with the server; `hard` bypasses the HTTP cache.
     fn reload(&mut self, hard: bool) {
+        log::debug!("reload (hard: {hard})");
         if let Some(t) = self.tab_mut() {
             if let Some(h) = t.history.get(t.index).cloned() {
                 t.loading = true;
@@ -2294,6 +2295,7 @@ impl App {
 
     /// Keyboard handling. Returns whether state changed.
     fn key(&mut self, bw: &mut BrowserWindow, el: &ActiveEventLoop, key: &Key, text: Option<&str>) -> bool {
+        log::debug!("key {key:?} text {text:?} modifiers {:?}", bw.modifiers);
         let m = bw.modifiers;
         let p = primary(m);
         let shift = m.shift_key();

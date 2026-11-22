@@ -29,6 +29,8 @@ grep -q '^HTTPS_PORT' "$SERVER_OUT" || {
   exit 1
 }
 export BB_PSL_UPDATE=0
+# The browser's own debug log goes to tests/gui/out/browser-<test>.log (CI keeps it).
+export RUST_LOG="${RUST_LOG:-warn,bannedbrowser=debug}"
 export BASE="http://127.0.0.1:$(awk '/^PORT/{print $2}' "$SERVER_OUT" | tr -d '\r')"
 # HTTPS with a certificate from the test-only CA, which the browser doesn't trust.
 export HTTPS_BASE="https://127.0.0.1:$(awk '/^HTTPS_PORT/{print $2}' "$SERVER_OUT" | tr -d '\r')"
