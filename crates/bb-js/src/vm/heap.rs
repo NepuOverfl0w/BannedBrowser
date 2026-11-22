@@ -354,6 +354,8 @@ pub enum Kind {
     /// A running async function: its parked frame and its promise's resolving functions.
     Async(Box<AsyncFn>),
     AsyncGen(Box<AsyncGen>),
+    /// Module namespace exotic object (§10.4.6): (module id, sorted export names).
+    ModuleNamespace(usize, Vec<JsString>),
     Proxy(Box<super::proxy::ProxyData>),
     IterHelper(Box<super::builtins::iterator::Helper>),
     ArrayBuffer(Box<super::typed::Buffer>),
@@ -502,6 +504,10 @@ pub enum EnvKind {
     Object {
         object: ObjRef,
         with: bool,
+    },
+    /// Module Environment Record (§9.1.1.5): import bindings point into other modules.
+    Module {
+        imports: crate::vm::fx::HashMap<Rc<str>, (EnvRef, Rc<str>)>,
     },
     /// Global Environment Record (§9.1.1.4): declarative part in `bindings`.
     Global {
@@ -760,6 +766,7 @@ fn trace_env(e: &Env, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
             push_val(new_target, os);
         }
         EnvKind::Object { object, .. } => os.push(*object),
+        EnvKind::Module { imports } => es.extend(imports.values().map(|(e, _)| *e)),
         EnvKind::Global { object, this, .. } => {
             os.push(*object);
             push_val(this, os);

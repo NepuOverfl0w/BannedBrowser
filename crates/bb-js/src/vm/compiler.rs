@@ -2,7 +2,7 @@
 //! dynamically, which `with` and sloppy direct `eval` require); the compiler emits the
 //! declaration instantiation steps (§10.2.11, §14.2.3, §16.1.7) as instructions.
 
-use super::code::{Code, Decls, FuncTemplate, Op};
+use super::code::{Code, Decls, FuncTemplate, ImportEntry, ModuleInfo, Op};
 use super::value::{js_str, JsString, PropKey};
 use crate::ast::*;
 use std::cell::OnceCell;
@@ -57,11 +57,13 @@ pub struct Compiler<'a> {
     annex_b: HashSet<*const Function>,
     /// Compiling an async generator body: `return` and `yield` await (§15.6, §27.6.3.8).
     async_gen: bool,
+    referrer: Option<Rc<str>>,
 }
 
 pub enum Unit<'a> {
     Script(&'a Program),
     Eval(&'a Program),
+    Module(&'a Program),
 }
 
 impl<'a> Compiler<'a> {
@@ -77,6 +79,7 @@ impl<'a> Compiler<'a> {
             chain: Vec::new(),
             annex_b: HashSet::new(),
             async_gen: false,
+            referrer: None,
         }
     }
 
@@ -159,6 +162,7 @@ impl<'a> Compiler<'a> {
             length: expected_args(f),
             is_expression,
             given_name: given.map(Into::into),
+            referrer: self.referrer.clone(),
             default_ctor: false,
             text_span: None,
         };
@@ -175,12 +179,15 @@ impl<'a> Compiler<'a> {
 
     // ---- units ----
 
-    pub fn compile_unit(unit: Unit<'a>, source: Rc<[char]>) -> Code {
+    pub fn compile_unit(unit: Unit<'a>, source: Rc<[char]>, referrer: Option<Rc<str>>) -> Code {
         let (prog, is_eval) = match unit {
             Unit::Script(p) => (p, false),
             Unit::Eval(p) => (p, true),
+            Unit::Module(p) => return Self::compile_module(p, source, referrer),
         };
         let mut c = Compiler::new(source, prog.strict, true);
+        c.referrer = referrer.clone();
+        c.code.referrer = referrer;
         let body = &prog.body;
         let mut decls = Decls::default();
         let mut lex = Vec::new();
@@ -237,10 +244,179 @@ impl<'a> Compiler<'a> {
         c.code
     }
 
+    /// Module code (§16.2.1.6): declarations are instantiated at link time from `decls`;
+    /// the body runs with the module environment as both scopes.
+    fn compile_module(prog: &'a Program, source: Rc<[char]>, referrer: Option<Rc<str>>) -> Code {
+        let mut c = Compiler::new(source, true, false);
+        c.referrer = referrer.clone();
+        c.code.referrer = referrer;
+        let body = &prog.body;
+        let mut info = ModuleInfo::default();
+        let mut decls = Decls::default();
+        let mut lex = Vec::new();
+        top_lexical(body, &mut lex);
+        for (n, is_const) in &lex {
+            decls.lexical.push((n.as_str().into(), *is_const));
+        }
+        let mut vars = Vec::new();
+        var_names(body, &mut vars, false);
+        let mut seen = HashSet::new();
+        for v in &vars {
+            if seen.insert(v.clone()) {
+                decls.vars.push(v.as_str().into());
+            }
+        }
+        let req = |info: &mut ModuleInfo, s: &[u16]| {
+            let r = String::from_utf16_lossy(s);
+            if !info.requests.contains(&r) {
+                info.requests.push(r.clone());
+            }
+            r
+        };
+        let mut export_list: Vec<(JsString, JsString)> = Vec::new();
+        for s in body {
+            match s {
+                Stmt::Import { specs, source } => {
+                    let r = req(&mut info, source);
+                    for sp in specs {
+                        let (import_name, local) = match sp {
+                            ImportSpec::Default(l) => (Some(js_str("default")), l),
+                            ImportSpec::Namespace(l) | ImportSpec::DeferNamespace(l) => (None, l),
+                            ImportSpec::Named { imported, local } => {
+                                (Some(imported.as_slice().into()), local)
+                            }
+                            ImportSpec::Source(l) => (Some(js_str("*source*")), l),
+                        };
+                        info.imports.push(ImportEntry {
+                            request: r.clone(),
+                            import_name,
+                            local: local.as_str().into(),
+                        });
+                    }
+                }
+                Stmt::ExportNamed { specs, source: Some(src), star } => {
+                    let r = req(&mut info, src);
+                    if *star && specs.is_empty() {
+                        info.star_exports.push(r);
+                    } else if *star {
+                        for (e, _) in specs {
+                            info.indirect_exports.push((e.as_slice().into(), r.clone(), None));
+                        }
+                    } else {
+                        for (e, imported) in specs {
+                            info.indirect_exports.push((
+                                e.as_slice().into(),
+                                r.clone(),
+                                Some(imported.as_slice().into()),
+                            ));
+                        }
+                    }
+                }
+                Stmt::ExportNamed { specs, source: None, .. } => {
+                    for (e, l) in specs {
+                        export_list.push((e.as_slice().into(), l.as_slice().into()));
+                    }
+                }
+                Stmt::ExportDecl(d) => {
+                    let mut names = Vec::new();
+                    match &**d {
+                        Stmt::Var(_, ds) => {
+                            for (p, _) in ds {
+                                pat_names(p, &mut names);
+                            }
+                        }
+                        Stmt::Function(f) => names.extend(f.name.clone()),
+                        Stmt::Class(cl) => names.extend(cl.name.clone()),
+                        _ => {}
+                    }
+                    for n in names {
+                        info.local_exports.push((js_str(&n), n.as_str().into()));
+                    }
+                }
+                Stmt::ExportDefault(d) => {
+                    let local = match &**d {
+                        Stmt::Function(f) => f.name.clone().unwrap_or_else(|| "*default*".into()),
+                        Stmt::Class(cl) => cl.name.clone().unwrap_or_else(|| "*default*".into()),
+                        _ => "*default*".into(),
+                    };
+                    info.local_exports.push((js_str("default"), local.as_str().into()));
+                }
+                Stmt::ExportDefaultExpr(_) => {
+                    info.local_exports.push((js_str("default"), "*default*".into()))
+                }
+                _ => {}
+            }
+        }
+        // `export { x }` of an imported x re-exports the import (§16.2.1.6.1 step 10).
+        for (e, l) in export_list {
+            let local = String::from_utf16_lossy(&l);
+            match info.imports.iter().find(|i| &*i.local == local.as_str()).cloned() {
+                Some(ImportEntry { import_name: None, .. }) | None => {
+                    info.local_exports.push((e, local.as_str().into()))
+                }
+                Some(ie) => info.indirect_exports.push((e, ie.request.clone(), ie.import_name.clone())),
+            }
+        }
+        // Functions, last declaration wins; `export default function () {}` binds *default*.
+        let mut funcs: Vec<(String, Rc<Function>)> = Vec::new();
+        for s in body {
+            let f = match s {
+                Stmt::Function(f) => Some((f.name.clone().unwrap_or_default(), f.clone())),
+                Stmt::ExportDecl(d) => match &**d {
+                    Stmt::Function(f) => Some((f.name.clone().unwrap_or_default(), f.clone())),
+                    _ => None,
+                },
+                Stmt::ExportDefault(d) => match &**d {
+                    Stmt::Function(f) => {
+                        Some((f.name.clone().unwrap_or_else(|| "*default*".into()), f.clone()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(f) = f {
+                funcs.retain(|(n, _)| *n != f.0);
+                funcs.push(f);
+            }
+        }
+        for (n, f) in &funcs {
+            let i = c.template_named(f, false, if f.name.is_none() { Some("default") } else { None });
+            decls.functions.push((n.as_str().into(), i));
+        }
+        for s in body {
+            if let Stmt::ExportDefault(d) = s {
+                if let Stmt::Class(cl) = &**d {
+                    if cl.name.is_none() {
+                        decls.lexical.push(("*default*".into(), false));
+                    }
+                }
+            }
+            if let Stmt::ExportDefaultExpr(_) = s {
+                decls.lexical.push(("*default*".into(), false));
+            }
+        }
+        info.has_tla = body.iter().any(stmt_has_await);
+        c.code.decls = decls;
+        c.code.module = Some(Box::new(info));
+        if c.code.module.as_ref().is_some_and(|m| m.has_tla) {
+            c.emit(Op::AsyncStart);
+        } else {
+            c.emit(Op::Nop);
+        }
+        for s in body {
+            c.stmt(s);
+        }
+        c.emit(Op::Undef);
+        c.emit(Op::Ret);
+        c.code
+    }
+
     /// Compile a function body (§10.2.11 FunctionDeclarationInstantiation, then the body).
     pub fn compile_function(t: &FuncTemplate) -> Code {
         let f = &t.ast;
         let mut c = Compiler::new(t.source.clone(), f.strict, false);
+        c.referrer = t.referrer.clone();
+        c.code.referrer = t.referrer.clone();
         let is_arrow = f.kind == FuncKind::Arrow;
         c.async_gen = f.is_async && f.is_generator;
         if f.is_async && !f.is_generator {
@@ -553,11 +729,24 @@ impl<'a> Compiler<'a> {
                 self.ctl.pop();
                 self.emit(Op::PopScope);
             }
-            Stmt::Import { .. }
-            | Stmt::ExportNamed { .. }
-            | Stmt::ExportDecl(_)
-            | Stmt::ExportDefault(_)
-            | Stmt::ExportDefaultExpr(_) => self.unsupported("modules"),
+            // Imports and export lists are bound at link time (§16.2.1.6.4).
+            Stmt::Import { .. } | Stmt::ExportNamed { .. } => {}
+            Stmt::ExportDecl(d) => self.stmt(d),
+            Stmt::ExportDefault(d) => match &**d {
+                // Hoisted like any function declaration.
+                Stmt::Function(_) => {}
+                Stmt::Class(c) => {
+                    self.class(c, Some("default"));
+                    let i = self.name(c.name.as_deref().unwrap_or("*default*"));
+                    self.emit(Op::InitBinding(i));
+                }
+                other => self.stmt(other),
+            },
+            Stmt::ExportDefaultExpr(e) => {
+                self.named_expr(e, "default");
+                let i = self.name("*default*");
+                self.emit(Op::InitBinding(i));
+            }
         }
     }
 
@@ -1657,7 +1846,28 @@ impl<'a> Compiler<'a> {
             Expr::NewTarget => {
                 self.emit(Op::NewTarget);
             }
-            Expr::ImportMeta | Expr::ImportCall(..) | Expr::ImportPhase(..) => self.unsupported("import"),
+            Expr::ImportMeta => {
+                self.emit(Op::ImportMeta);
+            }
+            Expr::ImportCall(spec, opts) => {
+                self.expr(spec);
+                match opts {
+                    Some(o) => self.expr(o),
+                    None => {
+                        self.emit(Op::Undef);
+                    }
+                }
+                self.emit(Op::ImportCall);
+            }
+            Expr::ImportPhase(phase, spec) => {
+                self.expr(spec);
+                self.emit(Op::Undef);
+                if *phase == "source" {
+                    self.emit(Op::ImportSourceCall);
+                } else {
+                    self.emit(Op::ImportCall);
+                }
+            }
             Expr::Paren(x) => self.expr(x),
         }
     }
@@ -2118,6 +2328,7 @@ impl<'a> Compiler<'a> {
             code: OnceCell::new(),
             is_expression: false,
             given_name: Some(c.name.as_deref().or(given).unwrap_or("").into()),
+            referrer: self.referrer.clone(),
             default_ctor: c.constructor.is_none(),
             text_span: Some(c.span),
         };
@@ -2350,8 +2561,130 @@ fn top_lexical(body: &[Stmt], out: &mut Vec<(String, bool)>) {
                 out.extend(n.into_iter().map(|n| (n, *k != VarKind::Let)));
             }
             Stmt::Class(c) => out.extend(c.name.clone().map(|n| (n, false))),
+            Stmt::ExportDecl(d) => top_lexical(std::slice::from_ref(&**d), out),
+            Stmt::ExportDefault(d) => {
+                if let Stmt::Class(c) = &**d {
+                    out.extend(c.name.clone().map(|n| (n, false)));
+                }
+            }
             _ => {}
         }
+    }
+}
+
+/// Top-level await in module code (outside functions).
+fn stmt_has_await(s: &Stmt) -> bool {
+    match s {
+        Stmt::ForOf { is_await: true, .. } => true,
+        Stmt::Var(VarKind::AwaitUsing, _) => true,
+        Stmt::Expr(e) | Stmt::Throw(e) | Stmt::ExportDefaultExpr(e) => expr_has_await(e),
+        Stmt::Var(_, ds) => {
+            ds.iter().any(|(p, i)| pat_has_await(p) || i.as_ref().is_some_and(expr_has_await))
+        }
+        Stmt::Block(b) => b.iter().any(stmt_has_await),
+        Stmt::If(t, a, b) => {
+            expr_has_await(t) || stmt_has_await(a) || b.as_deref().is_some_and(stmt_has_await)
+        }
+        Stmt::For { init, test, update, body } => {
+            (match init {
+                Some(ForInit::Var(_, ds)) => {
+                    ds.iter().any(|(p, i)| pat_has_await(p) || i.as_ref().is_some_and(expr_has_await))
+                }
+                Some(ForInit::Expr(e)) => expr_has_await(e),
+                None => false,
+            }) || test.as_ref().is_some_and(expr_has_await)
+                || update.as_ref().is_some_and(expr_has_await)
+                || stmt_has_await(body)
+        }
+        Stmt::ForIn { head, right, body } | Stmt::ForOf { head, right, body, .. } => {
+            let hp = match head {
+                ForHead::Var(_, p) | ForHead::Pat(p) => pat_has_await(p),
+            };
+            hp || expr_has_await(right) || stmt_has_await(body)
+        }
+        Stmt::While(t, b) | Stmt::DoWhile(b, t) => expr_has_await(t) || stmt_has_await(b),
+        Stmt::Try { block, param, handler, finalizer } => {
+            block.iter().any(stmt_has_await)
+                || param.as_ref().is_some_and(pat_has_await)
+                || handler.as_ref().is_some_and(|h| h.iter().any(stmt_has_await))
+                || finalizer.as_ref().is_some_and(|f| f.iter().any(stmt_has_await))
+        }
+        Stmt::Switch(d, cases) => {
+            expr_has_await(d)
+                || cases
+                    .iter()
+                    .any(|c| c.test.as_ref().is_some_and(expr_has_await) || c.body.iter().any(stmt_has_await))
+        }
+        Stmt::Labeled(_, b) | Stmt::ExportDecl(b) | Stmt::ExportDefault(b) => stmt_has_await(b),
+        Stmt::With(o, b) => expr_has_await(o) || stmt_has_await(b),
+        Stmt::Class(c) => class_has_await(c),
+        _ => false,
+    }
+}
+
+fn class_has_await(c: &Class) -> bool {
+    c.extends.as_deref().is_some_and(expr_has_await)
+        || c.members.iter().any(|m| match m {
+            ClassMember::Method { key: crate::ast::PropKey::Computed(k), .. }
+            | ClassMember::Field { key: crate::ast::PropKey::Computed(k), .. } => expr_has_await(k),
+            _ => false,
+        })
+}
+
+fn pat_has_await(p: &Pat) -> bool {
+    match p {
+        Pat::Ident(_) => false,
+        Pat::Array(es, rest) => {
+            es.iter().flatten().any(pat_has_await) || rest.as_deref().is_some_and(pat_has_await)
+        }
+        Pat::Object(ps, rest) => {
+            ps.iter().any(|(k, v)| {
+                matches!(k, crate::ast::PropKey::Computed(x) if expr_has_await(x)) || pat_has_await(v)
+            }) || rest.as_deref().is_some_and(pat_has_await)
+        }
+        Pat::Default(t, d) => pat_has_await(t) || expr_has_await(d),
+        Pat::Expr(e) => expr_has_await(e),
+    }
+}
+
+fn expr_has_await(e: &Expr) -> bool {
+    match e {
+        Expr::Await(_) => true,
+        Expr::Function(_) | Expr::Arrow(_) => false,
+        Expr::Class(c) => class_has_await(c),
+        Expr::Template(parts) => {
+            parts.iter().any(|p| matches!(p, TemplatePart::Expr(x) if expr_has_await(x)))
+        }
+        Expr::TaggedTemplate { tag, parts } => {
+            expr_has_await(tag)
+                || parts.iter().any(|p| matches!(p, TemplatePart::Expr(x) if expr_has_await(x)))
+        }
+        Expr::Array(xs) => xs.iter().flatten().any(expr_has_await),
+        Expr::Object(props) => props.iter().any(|p| match p {
+            Prop::KeyValue(k, v) => {
+                matches!(k, crate::ast::PropKey::Computed(x) if expr_has_await(x)) || expr_has_await(v)
+            }
+            Prop::Shorthand(_, d) => d.as_deref().is_some_and(expr_has_await),
+            Prop::Spread(x) => expr_has_await(x),
+            Prop::Method(k, _) | Prop::Getter(k, _) | Prop::Setter(k, _) => {
+                matches!(k, crate::ast::PropKey::Computed(x) if expr_has_await(x))
+            }
+        }),
+        Expr::Unary(_, x) | Expr::Spread(x) | Expr::Paren(x) | Expr::OptionalChain(x) => expr_has_await(x),
+        Expr::Update { target, .. } => expr_has_await(target),
+        Expr::Binary(_, a, b) | Expr::Logical(_, a, b) => expr_has_await(a) || expr_has_await(b),
+        Expr::Assign { target, value, .. } => pat_has_await(target) || expr_has_await(value),
+        Expr::Cond(a, b, c) => expr_has_await(a) || expr_has_await(b) || expr_has_await(c),
+        Expr::Call { callee, args, .. } | Expr::New { callee, args } => {
+            expr_has_await(callee) || args.iter().any(expr_has_await)
+        }
+        Expr::Member { object, prop, .. } => expr_has_await(object) || expr_has_await(prop),
+        Expr::PrivateMember { object, .. } => expr_has_await(object),
+        Expr::PrivateIn(_, x) => expr_has_await(x),
+        Expr::Seq(xs) => xs.iter().any(expr_has_await),
+        Expr::ImportCall(a, b) => expr_has_await(a) || b.as_deref().is_some_and(expr_has_await),
+        Expr::ImportPhase(_, a) => expr_has_await(a),
+        _ => false,
     }
 }
 

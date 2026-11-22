@@ -535,6 +535,7 @@ fn function_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
         code: Default::default(),
         is_expression: false,
         given_name: None,
+        referrer: vm.current_referrer(),
         default_ctor: false,
         text_span: None,
     });

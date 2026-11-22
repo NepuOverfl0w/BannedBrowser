@@ -22,6 +22,7 @@ mod env;
 pub mod fx;
 mod generator;
 pub mod heap;
+pub mod module;
 pub mod object;
 pub mod ops;
 pub mod promise;
@@ -132,6 +133,14 @@ pub struct Vm {
     name_keys: HashMap<usize, (Rc<str>, PropKey)>,
     /// The job queue (§9.5): run by `run_jobs`.
     pub(crate) jobs: std::collections::VecDeque<Job>,
+    /// Loaded modules (§16.2.1.5) and their records by key.
+    pub(crate) modules: Vec<module::ModuleRecord>,
+    pub(crate) module_map: HashMap<String, usize>,
+    /// Host hook (HostLoadImportedModule): (specifier, referrer key) → (module key, source).
+    #[allow(clippy::type_complexity)]
+    pub loader: Option<Box<dyn FnMut(&str, Option<&str>) -> Result<(String, String), String>>>,
+    /// Pending module evaluations waiting on async modules.
+    pub(crate) module_evals: Vec<Option<module::PendingEval>>,
     /// Values hosts keep alive across calls.
     pub roots: Vec<Value>,
     /// Text written by `print` (test harnesses).
@@ -162,6 +171,10 @@ impl Vm {
             roots: Vec::new(),
             yield_raw: false,
             jobs: Default::default(),
+            modules: Vec::new(),
+            module_map: HashMap::default(),
+            loader: None,
+            module_evals: Vec::new(),
             name_keys: HashMap::default(),
             output: Vec::new(),
             fuel: None,
@@ -176,12 +189,17 @@ impl Vm {
     /// Run a script in the global environment (§16.1.6 ScriptEvaluation); the result is its
     /// completion value.
     pub fn run_script(&mut self, src: &str) -> JsResult<Value> {
+        self.run_script_at(src, None)
+    }
+
+    /// Run a script whose location is `key` (the referrer of its `import()` calls).
+    pub fn run_script_at(&mut self, src: &str, key: Option<&str>) -> JsResult<Value> {
         let prog = match crate::parse_script(src) {
             Ok(p) => p,
             Err(e) => return Err(self.error(ErrorKind::Syntax, &e.msg)),
         };
         let source: Rc<[char]> = src.chars().collect::<Vec<_>>().into();
-        let code = Rc::new(Compiler::compile_unit(Unit::Script(&prog), source));
+        let code = Rc::new(Compiler::compile_unit(Unit::Script(&prog), source, key.map(Into::into)));
         let genv = self.realm.global_env;
         let frame = self.frame(code, genv, genv);
         self.execute(frame)
@@ -246,6 +264,12 @@ impl Vm {
         roots.values.extend(self.roots.iter().cloned());
         for j in &self.jobs {
             j.trace(&mut roots.objects);
+        }
+        for m in &self.modules {
+            m.trace(&mut roots);
+        }
+        for p in self.module_evals.iter().flatten() {
+            p.trace(&mut roots);
         }
         self.heap.collect(&roots);
     }
@@ -1359,6 +1383,22 @@ impl Vm {
                 return self.syntax_error(&s);
             }
             Op::GeneratorStart => return self.generator_start(base),
+            Op::ImportCall => {
+                let opts = self.pop();
+                let spec = self.pop();
+                let p = self.dynamic_import(spec, opts);
+                self.push(p);
+            }
+            Op::ImportSourceCall => {
+                let _ = self.pop();
+                let spec = self.pop();
+                let p = self.import_source(spec);
+                self.push(p);
+            }
+            Op::ImportMeta => {
+                let v = self.import_meta();
+                self.push(v);
+            }
             Op::AsyncStart => return self.async_start(base),
             Op::AsyncGenStart => return self.async_gen_start(base),
             Op::AsyncYield => return self.async_yield(base),
@@ -1569,7 +1609,8 @@ impl Vm {
             Err(e) => return self.syntax_error(&e.msg),
         };
         let source: Rc<[char]> = src.chars().collect::<Vec<_>>().into();
-        let code = Rc::new(Compiler::compile_unit(Unit::Eval(&prog), source));
+        let referrer = self.current_referrer();
+        let code = Rc::new(Compiler::compile_unit(Unit::Eval(&prog), source, referrer));
         let lex = self.heap.alloc_env(Env {
             outer: Some(env),
             kind: EnvKind::Declarative,
@@ -1593,7 +1634,8 @@ impl Vm {
             Err(e) => return self.syntax_error(&e.msg),
         };
         let source: Rc<[char]> = src.chars().collect::<Vec<_>>().into();
-        let code = Rc::new(Compiler::compile_unit(Unit::Eval(&prog), source));
+        let referrer = self.current_referrer();
+        let code = Rc::new(Compiler::compile_unit(Unit::Eval(&prog), source, referrer));
         let genv = self.realm.global_env;
         let lex = self.heap.alloc_env(Env {
             outer: Some(genv),

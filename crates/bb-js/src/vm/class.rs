@@ -11,7 +11,7 @@ impl Vm {
         let mut e = Some(env);
         while let Some(r) = e {
             match &self.heap.env(r).kind {
-                EnvKind::Function { .. } | EnvKind::Global { .. } => return Some(r),
+                EnvKind::Function { .. } | EnvKind::Global { .. } | EnvKind::Module { .. } => return Some(r),
                 _ => e = self.heap.env(r).outer,
             }
         }

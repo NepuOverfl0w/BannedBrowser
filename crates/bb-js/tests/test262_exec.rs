@@ -5,8 +5,7 @@
 //! strict unless restricted). A test passes when every variant completes, or throws the
 //! error its `negative` metadata names in the named phase.
 //!
-//! Not supported yet, and failing for it: modules,
-//! Temporal and more built-ins (see PROGRESS.md).
+//! Not supported yet, and failing for it: Temporal and more built-ins (see PROGRESS.md).
 //! `FLOOR` only ever goes up; the goal is all of it.
 //!
 //! `cargo test -p bb-js --test test262_exec -- --nocapture` prints the numbers; failures go to
@@ -21,7 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 40_235;
+const FLOOR: usize = 41_403;
 
 /// Instructions per test variant before it counts as hung.
 const FUEL: u64 = 20_000_000;
@@ -145,9 +144,37 @@ fn error_name(vm: &mut Vm, e: &Value) -> String {
 }
 
 /// Run one variant: `Ok(())` when it behaved as the metadata says.
-fn run_variant(m: &Meta, src: &str, strict: bool, cache: &mut HashMap<String, String>) -> Result<(), String> {
+/// Resolve a module specifier against the importing file (fixtures are relative paths).
+fn resolve_specifier(spec: &str, referrer: Option<&str>) -> PathBuf {
+    let base = referrer.map(Path::new).and_then(Path::parent).map(Path::to_path_buf).unwrap_or_default();
+    let mut out = PathBuf::new();
+    for c in base.join(spec).components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn run_variant(
+    m: &Meta,
+    path: &Path,
+    src: &str,
+    strict: bool,
+    module: bool,
+    cache: &mut HashMap<String, String>,
+) -> Result<(), String> {
     let mut vm = Vm::new();
     install_262(&mut vm);
+    vm.loader = Some(Box::new(|spec: &str, referrer: Option<&str>| {
+        let p = resolve_specifier(spec, referrer);
+        let src = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        Ok((p.to_string_lossy().into_owned(), src))
+    }));
     let raw = m.flags.iter().any(|f| f == "raw");
     let is_async = m.flags.iter().any(|f| f == "async");
     if !raw {
@@ -166,8 +193,24 @@ fn run_variant(m: &Meta, src: &str, strict: bool, cache: &mut HashMap<String, St
     }
     let code = if strict { format!("\"use strict\";\n{src}") } else { src.to_string() };
     vm.fuel = Some(FUEL);
-    let r = vm.run_script(&code);
-    if r.is_ok() {
+    // The same normalized form the loader produces, so self-imports find this module.
+    let key = resolve_specifier(&path.to_string_lossy(), None).to_string_lossy().into_owned();
+    let r = if module {
+        // The module's evaluation promise settles after the jobs run.
+        match vm.run_module(&key, &code) {
+            Ok(p) => {
+                vm.run_jobs();
+                match vm.promise_result(&p) {
+                    Some(Err(e)) => Err(e),
+                    _ => Ok(Value::Undefined),
+                }
+            }
+            Err(e) => Err(e),
+        }
+    } else {
+        vm.run_script_at(&code, Some(&key))
+    };
+    if r.is_ok() && !module {
         vm.run_jobs();
     }
     if vm.terminated {
@@ -199,11 +242,11 @@ fn run_variant(m: &Meta, src: &str, strict: bool, cache: &mut HashMap<String, St
     }
 }
 
-fn run(src: &str, cache: &mut HashMap<String, String>) -> Result<(), String> {
+fn run(path: &Path, src: &str, cache: &mut HashMap<String, String>) -> Result<(), String> {
     let m = meta(src);
     let has = |f: &str| m.flags.iter().any(|x| x == f);
     if has("module") {
-        return Err("modules are not supported yet".into());
+        return run_variant(&m, path, src, false, true, cache);
     }
     let variants: &[bool] = if has("raw") || has("noStrict") {
         &[false]
@@ -213,7 +256,7 @@ fn run(src: &str, cache: &mut HashMap<String, String>) -> Result<(), String> {
         &[false, true]
     };
     for &strict in variants {
-        run_variant(&m, src, strict, cache)
+        run_variant(&m, path, src, strict, false, cache)
             .map_err(|e| format!("{}{e}", if strict { "[strict] " } else { "" }))?;
     }
     Ok(())
@@ -249,8 +292,9 @@ fn test262_execution() {
                         let Some(f) = files.get(i) else { break };
                         let src = std::fs::read_to_string(f).unwrap_or_default();
                         let rel = f.strip_prefix(&base).unwrap_or(f).to_string_lossy().replace('\\', "/");
-                        let r =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&src, &mut cache)));
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            run(f, &src, &mut cache)
+                        }));
                         match r {
                             Ok(Ok(())) => {
                                 passed.fetch_add(1, Ordering::Relaxed);

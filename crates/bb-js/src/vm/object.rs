@@ -135,6 +135,9 @@ impl Vm {
         if self.is_proxy(o) {
             return self.proxy_get_prototype_of(o);
         }
+        if self.is_namespace(o) {
+            return Ok(None);
+        }
         Ok(self.heap.obj(o).proto)
     }
 
@@ -142,6 +145,9 @@ impl Vm {
     pub fn set_prototype_of(&mut self, o: ObjRef, v: Option<ObjRef>) -> JsResult<bool> {
         if self.is_proxy(o) {
             return self.proxy_set_prototype_of(o, v);
+        }
+        if self.is_namespace(o) {
+            return Ok(v.is_none());
         }
         let cur = self.heap.obj(o).proto;
         if cur == v {
@@ -169,6 +175,9 @@ impl Vm {
     }
 
     pub fn is_extensible(&mut self, o: ObjRef) -> JsResult<bool> {
+        if self.is_namespace(o) {
+            return Ok(false);
+        }
         if self.is_proxy(o) {
             return self.proxy_is_extensible(o);
         }
@@ -176,6 +185,9 @@ impl Vm {
     }
 
     pub fn prevent_extensions(&mut self, o: ObjRef) -> JsResult<bool> {
+        if self.is_namespace(o) {
+            return Ok(true);
+        }
         if self.is_proxy(o) {
             return self.proxy_prevent_extensions(o);
         }
@@ -187,6 +199,9 @@ impl Vm {
     pub fn get_own_property(&mut self, o: ObjRef, k: &PropKey) -> JsResult<Option<PropDesc>> {
         if self.is_proxy(o) {
             return self.proxy_get_own_property(o, k);
+        }
+        if self.is_namespace(o) {
+            return self.ns_get_own(o, k);
         }
         if let Some(n) = self.ta_numeric(o, k) {
             return Ok(self.ta_get_own(o, n));
@@ -207,6 +222,7 @@ impl Vm {
     pub fn define_own_property(&mut self, o: ObjRef, k: PropKey, d: PropDesc) -> JsResult<bool> {
         match &self.heap.obj(o).kind {
             Kind::Proxy(_) => return self.proxy_define_own_property(o, k, d),
+            Kind::ModuleNamespace(..) => return self.ns_define(o, k, d),
             Kind::TypedArray(_) => {
                 if let Some(n) = super::typed::canonical_numeric(&k) {
                     return self.ta_define(o, n, d);
@@ -312,6 +328,9 @@ impl Vm {
             if self.is_proxy(c) {
                 return self.proxy_has(c, k);
             }
+            if self.is_namespace(c) {
+                return Ok(self.ns_has(c, k));
+            }
             if let Some(n) = self.ta_numeric(c, k) {
                 return Ok(self.ta_has(c, n));
             }
@@ -338,6 +357,9 @@ impl Vm {
         loop {
             if self.is_proxy(cur) {
                 return self.proxy_get(cur, k, receiver);
+            }
+            if self.is_namespace(cur) {
+                return self.ns_get(cur, k);
             }
             if let Some(n) = self.ta_numeric(cur, k) {
                 return Ok(self.ta_get(cur, n));
@@ -366,6 +388,9 @@ impl Vm {
         let own = loop {
             if self.is_proxy(cur) {
                 return self.proxy_set(cur, k, v, receiver);
+            }
+            if self.is_namespace(cur) && cur == o {
+                return Ok(false);
             }
             if let Some(n) = self.ta_numeric(cur, &k) {
                 // §10.4.5.5: the typed array itself as receiver writes the element.
@@ -416,6 +441,9 @@ impl Vm {
         if self.is_proxy(o) {
             return self.proxy_delete(o, k);
         }
+        if self.is_namespace(o) {
+            return Ok(self.ns_delete(o, k));
+        }
         if let Some(n) = self.ta_numeric(o, k) {
             return Ok(!self.ta_has(o, n));
         }
@@ -433,6 +461,9 @@ impl Vm {
     pub fn own_property_keys(&mut self, o: ObjRef) -> JsResult<Vec<PropKey>> {
         if self.is_proxy(o) {
             return self.proxy_own_keys(o);
+        }
+        if self.is_namespace(o) {
+            return Ok(self.ns_keys(o));
         }
         if matches!(self.heap.obj(o).kind, Kind::TypedArray(_)) {
             let mut keys = self.ta_keys(o);

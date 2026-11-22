@@ -193,6 +193,12 @@ pub enum Op {
     IterCloseThrow,
     /// `[v] → []` completion value of script/eval code.
     SetCompletion,
+    // Modules (§16.2).
+    /// `[specifier options] → [promise]` dynamic `import()` (§13.3.10).
+    ImportCall,
+    /// `import.source(…)`: a source text module has no source phase (§16.2.1.7).
+    ImportSourceCall,
+    ImportMeta,
     // Async functions (§27.7).
     /// First instruction of an async function: run the rest as its own run, `→ [promise]`.
     AsyncStart,
@@ -296,6 +302,31 @@ pub struct Code {
     pub regexps: Vec<(JsString, JsString)>,
     pub strict: bool,
     pub decls: Decls,
+    /// The script or module this code belongs to (for `import()` and `import.meta`).
+    pub referrer: Option<Rc<str>>,
+    /// Module code: its imports and exports (§16.2.1.6).
+    pub module: Option<Box<ModuleInfo>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportEntry {
+    pub request: String,
+    /// `None`: `import * as ns` (the namespace object).
+    pub import_name: Option<JsString>,
+    pub local: Rc<str>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ModuleInfo {
+    /// Module specifiers in source order, without duplicates.
+    pub requests: Vec<String>,
+    pub imports: Vec<ImportEntry>,
+    /// (export name, local binding name)
+    pub local_exports: Vec<(JsString, Rc<str>)>,
+    /// (export name, module request, import name; `None` = the namespace, `export * as ns`)
+    pub indirect_exports: Vec<(JsString, String, Option<JsString>)>,
+    pub star_exports: Vec<String>,
+    pub has_tla: bool,
 }
 
 /// A function's static part, shared by all closures made from it; compiled on first call.
@@ -309,6 +340,8 @@ pub struct FuncTemplate {
     pub is_expression: bool,
     /// The name from the function's position (NamedEvaluation) when it has none itself.
     pub given_name: Option<Rc<str>>,
+    /// The script or module the function was defined in.
+    pub referrer: Option<Rc<str>>,
     /// A class's implicit constructor (§15.7.14 step 14.a).
     pub default_ctor: bool,
     /// Source text for `toString` when it isn't the function's own (class constructors).

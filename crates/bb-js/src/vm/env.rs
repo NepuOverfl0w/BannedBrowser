@@ -30,6 +30,9 @@ impl Vm {
             EnvKind::Declarative | EnvKind::Function { .. } => {
                 return Ok(self.heap.env(r).bindings.contains_key(name))
             }
+            EnvKind::Module { imports } => {
+                return Ok(imports.contains_key(name) || self.heap.env(r).bindings.contains_key(name))
+            }
             EnvKind::Global { object, .. } => {
                 if self.heap.env(r).bindings.contains_key(name) {
                     return Ok(true);
@@ -85,6 +88,12 @@ impl Vm {
     }
 
     fn decl_value(&mut self, r: EnvRef, name: &Rc<str>) -> JsResult<Value> {
+        if let EnvKind::Module { imports } = &self.heap.env(r).kind {
+            if let Some((target, tname)) = imports.get(name).cloned() {
+                // An import binding reads the exporting module's binding (§9.1.1.5.1).
+                return self.decl_value(target, &tname);
+            }
+        }
         match self.heap.env(r).bindings.get(name) {
             Some(Binding { value: Some(v), .. }) => Ok(v.clone()),
             Some(_) => self.reference_error(&format!("Cannot access '{name}' before initialization")),
@@ -118,6 +127,11 @@ impl Vm {
                 return self.type_error(&format!("Cannot assign to read only property '{name}'"));
             }
             return Ok(());
+        }
+        if let EnvKind::Module { imports } = &self.heap.env(r).kind {
+            if imports.contains_key(name) {
+                return self.type_error("Assignment to constant variable.");
+            }
         }
         let env = self.heap.env_mut(r);
         match env.bindings.get_mut(name) {
@@ -238,6 +252,7 @@ impl Vm {
                     };
                 }
                 EnvKind::Global { this, .. } => return Ok(this.clone()),
+                EnvKind::Module { .. } => return Ok(Value::Undefined),
                 _ => e = self.heap.env(r).outer,
             }
         }
@@ -249,7 +264,7 @@ impl Vm {
         while let Some(r) = e {
             match &self.heap.env(r).kind {
                 EnvKind::Function { new_target, .. } => return new_target.clone(),
-                EnvKind::Global { .. } => return Value::Undefined,
+                EnvKind::Global { .. } | EnvKind::Module { .. } => return Value::Undefined,
                 _ => e = self.heap.env(r).outer,
             }
         }
