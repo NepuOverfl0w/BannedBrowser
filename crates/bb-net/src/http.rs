@@ -2,9 +2,10 @@
 
 use crate::{Client, Headers, NetError, NetErrorKind, NetResult, Request, Response};
 use rustls::pki_types::ServerName;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Upper bound on decoded bodies (protects against decompression bombs).
@@ -20,7 +21,7 @@ pub(crate) enum Stream {
 }
 
 impl Stream {
-    fn tcp(&self) -> &TcpStream {
+    pub(crate) fn tcp(&self) -> &TcpStream {
         match self {
             Stream::Plain(s) => s,
             Stream::Tls(t) => &t.sock,
@@ -56,10 +57,13 @@ impl Write for Stream {
     }
 }
 
-/// Idle keep-alive connections keyed by `scheme://host:port[|proxy]`.
+/// Connections keyed by `scheme://host:port[|proxy]`: idle HTTP/1.1 keep-alive connections,
+/// shared HTTP/2 connections, and the origins a connection is being opened to right now.
 #[derive(Default)]
 pub(crate) struct Pool {
     idle: HashMap<String, Vec<(Stream, Instant)>>,
+    h2: HashMap<String, Arc<crate::h2::Connection>>,
+    connecting: HashSet<String>,
 }
 
 impl Pool {
@@ -186,7 +190,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-fn io_err(e: io::Error) -> NetError {
+pub(crate) fn io_err(e: io::Error) -> NetError {
     let kind = match e.kind() {
         io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => NetErrorKind::Timeout,
         io::ErrorKind::ConnectionRefused => NetErrorKind::Connect,
@@ -530,11 +534,102 @@ pub(crate) const DEFAULT_HEADERS: [(&str, &str); 3] = [
     ("Accept-Encoding", "gzip, deflate, br"),
 ];
 
-/// One HTTP exchange (no redirect handling).
+/// Whether TLS negotiated HTTP/2.
+fn negotiated_h2(s: &Stream) -> bool {
+    matches!(s, Stream::Tls(t) if t.conn.alpn_protocol() == Some(b"h2"))
+}
+
+fn lock_pool(client: &Client) -> std::sync::MutexGuard<'_, Pool> {
+    match client.pool.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    }
+}
+
+/// An HTTP/2 exchange on a shared connection.
+fn h2_request(
+    client: &Client,
+    conn: &crate::h2::Connection,
+    req: &Request,
+    deadline: Instant,
+) -> Result<Response, crate::h2::Failure> {
+    let mut defaults: Vec<(&str, String)> = vec![("user-agent", client.config.user_agent().to_string())];
+    defaults.extend(DEFAULT_HEADERS.iter().map(|(k, v)| (*k, v.to_string())));
+    if client.config.do_not_track {
+        defaults.push(("dnt", "1".into()));
+        defaults.push(("sec-gpc", "1".into()));
+    }
+    let fields = crate::h2::request_fields(req, &defaults);
+    conn.request(req, fields, deadline)
+}
+
+/// One HTTP exchange (no redirect handling): over a shared HTTP/2 connection when the origin
+/// speaks it, else HTTP/1.1.
 pub(crate) fn fetch(client: &Client, req: &Request, deadline: Instant) -> NetResult<Response> {
+    fetch_attempt(client, req, deadline, 0)
+}
+
+fn fetch_attempt(client: &Client, req: &Request, deadline: Instant, retries: u32) -> NetResult<Response> {
     let proxy_key =
         client.proxies.proxy_for(&req.url).map(|p| format!("|{}:{}", p.host, p.port)).unwrap_or_default();
     let key = format!("{}://{}{proxy_key}", req.url.scheme(), req.url.host_with_port());
+    if req.url.scheme() == "https" {
+        // An HTTP/2 connection to this origin, or one being opened: share it.
+        let mut attempts = 0;
+        loop {
+            let mut pool = lock_pool(client);
+            let conn = pool.h2.get(&key).cloned();
+            match conn {
+                Some(c) if c.usable(IDLE_TIMEOUT) => {
+                    drop(pool);
+                    match h2_request(client, &c, req, deadline) {
+                        Ok(r) => return Ok(r),
+                        Err(f) if f.retry && attempts < 2 => {
+                            attempts += 1;
+                            log::debug!(
+                                "HTTP/2 connection to {key} can't take the request ({}); retrying",
+                                f.error
+                            );
+                            let mut pool = lock_pool(client);
+                            if pool.h2.get(&key).is_some_and(|x| Arc::ptr_eq(x, &c)) {
+                                pool.h2.remove(&key);
+                            }
+                            continue;
+                        }
+                        Err(f) => return Err(f.error),
+                    }
+                }
+                Some(c) => {
+                    pool.h2.remove(&key);
+                    drop(pool);
+                    c.close();
+                    continue;
+                }
+                None => {}
+            }
+            if pool.connecting.contains(&key) && pool.idle.get(&key).is_none_or(|v| v.is_empty()) {
+                // Another request is connecting to this origin: wait for it (it may be HTTP/2).
+                let wait = deadline.saturating_duration_since(Instant::now()).min(Duration::from_secs(15));
+                if wait.is_zero() {
+                    return Err(NetError::new(NetErrorKind::Timeout, "the server took too long to respond"));
+                }
+                let (p, _) = match client.pool_changed.wait_timeout(pool, wait) {
+                    Ok(r) => r,
+                    Err(e) => e.into_inner(),
+                };
+                drop(p);
+                if req.cancel.is_cancelled() {
+                    return Err(NetError::new(NetErrorKind::Cancelled, "cancelled"));
+                }
+                attempts += 1;
+                if attempts > 50 {
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+    }
     // Try a pooled connection first; on early failure retry with a fresh one.
     let pooled = client.pool.lock().ok().and_then(|mut p| p.take(&key));
     if let Some(stream) = pooled {
@@ -549,7 +644,55 @@ pub(crate) fn fetch(client: &Client, req: &Request, deadline: Instant) -> NetRes
             }
         }
     }
-    let (stream, abs) = open_connection(client, req, deadline)?;
+    let https = req.url.scheme() == "https";
+    if https {
+        lock_pool(client).connecting.insert(key.clone());
+    }
+    let opened = open_connection(client, req, deadline);
+    let done_connecting = |conn: Option<Arc<crate::h2::Connection>>| {
+        let mut pool = lock_pool(client);
+        pool.connecting.remove(&key);
+        if let Some(c) = conn {
+            pool.h2.insert(key.clone(), c);
+        }
+        drop(pool);
+        client.pool_changed.notify_all();
+    };
+    let (stream, abs) = match opened {
+        Ok(x) => x,
+        Err(e) => {
+            if https {
+                done_connecting(None);
+            }
+            return Err(e);
+        }
+    };
+    if negotiated_h2(&stream) {
+        let conn = match crate::h2::Connection::start(stream) {
+            Ok(c) => Arc::new(c),
+            Err(e) => {
+                done_connecting(None);
+                return Err(e);
+            }
+        };
+        done_connecting(Some(conn.clone()));
+        return match h2_request(client, &conn, req, deadline) {
+            Ok(r) => Ok(r),
+            // Refused or cut off before the server processed it: once more, from the top.
+            Err(f) if f.retry && retries < 2 => {
+                let mut pool = lock_pool(client);
+                if pool.h2.get(&key).is_some_and(|x| Arc::ptr_eq(x, &conn)) && !conn.usable(IDLE_TIMEOUT) {
+                    pool.h2.remove(&key);
+                }
+                drop(pool);
+                fetch_attempt(client, req, deadline, retries + 1)
+            }
+            Err(f) => Err(f.error),
+        };
+    }
+    if https {
+        done_connecting(None);
+    }
     exchange(client, req, deadline, stream, abs, &key).map_err(|(e, _)| e)
 }
 
@@ -633,6 +776,7 @@ fn exchange(
         secure,
         cache: crate::cache::CacheStatus::Network,
         complete,
+        version: if version == "HTTP/1.0" { "HTTP/1.0" } else { "HTTP/1.1" },
     })
 }
 

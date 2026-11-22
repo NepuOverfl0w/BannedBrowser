@@ -157,16 +157,17 @@ pub(crate) struct TlsContext {
 }
 
 impl TlsContext {
-    pub fn new(extra_ca_files: &[std::path::PathBuf]) -> Self {
+    /// `http2`: offer `h2` before `http/1.1` in ALPN.
+    pub fn new(extra_ca_files: &[std::path::PathBuf], http2: bool) -> Self {
         let state = Arc::new(CertState::default());
-        let config = Self::build(extra_ca_files, state.clone());
+        let config = Self::build(extra_ca_files, state.clone(), http2);
         if config.is_none() {
             log::error!("TLS initialisation failed; https: will be unavailable");
         }
         TlsContext { config, state }
     }
 
-    fn build(extra: &[std::path::PathBuf], state: Arc<CertState>) -> Option<Arc<ClientConfig>> {
+    fn build(extra: &[std::path::PathBuf], state: Arc<CertState>, http2: bool) -> Option<Arc<ClientConfig>> {
         let mut roots = RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         for path in extra {
@@ -193,7 +194,8 @@ impl TlsContext {
             .dangerous()
             .with_custom_certificate_verifier(verifier)
             .with_no_client_auth();
-        cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+        cfg.alpn_protocols =
+            if http2 { vec![b"h2".to_vec(), b"http/1.1".to_vec()] } else { vec![b"http/1.1".to_vec()] };
         Some(Arc::new(cfg))
     }
 

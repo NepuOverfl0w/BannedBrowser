@@ -35,6 +35,13 @@ jobs:
       - name: Fetch spec suites
         shell: bash
         run: scripts/fetch-spec-tests.sh
+      - name: Python packages for the test servers (HTTP/2)
+        shell: bash
+        run: |
+          PY=python3; [ "$RUNNER_OS" = Windows ] && PY=python
+          "$PY" -m pip install --user --break-system-packages -r tests/server/requirements.txt \
+            || "$PY" -m pip install --user -r tests/server/requirements.txt
+          "$PY" -c "import h2; print('h2', h2.__version__)"
       - name: rustfmt
         if: runner.os == 'Linux'
         run: cargo fmt --all --check

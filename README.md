@@ -147,7 +147,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Area | Status |
 |---|---|
 | URL Standard | ✅ 100 % WPT urltestdata |
-| HTTP/1.1, HTTPS, gzip/deflate/br, chunked, redirects, proxies | ✅ |
+| HTTP/1.1, HTTP/2 (own HPACK and framing), HTTPS, gzip/deflate/br, chunked, redirects, proxies | ✅ |
 | Cookies (RFC 6265bis, Public Suffix List, SameSite), saved in the profile | ✅ |
 | Forms: typing, checkboxes, radios, drop-downs, buttons, GET/POST submission, Tab navigation | ✅ |
 | HTTP cache (RFC 9111: freshness, revalidation, Vary, partitioned by site) | ✅ |

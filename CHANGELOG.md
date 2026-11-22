@@ -9,6 +9,12 @@ Everything on `main` after the 0.1.0 release commit counts toward v0.2.
 The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 
 ### Added
+- **HTTP/2** (RFC 9113) with our own HPACK (RFC 7541, incl. Huffman coding), negotiated with
+  ALPN `h2` over TLS (also through CONNECT proxies); HTTP/1.1 otherwise. One connection per
+  origin carries every request to it (multiplexed, up to the server's
+  `SETTINGS_MAX_CONCURRENT_STREAMS`), with flow control both ways, trailers, PING, and requests
+  retried on a new connection after GOAWAY or REFUSED_STREAM. Server push is turned off.
+  Tested against an independent server (the Python `h2` package) and live sites.
 - **HTTP cache** (RFC 9111): responses are reused while fresh (`max-age`, `Expires`, or a
   heuristic from `Last-Modified`) and revalidated with `If-None-Match` / `If-Modified-Since`
   when stale (a 304 refreshes the stored headers); `Vary`, `no-store`, `no-cache`, and

@@ -662,6 +662,7 @@ pub(crate) fn response_from(
         secure: meta.secure,
         cache: status,
         complete: true,
+        version: "",
     }
 }
 

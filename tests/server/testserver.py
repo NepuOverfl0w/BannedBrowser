@@ -203,6 +203,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--https-port", type=int, default=None)
+    ap.add_argument("--h2-port", type=int, default=None,
+                    help="also serve HTTP/2 over TLS (needs the h2 package: pip install h2)")
     ap.add_argument("--root", default=os.path.join(REPO, "tests", "pages"))
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--exit-on-stdin-eof", action="store_true",
@@ -225,6 +227,15 @@ def main():
         httpsd.socket = ctx.wrap_socket(httpsd.socket, server_side=True)
         print(f"HTTPS_PORT {httpsd.server_address[1]}", flush=True)
         threads.append(threading.Thread(target=httpsd.serve_forever, daemon=True))
+    if a.h2_port is not None:
+        sys.path.insert(0, HERE)
+        try:
+            import h2server
+        except ImportError as e:
+            print(f"H2_UNAVAILABLE {e}", flush=True)
+        else:
+            port = h2server.serve(a.host, a.h2_port, os.path.join(REPO, "tests", "certs"), a.root)
+            print(f"H2_PORT {port}", flush=True)
     for t in threads:
         t.start()
     try:

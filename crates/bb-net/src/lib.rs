@@ -14,6 +14,7 @@ pub mod cookies;
 pub mod data_url;
 pub mod encoding;
 mod file;
+pub mod h2;
 pub mod headers;
 mod http;
 pub mod mime;
@@ -171,6 +172,8 @@ pub struct Response {
     pub cache: cache::CacheStatus,
     /// The whole body arrived (false when the connection ended early).
     pub complete: bool,
+    /// The protocol it came over: "HTTP/1.1", "HTTP/1.0", "HTTP/2", or "" (not HTTP).
+    pub version: &'static str,
 }
 
 impl Response {
@@ -197,6 +200,7 @@ impl Response {
             secure: false,
             cache: cache::CacheStatus::Network,
             complete: true,
+            version: "",
         }
     }
 }
@@ -222,6 +226,8 @@ pub struct ClientConfig {
     pub user_agent: Option<String>,
     /// The HTTP cache (none: every request goes to the network).
     pub cache: Option<Arc<cache::HttpCache>>,
+    /// Don't offer HTTP/2 (ALPN `h2`); every connection uses HTTP/1.1.
+    pub no_http2: bool,
 }
 
 impl ClientConfig {
@@ -237,6 +243,9 @@ pub struct Client {
     tls: tls::TlsContext,
     proxies: proxy::ProxyConfig,
     pool: Mutex<http::Pool>,
+    /// Signalled when a connection attempt finishes (requests to the same origin wait for it,
+    /// so they can share an HTTP/2 connection).
+    pool_changed: std::sync::Condvar,
     /// This client's cookies (one client per browsing profile; private windows have their own).
     cookies: cookies::CookieJar,
 }
@@ -248,7 +257,7 @@ impl Client {
         if let Some(p) = std::env::var_os("SSL_CERT_FILE") {
             ca_files.push(p.into());
         }
-        let tls = tls::TlsContext::new(&ca_files);
+        let tls = tls::TlsContext::new(&ca_files, !config.no_http2);
         let proxies =
             if config.no_proxy_env { proxy::ProxyConfig::default() } else { proxy::ProxyConfig::from_env() };
         Client {
@@ -256,6 +265,7 @@ impl Client {
             tls,
             proxies,
             pool: Mutex::new(http::Pool::default()),
+            pool_changed: std::sync::Condvar::new(),
             cookies: cookies::CookieJar::new(),
         }
     }

@@ -116,5 +116,5 @@ These are self-contained pieces from the gap list in `PROGRESS.md`, each testabl
 - **Frames:** frame navigations in session history.
 - **Find in page:** search inside frames.
 
-Bigger areas (JavaScript, HTTP/2 and HTTP/3, extensions, video) are the v0.2 plan; check
+Bigger areas (JavaScript, HTTP/3, extensions, video) are the v0.2 plan; check
 `PROGRESS.md` and open an issue to coordinate before starting one of those.

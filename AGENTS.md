@@ -105,7 +105,7 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
 |---|---|
 | `crates/bb-str` | WTF-8 strings (web strings with lone surrogates) |
 | `crates/bb-url` | WHATWG URL Standard |
-| `crates/bb-net` | HTTP/1.1, TLS, proxies, codings, `data:`/`file:`/`about:`, encoding sniffing, the HTTP cache, cookies and the Public Suffix List (its `build.rs` downloads the list) (HTTP/2 and HTTP/3 go here in v0.2) |
+| `crates/bb-net` | HTTP/1.1, HTTP/2 (`h2/`: framing, HPACK, flow control), TLS, proxies, codings, `data:`/`file:`/`about:`, encoding sniffing, the HTTP cache, cookies and the Public Suffix List (its `build.rs` downloads the list) (HTTP/3 goes here in v0.2) |
 | `crates/bb-dom`, `bb-html` | DOM; HTML tokenizer and tree builder |
 | `crates/bb-css`, `bb-style` | CSS parsing and selectors; cascade, computed values, UA sheet, presentational hints |
 | `crates/bb-text` | fonts, fallback, shaping, line breaking and bidi helpers |
@@ -152,9 +152,11 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
   - `scripts/archived-sites.sh` (also the CI workflow "Archived sites") renders the sites listed in
     `tests/pages/archived-sites.txt` live and snapshots them.
   - It needs a network that can reach theoldnet.com and web.archive.org.
-- **Network tests:** `cargo test -p bb-net --test http_integration`. `scripts/gui-smoke.sh`
-  sets `BB_PSL_UPDATE=0` so the GUI tests never download the Public Suffix List. They spawn
-  `tests/server/testserver.py` (HTTP + HTTPS with a test-only CA in `tests/certs/`).
+- **Network tests:** `cargo test -p bb-net --test http_integration` and `--test h2_integration`.
+  `scripts/gui-smoke.sh` sets `BB_PSL_UPDATE=0` so the GUI tests never download the Public
+  Suffix List. They spawn `tests/server/testserver.py` (HTTP + HTTPS with a test-only CA in
+  `tests/certs/`, and HTTP/2 via `tests/server/h2server.py`, which needs
+  `pip install -r tests/server/requirements.txt`; CI installs it).
 
 ## Workflow
 
