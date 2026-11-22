@@ -100,7 +100,7 @@ and CHANGELOG `[Unreleased]` updated, pushed to `main`.
 | **E** | M10b Web APIs | DOM bindings, events + event loop, timers, fetch/XHR, storage, workers, `document.write`, Canvas 2D; `#script-on` cases; first whatismybrowser.com check. |
 | **E2** | JIT | `bb-js-jit` (second `unsafe` exception); every suite passes with and without it. |
 | **F** | M3/M4/M7 CSS + layout | Every gap above, grid, transforms, sticky/fixed, `@font-face` + WOFF/WOFF2, full bidi, counters, `@layer`, nesting, color functions; WPT CSS subset; ≥150 reftests. |
-| **G** | M5 paint + GPU | SVG, CSS animations/transitions, GIF/APNG animation, filters; wgpu compositing/raster (software renderer stays the reference). |
+| **G** | M5 paint + GPU | SVG, CSS animations/transitions, GIF/APNG animation, filters; wgpu compositing/raster in `bb-gpu` (software renderer stays the reference); **full WebGPU and WebGL 1 + 2** for web content (needs E's JS bindings). |
 | **H** | HTTP/3 | Our QUIC (RFC 9000/9001/9002), QPACK, HTTP/3 framing; `Alt-Svc`. |
 | **I** | Media | MP4/WebM demuxers, Opus/AAC, our VP9, cpal output, `<video>`/`<audio>`, MSE, `bb-media-os` hardware decode. No DRM. |
 | **J** | M9 browser features | Bookmarks, history, downloads, settings, Reader View, passwords, session restore, pinned tabs, tab dragging, sidebars. |
@@ -178,6 +178,14 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   - It should pin the exact certificate (host + DER bytes, like Firefox's overrides), not just the host as today.
   - The accept action needs a per-session secret token, so web pages can't link their way past a certificate error.
   - This needs either `:target`/`<details>` support or M10 JS for the Advanced toggle.
+
+**GPU decisions (maintainer, 2026-11-22, session 2):**
+* `unsafe` is allowed in platform crates only (AGENTS.md hard rule 3); engine crates stay
+  `unsafe`-free. The new platform crate `bb-gpu` holds the GPU code.
+* v0.2 includes **full WebGPU** (on wgpu) and **full WebGL 1 and 2** for web content (our own
+  WebGL implementation on top of `bb-gpu`; GLSL ES shaders translated with wgpu's `naga`).
+  Which conformance suites gate them (WebGPU CTS, Khronos WebGL conformance) and how is
+  decided when milestone G starts.
 
 **JavaScript and media decisions (maintainer, 2026-11-21, session 2):**
 * **JIT allowed.** `bb-js` gets a JIT in a separate crate, `crates/bb-js-jit`, the second

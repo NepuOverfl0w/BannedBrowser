@@ -22,32 +22,45 @@ BANNED=(
   'egui*' eframe 'iced*' 'slint*' 'gtk*' 'gtk4*' 'relm*' 'druid*' 'xilem*' 'fltk*' 'qt*' 'tauri*'
 )
 
-# The only crate allowed to contain `unsafe` (AGENTS.md, hard rule 3): FFI to the OS
-# video decoders (Media Foundation, VideoToolbox, VA-API). Decided for v0.2.
-UNSAFE_CRATE="crates/bb-media-os"
+# The platform crates allowed to contain `unsafe` (AGENTS.md, hard rule 3), decided by the
+# maintainer: FFI and platform code only. Engine crates, which handle untrusted web content,
+# stay `unsafe`-free.
+#   bb-media-os  FFI to the OS video decoders (Media Foundation, VideoToolbox, VA-API)
+#   bb-js-jit    the JavaScript JIT: executable memory and generated-code entry
+#   bb-gpu       GPU access for compositing, WebGPU and WebGL (wgpu and GPU interop)
+UNSAFE_CRATES=("crates/bb-media-os" "crates/bb-js-jit" "crates/bb-gpu")
+
+is_unsafe_crate() {
+  local d="$1" c
+  for c in "${UNSAFE_CRATES[@]}"; do [[ "$d" == "$c" ]] && return 0; done
+  return 1
+}
 
 # unsafe_policy <repo-root>: prints violations, returns 1 if any.
-#  1. every crate except $UNSAFE_CRATE inherits `[lints] workspace = true`
+#  1. every crate except the UNSAFE_CRATES inherits `[lints] workspace = true`
 #     (the workspace sets unsafe_code = "forbid");
-#  2. no `allow(unsafe_code)` outside $UNSAFE_CRATE;
-#  3. inside $UNSAFE_CRATE every `unsafe` block/fn/impl has a `// SAFETY:`
+#  2. no `allow(unsafe_code)` outside the UNSAFE_CRATES;
+#  3. inside the UNSAFE_CRATES every `unsafe` block/fn/impl has a `// SAFETY:`
 #     comment in the comment block directly above it (or on the same line).
 unsafe_policy() {
-  local root="$1" bad=0 toml dir
+  local root="$1" bad=0 toml dir c
   for toml in "$root"/crates/*/Cargo.toml "$root"/xtask/Cargo.toml; do
     [[ -f "$toml" ]] || continue
     dir="${toml%/Cargo.toml}"; dir="${dir#"$root"/}"
-    [[ "$dir" == "$UNSAFE_CRATE" ]] && continue
+    is_unsafe_crate "$dir" && continue
     if ! awk '/^\[lints\]/{l=1; next} /^\[/{l=0} l && /workspace *= *true/{ok=1} END{exit !ok}' "$toml"; then
       echo "UNSAFE POLICY: $dir/Cargo.toml must inherit '[lints] workspace = true'"; bad=1
     fi
   done
   while IFS= read -r hit; do
     [[ -z "$hit" ]] && continue
-    [[ "${hit#"$root"/}" == "$UNSAFE_CRATE/"* ]] && continue
-    echo "UNSAFE POLICY: allow(unsafe_code) outside $UNSAFE_CRATE: ${hit#"$root"/}"; bad=1
+    local rel="${hit#"$root"/}" allowed=""
+    for c in "${UNSAFE_CRATES[@]}"; do [[ "$rel" == "$c/"* ]] && allowed=1; done
+    [[ -n "$allowed" ]] && continue
+    echo "UNSAFE POLICY: allow(unsafe_code) outside the unsafe platform crates: $rel"; bad=1
   done < <(grep -rn --include='*.rs' -E 'allow\([^)]*unsafe_code' "$root/crates" "$root/xtask" 2>/dev/null)
-  if [[ -d "$root/$UNSAFE_CRATE" ]]; then
+  for c in "${UNSAFE_CRATES[@]}"; do
+    [[ -d "$root/$c" ]] || continue
     while IFS= read -r f; do
       awk -v f="${f#"$root"/}" '
         { line[NR] = $0 }
@@ -57,8 +70,8 @@ unsafe_policy() {
           if (!ok) { printf "UNSAFE POLICY: %s:%d: unsafe without a // SAFETY: comment\n", f, NR; bad = 1 }
         }
         END { exit bad }' "$f" || bad=1
-    done < <(find "$root/$UNSAFE_CRATE" -name '*.rs')
-  fi
+    done < <(find "$root/$c" -name '*.rs')
+  done
   return $bad
 }
 
@@ -101,6 +114,14 @@ if [[ "${1:-}" == "--self-test" ]]; then
   printf '#[allow(unsafe_code)] fn x() {}\n' > "$t/crates/ok/src/lib.rs"
   unsafe_policy "$t" >/dev/null && { echo "self-test: allow(unsafe_code) outside the exception not flagged"; fail=1; }
   rm "$t/crates/ok/src/lib.rs"
+  # Another listed platform crate is held to the same SAFETY rule.
+  mkdir -p "$t/crates/bb-gpu/src"
+  printf '[package]\nname="bb-gpu"\n' > "$t/crates/bb-gpu/Cargo.toml"
+  printf '// SAFETY: documented.\nunsafe { a() };\n' > "$t/crates/bb-gpu/src/lib.rs"
+  unsafe_policy "$t" >/dev/null || { echo "self-test: documented unsafe in bb-gpu flagged"; fail=1; }
+  printf 'unsafe { b() };\n' >> "$t/crates/bb-gpu/src/lib.rs"
+  unsafe_policy "$t" >/dev/null && { echo "self-test: undocumented unsafe in bb-gpu not flagged"; fail=1; }
+  rm -r "$t/crates/bb-gpu"
   printf '[package]\nname="ok"\n' > "$t/crates/ok/Cargo.toml"
   unsafe_policy "$t" >/dev/null && { echo "self-test: crate without workspace lints not flagged"; fail=1; }
   [[ $fail == 0 ]] && echo "check-deps self-test OK"

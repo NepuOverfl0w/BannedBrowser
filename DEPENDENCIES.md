@@ -43,3 +43,9 @@ it is first used.
 | Area | Decision | Boundaries |
 |---|---|---|
 | JS JIT | Allowed, in the new crate **`bb-js-jit`**: the second `unsafe` exception. | `unsafe` only for mapping executable memory and entering generated code, each block with a `// SAFETY:` comment. The code generator itself is ours. Any crate it needs for the OS memory calls is justified here when added. `bb-js`'s interpreter stays `unsafe`-free and every test must pass with the JIT off. |
+
+## GPU crate (maintainer, 2026-11-22, session 2)
+
+| Area | Decision | Boundaries |
+|---|---|---|
+| GPU, WebGPU, WebGL | The new platform crate **`bb-gpu`** may use `unsafe` (AGENTS.md hard rule 3). It hosts the `wgpu` device and surfaces, GPU compositing, and the GPU side of WebGPU and WebGL 1/2. | Every `unsafe` block has a `// SAFETY:` comment; the crate exposes a safe API. WebGL's API, state machine and validation are ours; shaders are translated with `naga`. Crates it needs beyond `wgpu` are justified here when added. |

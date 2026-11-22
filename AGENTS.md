@@ -43,18 +43,24 @@ Windows, macOS and Linux. Every web-platform component is ours.
      - cpal (audio *device output* only; all audio/video codecs and Web Audio are ours).
      - The OS media FFI bindings used by `bb-media-os`, each justified in DEPENDENCIES.md when added.
    - Dev-only: image, proptest.
-3. **No `unsafe`.**
-   - The workspace lint is `unsafe_code = "forbid"` and every crate inherits it.
-   - **Two exceptions**, both decided by the maintainer. Neither inherits the workspace lints,
-     and every `unsafe` in them needs a `// SAFETY:` comment directly above it:
+3. **`unsafe` only in platform crates** (maintainer, 2026-11-22).
+   - The workspace lint is `unsafe_code = "forbid"` and every crate inherits it, except the
+     platform crates listed in `UNSAFE_CRATES` in `scripts/check-deps.sh`.
+   - Engine crates (URL, net, DOM, HTML, CSS, style, text, layout, paint, engine, JS, UI) handle
+     untrusted web content and stay `unsafe`-free.
+   - In a platform crate, every `unsafe` needs a `// SAFETY:` comment directly above it. Keep
+     the crate a thin FFI/platform layer with a safe API.
+   - Adding a platform crate to the list is a maintainer decision; record it here and in
+     DEPENDENCIES.md. Today's list:
      - `crates/bb-media-os`: the FFI to OS hardware video decoders (Media Foundation,
        VideoToolbox, VA-API). Video must still play without it: our own pure-Rust VP9 decoder
        is the fallback.
      - `crates/bb-js-jit` (planned): the JavaScript JIT's executable-memory management and
        generated-code entry. The bytecode interpreter in `bb-js` stays `unsafe`-free, remains
        the reference, and must run every test with the JIT turned off.
-   - `scripts/check-deps.sh` enforces all of this. It gets the `bb-js-jit` exception when
-     that crate is created.
+     - `crates/bb-gpu` (planned): GPU access for compositing and for full WebGPU and WebGL
+       (wgpu, surface and interop code). The software renderer stays the reference.
+   - `scripts/check-deps.sh` enforces all of this.
 4. **Never panic on web content.** Every parser gets randomized robustness tests. Tabs catch
    panics and show "BannedBrowser hit a snag".
 5. **The UI thread never blocks** on network, parsing or layout. Each tab runs its `Page` on a
