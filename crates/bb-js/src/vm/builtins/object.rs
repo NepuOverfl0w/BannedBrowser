@@ -162,7 +162,7 @@ fn object_to_string(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
                 _ if is_arr => "Array",
                 _ if callable => "Function",
                 Kind::Array => "Array",
-                Kind::Arguments => "Arguments",
+                Kind::Arguments | Kind::MappedArguments(_) => "Arguments",
                 Kind::Function(_) | Kind::Native(_) | Kind::Bound(_) => "Function",
                 Kind::Error => "Error",
                 Kind::Boolean(_) => "Boolean",

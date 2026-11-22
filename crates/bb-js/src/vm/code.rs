@@ -133,6 +133,8 @@ pub enum Op {
     Arg(u32),
     RestArgs(u32),
     CreateArguments,
+    /// `[] → [arguments]`: a mapped arguments object over `Code::params` (§10.4.4.7).
+    CreateMappedArguments,
     TemplateObject(u32),
     RegExp(u32),
 
@@ -332,6 +334,8 @@ pub struct Code {
     pub referrer: Option<Rc<str>>,
     /// Module code: its imports and exports (§16.2.1.6).
     pub module: Option<Box<ModuleInfo>>,
+    /// A sloppy function's simple parameter names in order (mapped `arguments`).
+    pub params: Vec<Rc<str>>,
 }
 
 #[derive(Debug, Clone)]

@@ -4,6 +4,7 @@
 use super::heap::*;
 use super::value::{same_value, PropKey, Value};
 use super::{JsResult, Vm};
+use std::rc::Rc;
 
 /// A Property Descriptor (§6.2.6) with absent fields as `None`.
 #[derive(Clone, Default, Debug)]
@@ -208,7 +209,12 @@ impl Vm {
         }
         let obj = self.heap.obj(o);
         if let Some(p) = obj.props.get(k) {
-            return Ok(Some(PropDesc::from_prop(p)));
+            let mut d = PropDesc::from_prop(p);
+            // §10.4.4.1: a mapped index reads the parameter binding.
+            if let Some(v) = self.mapped_arg(o, k) {
+                d.value = Some(v);
+            }
+            return Ok(Some(d));
         }
         if let (Kind::String(s), PropKey::Index(i)) = (&obj.kind, k) {
             if let Some(&c) = s.get(*i as usize) {
@@ -223,6 +229,7 @@ impl Vm {
         match &self.heap.obj(o).kind {
             Kind::Proxy(_) => return self.proxy_define_own_property(o, k, d),
             Kind::ModuleNamespace(..) => return self.ns_define(o, k, d),
+            Kind::MappedArguments(_) => return self.args_define(o, k, d),
             Kind::TypedArray(_) => {
                 if let Some(n) = super::typed::canonical_numeric(&k) {
                     return self.ta_define(o, n, d);
@@ -451,10 +458,64 @@ impl Vm {
             None => Ok(true),
             Some(d) if d.configurable == Some(true) => {
                 self.heap.obj_mut(o).props.remove(k);
+                // §10.4.4.5: deleting a mapped index unmaps it.
+                self.unmap_arg(o, k);
                 Ok(true)
             }
             Some(_) => Ok(false),
         }
+    }
+
+    /// The parameter name a mapped arguments index aliases.
+    fn mapped_name(&self, o: ObjRef, k: &PropKey) -> Option<(EnvRef, Rc<str>)> {
+        let (Kind::MappedArguments(m), PropKey::Index(i)) = (&self.heap.obj(o).kind, k) else { return None };
+        let name = m.names.get(*i as usize)?.clone()?;
+        Some((m.env, name))
+    }
+
+    fn mapped_arg(&self, o: ObjRef, k: &PropKey) -> Option<Value> {
+        let (env, name) = self.mapped_name(o, k)?;
+        self.heap.env(env).bindings.get(&name).and_then(|b| b.value.clone())
+    }
+
+    fn unmap_arg(&mut self, o: ObjRef, k: &PropKey) {
+        if let (Kind::MappedArguments(m), PropKey::Index(i)) = (&mut self.heap.obj_mut(o).kind, k) {
+            if let Some(n) = m.names.get_mut(*i as usize) {
+                *n = None;
+            }
+        }
+    }
+
+    /// [[DefineOwnProperty]] of a mapped arguments object (§10.4.4.2).
+    fn args_define(&mut self, o: ObjRef, k: PropKey, d: PropDesc) -> JsResult<bool> {
+        let Some((env, name)) = self.mapped_name(o, &k) else { return self.ordinary_define(o, k, d) };
+        let cur = self.heap.env(env).bindings.get(&name).and_then(|b| b.value.clone());
+        // OrdinaryDefineOwnProperty sees the exotic [[GetOwnProperty]]: sync the value first.
+        if let (Some(v), Some(p)) = (&cur, self.heap.obj_mut(o).props.get_mut(&k)) {
+            if let Slot::Data(x) = &mut p.slot {
+                *x = v.clone();
+            }
+        }
+        let mut nd = d.clone();
+        if !d.is_accessor() && d.value.is_none() && d.writable == Some(false) {
+            nd.value = cur;
+        }
+        if !self.ordinary_define(o, k.clone(), nd)? {
+            return Ok(false);
+        }
+        if d.is_accessor() {
+            self.unmap_arg(o, &k);
+        } else {
+            if let Some(v) = d.value {
+                if let Some(b) = self.heap.env_mut(env).bindings.get_mut(&name) {
+                    b.value = Some(v);
+                }
+            }
+            if d.writable == Some(false) {
+                self.unmap_arg(o, &k);
+            }
+        }
+        Ok(true)
     }
 
     /// [[OwnPropertyKeys]] (§10.1.11, §10.4.3.3).

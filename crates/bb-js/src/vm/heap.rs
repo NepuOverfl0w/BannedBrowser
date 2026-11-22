@@ -198,6 +198,12 @@ pub enum PrivElem {
     Accessor(Option<ObjRef>, Option<ObjRef>),
 }
 
+/// [[ParameterMap]]: index → the parameter binding it aliases in `env` (`None`: unmapped).
+pub struct ArgMap {
+    pub env: EnvRef,
+    pub names: Vec<Option<Rc<str>>>,
+}
+
 pub struct Native {
     pub f: NativeFn,
     pub constructor: bool,
@@ -328,6 +334,8 @@ pub enum Kind {
     Ordinary,
     Array,
     Arguments,
+    /// A mapped arguments exotic object (§10.4.4): its [[ParameterMap]].
+    MappedArguments(Box<ArgMap>),
     Function(Box<Closure>),
     Native(Box<Native>),
     Bound(Box<Bound>),
@@ -732,6 +740,7 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
             }
         }
         Kind::WeakRef(v) => push_val(v, os),
+        Kind::MappedArguments(m) => es.push(m.env),
         Kind::DisposeCap(c) => c.trace(os),
         Kind::DisposableStack(s) => s.cap.trace(os),
         Kind::TypedArray(t) => os.push(t.buffer),

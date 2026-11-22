@@ -1284,6 +1284,29 @@ impl Vm {
                 let a = self.create_arguments()?;
                 self.push(Value::Object(a));
             }
+            Op::CreateMappedArguments => {
+                let a = self.create_arguments()?;
+                // CreateMappedArgumentsObject (§10.4.4.7) steps 15–17: the last parameter
+                // with a name wins; only indices below the argument count are mapped.
+                let params = self.top().code.params.clone();
+                let n = self.top().args.len();
+                let mut names: Vec<Option<Rc<str>>> = vec![None; n.min(params.len())];
+                let mut seen = std::collections::HashSet::new();
+                for (i, p) in params.iter().enumerate().rev() {
+                    if seen.insert(p.clone()) && i < n {
+                        names[i] = Some(p.clone());
+                    }
+                }
+                let env = self.top().env;
+                let callee = self.top().callee;
+                let o = self.heap.obj_mut(a);
+                o.kind = Kind::MappedArguments(Box::new(ArgMap { env, names }));
+                // A mapped object's callee is the function even though `strict` is false.
+                if let Some(c) = callee {
+                    o.props.insert(PropKey::lit("callee"), Prop::method(Value::Object(c)));
+                }
+                self.push(Value::Object(a));
+            }
             Op::TemplateObject(i) => {
                 let o = self.template_object(i);
                 self.push(Value::Object(o));

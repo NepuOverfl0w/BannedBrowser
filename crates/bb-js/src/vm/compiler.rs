@@ -484,7 +484,22 @@ impl<'a> Compiler<'a> {
             let i = c.name(n);
             c.emit(if has_dups { Op::DeclareVar(i) } else { Op::DeclareLet(i) });
         }
-        if arguments_needed {
+        // A sloppy function with a simple parameter list gets a mapped arguments object.
+        let simple = f.rest.is_none() && f.params.iter().all(|p| matches!(p, Pat::Ident(_)));
+        if arguments_needed && !f.strict && simple {
+            c.code.params = f
+                .params
+                .iter()
+                .filter_map(|p| match p {
+                    Pat::Ident(n) => Some(n.as_str().into()),
+                    _ => None,
+                })
+                .collect();
+            c.emit(Op::CreateMappedArguments);
+            let i = c.name("arguments");
+            c.emit(Op::DeclareLet(i));
+            c.emit(Op::InitBinding(i));
+        } else if arguments_needed {
             c.emit(Op::CreateArguments);
             let i = c.name("arguments");
             c.emit(if f.strict { Op::DeclareConst(i) } else { Op::DeclareLet(i) });
