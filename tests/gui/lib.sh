@@ -17,6 +17,19 @@ OUT="tests/gui/out"
 mkdir -p "$OUT"
 # A relative path works for both the shell and the (native) browser on every OS.
 STATE="${STATE:-$OUT/state.json}"
+# A JSON load that retries: on Windows, reading the state file can collide with the
+# browser replacing it (PermissionError) or catch it mid-write.
+export BB_STATE_PY='import json, time
+def load_state(p):
+    for _ in range(40):
+        try:
+            with open(p) as f:
+                return json.load(f)
+        except (PermissionError, FileNotFoundError, ValueError):
+            time.sleep(0.05)
+    with open(p) as f:
+        return json.load(f)
+'
 rm -f "$STATE"
 BB_PID=""
 BB_OS_PID=""
@@ -84,8 +97,9 @@ drv() { "$DRIVER" "$@" || fail "input driver failed: $*"; }
 # physical pixels on Windows, points on macOS.
 screen_xy() {
   "$PY" - "$STATE" "$1" "$2" "$GUI_OS" <<'PY'
-import json, sys
-s = json.load(open(sys.argv[1]))
+import os, sys
+exec(os.environ["BB_STATE_PY"])
+s = load_state(sys.argv[1])
 x, y = float(sys.argv[2]), float(sys.argv[3])
 k = 1.0 if sys.argv[4] == "macos" else float(s.get("scale") or 1)
 print(round((s["win_x"] + x) * k), round((s["win_y"] + y) * k))
@@ -160,14 +174,14 @@ PY
 # use it for positions near the right/bottom edge, since the window may be smaller than asked
 # for on a small screen (the macOS runner's is 1024x768).
 state_num() {
-  "$PY" -c "import json,sys; print(int(round(json.load(open(sys.argv[1]))[sys.argv[2]])))" "$STATE" "$1"
+  "$PY" -c "import os,sys; exec(os.environ['BB_STATE_PY']); print(int(round(load_state(sys.argv[1])[sys.argv[2]])))" "$STATE" "$1"
 }
 
 # click_target <id>: click the centre of an element with that id on an internal page (the
 # browser reports their positions in the state file as .targets).
 click_target() {
   local xy
-  xy=$("$PY" -c "import json,sys; t=json.load(open(sys.argv[1]))['targets'][sys.argv[2]]; print(int(t[0]), int(t[1]))" "$STATE" "$1") \
+  xy=$("$PY" -c "import os,sys; exec(os.environ['BB_STATE_PY']); t=load_state(sys.argv[1])['targets'][sys.argv[2]]; print(int(t[0]), int(t[1]))" "$STATE" "$1") \
     || fail "no target #$1 on the page"
   # shellcheck disable=SC2086 # two numbers
   click_at $xy
