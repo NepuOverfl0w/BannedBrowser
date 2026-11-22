@@ -1,6 +1,6 @@
 # BannedBrowser — progress log
 
-_Last updated: 2026-11-21 (session 1)._
+_Last updated: 2026-11-22 (session 2)._
 
 ## Status at a glance
 
@@ -106,7 +106,10 @@ and CHANGELOG `[Unreleased]` updated, pushed to `main`.
 | **L** | M11 | DevTools, incremental style/layout, accessibility (accesskit), Windows `.exe` icon. |
 | **M** | Release | whatismybrowser.com acceptance, 100 % everywhere, `[release]` commit. |
 
-**Now:** milestone A.
+**Done:** milestone A (session 2), except the 14 `#script-on` tree cases, which need JS and land in E.
+CI is green on all three OSes with every suite at 100 % and the GUI tests on each.
+
+**Now:** milestone B.
 
 ## v0.2 scope (agreed with the maintainer)
 

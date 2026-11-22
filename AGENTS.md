@@ -191,6 +191,17 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
   - It redirects modern browsers to web.archive.org.
   - Its `/get?…&url=<image>` proxy re-encodes binary data as UTF-8, so it's unusable for images.
 - **Linux GUI runtime:** winit `dlopen`s `libxkbcommon-x11` at runtime. Without it, the window never appears.
+- **GUI tests on macOS runners:**
+  - Accessibility is granted, so `CGEvent` input works.
+  - The screen is 1024×768, so windows get shrunk.
+  - Pressing the green button enters full screen; zooming is Option-click.
+  - Hovering the green button opens a tiling popover that takes the keyboard.
+  - Any process that does non-loopback name lookups (e.g. Python's `getfqdn`) raises a
+    "find devices on local networks" prompt over the window.
+- **GUI tests on Windows runners:**
+  - The desktop is interactive. Set the resolution with `Set-DisplayResolution`.
+  - `Process.MainWindowHandle` is unreliable; enumerate the process's top-level windows instead.
+  - Git Bash rewrites arguments that start with `/` into Windows paths (MSYS path conversion).
 - **macOS cross-check:** `cargo check --target aarch64-apple-darwin` can't build `ring` without
   the macOS SDK; CI's macOS job covers it.
 - **Text:**
