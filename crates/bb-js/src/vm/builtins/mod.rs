@@ -1,6 +1,7 @@
 //! The built-in objects (ECMA-262 §19–§28).
 
 mod array;
+mod base64;
 mod collections;
 mod date;
 pub(super) mod iterator;
@@ -50,6 +51,7 @@ pub(super) fn install(vm: &mut Vm) {
     date::install(vm);
     iterator::install(vm);
     typed::install(vm);
+    base64::install(vm);
     install_global(vm);
     selfhost::install(vm);
 }
@@ -256,6 +258,12 @@ fn install_errors(vm: &mut Vm) {
         value(vm, g, name, Value::Object(c));
         if i == 0 {
             base_ctor = Some(c);
+            // Error.isError (ES2026 §20.5.2.1): has an [[ErrorData]] slot.
+            method(vm, c, "isError", 1, |vm, c| {
+                Ok(Value::Bool(
+                    matches!(c.arg(0), Value::Object(o) if matches!(vm.heap.obj(o).kind, Kind::Error)),
+                ))
+            });
             method(vm, proto, "toString", 0, |vm, c| {
                 let Value::Object(o) = c.this else {
                     return vm.type_error("Error.prototype.toString called on non-object");

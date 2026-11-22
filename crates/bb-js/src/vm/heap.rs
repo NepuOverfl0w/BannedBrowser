@@ -370,6 +370,8 @@ pub enum Kind {
     WeakRef(Value),
     /// (cleanup callback, registered (target, held, token) cells); callbacks never run.
     FinalizationRegistry(Value, Vec<(Value, Value, Value)>),
+    /// JSON.rawJSON's result ([[IsRawJSON]]).
+    RawJSON,
     /// A `using` scope's DisposeCapability (on the operand stack).
     DisposeCap(Box<super::dispose::DisposeCap>),
     DisposableStack(Box<super::dispose::StackData>),

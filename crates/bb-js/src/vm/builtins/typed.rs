@@ -508,7 +508,7 @@ fn new_ta(
 }
 
 /// AllocateTypedArray with a new zeroed buffer of `len` elements.
-fn alloc_ta(vm: &mut Vm, kind: TaKind, proto: ObjRef, len: f64) -> JsResult<ObjRef> {
+pub(super) fn alloc_ta(vm: &mut Vm, kind: TaKind, proto: ObjRef, len: f64) -> JsResult<ObjRef> {
     let bytes = len * kind.size() as f64;
     let abp = vm.realm.array_buffer_proto;
     let buf = allocate_buffer(vm, abp, bytes, None, false)?;

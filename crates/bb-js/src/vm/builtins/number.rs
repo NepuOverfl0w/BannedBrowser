@@ -3,8 +3,8 @@
 use super::super::bigint::BigInt;
 use super::super::heap::*;
 use super::super::realm::{self, constant, method};
-use super::super::value::{digits_to_f64, is_js_space, number_to_string, Value};
-use super::super::{JsResult, Vm};
+use super::super::value::{digits_to_f64, is_js_space, number_to_string, PropKey, Value};
+use super::super::{ErrorKind, JsResult, Vm};
 use super::arg_string;
 
 fn this_number(vm: &mut Vm, v: &Value) -> JsResult<f64> {
@@ -473,6 +473,182 @@ fn random() -> f64 {
     })
 }
 
+/// An exact sum of doubles: two's-complement 32-bit limbs (in i64 for lazy carries),
+/// scaled by 2^1074 so every finite double is an integer.
+struct ExactSum {
+    limbs: Vec<i64>,
+    /// The carry out of the top limb: the value is limbs + high · 2^(32·LIMBS).
+    high: i64,
+    pending: u32,
+}
+
+impl ExactSum {
+    const LIMBS: usize = 72;
+
+    fn new() -> Self {
+        ExactSum { limbs: vec![0; Self::LIMBS], high: 0, pending: 0 }
+    }
+
+    fn normalize(&mut self) {
+        let mut carry = 0i64;
+        for l in self.limbs.iter_mut() {
+            let v = *l + carry;
+            *l = v & 0xFFFF_FFFF;
+            carry = v >> 32;
+        }
+        self.high += carry;
+        self.pending = 0;
+    }
+
+    fn add(&mut self, x: f64) {
+        let bits = x.to_bits();
+        let exp = ((bits >> 52) & 0x7FF) as i64;
+        let frac = bits & ((1u64 << 52) - 1);
+        let (mant, shift) = if exp == 0 { (frac, 0) } else { (frac | (1u64 << 52), exp - 1) };
+        if mant == 0 {
+            return;
+        }
+        let sign = if x < 0.0 { -1i64 } else { 1 };
+        let (limb, off) = ((shift / 32) as usize, (shift % 32) as u32);
+        let wide = (mant as u128) << off;
+        for k in 0..3 {
+            let part = ((wide >> (32 * k)) & 0xFFFF_FFFF) as i64;
+            if part != 0 && limb + k < Self::LIMBS {
+                self.limbs[limb + k] += sign * part;
+            }
+        }
+        self.pending += 1;
+        if self.pending >= 1 << 20 {
+            self.normalize();
+        }
+    }
+
+    /// The sum rounded to the nearest double, ties to even.
+    fn into_f64(mut self) -> f64 {
+        self.normalize();
+        // |sum| < 2^(32·(LIMBS−1)), so `high` is 0 or −1 (two's complement).
+        let negative = self.high < 0;
+        let mut mag: Vec<u32> = Vec::with_capacity(Self::LIMBS);
+        if negative {
+            let mut carry = 1u64;
+            for &l in &self.limbs {
+                let s = (!(l as u32)) as u64 + carry;
+                mag.push(s as u32);
+                carry = s >> 32;
+            }
+        } else {
+            mag.extend(self.limbs.iter().map(|&l| l as u32));
+        }
+        let Some(top) = mag.iter().rposition(|&l| l != 0) else { return 0.0 };
+        let bitlen = top as i64 * 32 + (32 - mag[top].leading_zeros() as i64);
+        let bit = |i: i64| -> u64 {
+            if i < 0 {
+                return 0;
+            }
+            ((mag[(i / 32) as usize] >> (i % 32)) & 1) as u64
+        };
+        let r = if bitlen <= 53 {
+            let mut m = 0u64;
+            for i in (0..bitlen).rev() {
+                m = (m << 1) | bit(i);
+            }
+            scale(m as f64, -1074)
+        } else {
+            let low = bitlen - 53;
+            let mut m = 0u64;
+            for i in (low..bitlen).rev() {
+                m = (m << 1) | bit(i);
+            }
+            let half = bit(low - 1) == 1;
+            let sticky = (0..low - 1).any(|i| bit(i) == 1);
+            if half && (sticky || m & 1 == 1) {
+                m += 1;
+            }
+            scale(m as f64, low - 1074)
+        };
+        if negative {
+            -r
+        } else {
+            r
+        }
+    }
+}
+
+/// x · 2^k, exact unless the result overflows (to ±∞) or is subnormal and inexact.
+fn scale(mut x: f64, mut k: i64) -> f64 {
+    while k > 0 {
+        let s = k.min(1000);
+        x *= f64::from_bits(((1023 + s) as u64) << 52);
+        k -= s;
+    }
+    while k < 0 {
+        let s = (-k).min(1000);
+        x *= f64::from_bits(((1023 - s) as u64) << 52);
+        k += s;
+    }
+    x
+}
+
+/// Math.sumPrecise (ES2026 §21.3.2.34).
+fn sum_precise(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+    let items = c.arg(0);
+    if items.is_nullish() {
+        return vm.type_error("Math.sumPrecise requires an iterable");
+    }
+    let r = vm.get_iterator(&items)?;
+    #[derive(PartialEq)]
+    enum State {
+        MinusZero,
+        Finite,
+        PlusInf,
+        MinusInf,
+        NaN,
+    }
+    let mut state = State::MinusZero;
+    let mut sum = ExactSum::new();
+    let mut count = 0f64;
+    while let Some(v) = vm.iter_step(r)? {
+        count += 1.0;
+        let err = if count >= 9007199254740992.0 {
+            Some(vm.error(ErrorKind::Range, "Math.sumPrecise: too many values"))
+        } else if !matches!(v, Value::Number(_)) {
+            Some(vm.error(ErrorKind::Type, "Math.sumPrecise: the values must be numbers"))
+        } else {
+            None
+        };
+        if let Some(e) = err {
+            if let Kind::IterRecord(x) = &vm.heap.obj(r).kind {
+                let it = x.iterator.clone();
+                if let Ok(Some(f)) = vm.get_method(&it, &PropKey::lit("return")) {
+                    let _ = vm.call(&f, it, Vec::new());
+                }
+            }
+            return Err(e);
+        }
+        let Value::Number(n) = v else { continue };
+        if state == State::NaN {
+            continue;
+        }
+        if n.is_nan() {
+            state = State::NaN;
+        } else if n == f64::INFINITY {
+            state = if state == State::MinusInf { State::NaN } else { State::PlusInf };
+        } else if n == f64::NEG_INFINITY {
+            state = if state == State::PlusInf { State::NaN } else { State::MinusInf };
+        } else if !(n == 0.0 && n.is_sign_negative()) && matches!(state, State::MinusZero | State::Finite) {
+            state = State::Finite;
+            sum.add(n);
+        }
+    }
+    Ok(Value::Number(match state {
+        State::NaN => f64::NAN,
+        State::PlusInf => f64::INFINITY,
+        State::MinusInf => f64::NEG_INFINITY,
+        State::MinusZero => -0.0,
+        State::Finite => sum.into_f64(),
+    }))
+}
+
 fn install_math(vm: &mut Vm) {
     let m = vm.new_object();
     let g = vm.realm.global;
@@ -579,6 +755,7 @@ fn install_math(vm: &mut Vm) {
         }
         Ok(Value::Number(if nan { f64::NAN } else { r }))
     });
+    method(vm, m, "sumPrecise", 1, sum_precise);
     method(vm, m, "hypot", 2, |vm, c| {
         let mut xs = Vec::new();
         for a in &c.args {

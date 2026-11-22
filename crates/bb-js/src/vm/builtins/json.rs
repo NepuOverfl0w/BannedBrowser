@@ -13,6 +13,30 @@ struct Parser<'a> {
     s: &'a [u16],
     i: usize,
     depth: usize,
+    /// Build JSON Parse Records (for a reviver's `context.source`).
+    track: bool,
+}
+
+/// JSON Parse Record (json-parse-with-source): the parsed value, a primitive's source
+/// text, and the records of an array's elements or an object's entries.
+#[derive(Default)]
+struct Rec {
+    value: Value,
+    source: Option<JsString>,
+    elements: Vec<Rec>,
+    entries: Vec<(PropKey, Rec)>,
+}
+
+impl Rec {
+    fn values(&self, out: &mut Vec<Value>) {
+        out.push(self.value.clone());
+        for e in &self.elements {
+            e.values(out);
+        }
+        for (_, e) in &self.entries {
+            e.values(out);
+        }
+    }
 }
 
 impl Parser<'_> {
@@ -112,7 +136,22 @@ impl Parser<'_> {
         t.parse().map_err(|_| "Bad number in JSON".to_string())
     }
     fn value(&mut self, vm: &mut Vm) -> JsResult<Value> {
+        Ok(self.value_rec(vm)?.value)
+    }
+
+    fn value_rec(&mut self, vm: &mut Vm) -> JsResult<Rec> {
         self.ws();
+        let start = self.i;
+        let mut rec = Rec::default();
+        let v = self.value_inner(vm, &mut rec)?;
+        if self.track && !matches!(v, Value::Object(_)) {
+            rec.source = Some(self.s[start..self.i].into());
+        }
+        rec.value = v;
+        Ok(rec)
+    }
+
+    fn value_inner(&mut self, vm: &mut Vm, rec: &mut Rec) -> JsResult<Value> {
         let err = |vm: &mut Vm, m: &str| vm.syntax_error::<Value>(m);
         match self.peek() {
             None => err(vm, "Unexpected end of JSON input"),
@@ -143,8 +182,14 @@ impl Parser<'_> {
                         return err(vm, "Expected ':' after property name in JSON");
                     }
                     self.i += 1;
-                    let v = self.value(vm)?;
-                    vm.create_data_property(o, PropKey::from_js(k), v)?;
+                    let r = self.value_rec(vm)?;
+                    let key = PropKey::from_js(k);
+                    vm.create_data_property(o, key.clone(), r.value.clone())?;
+                    if self.track {
+                        // A duplicate key's last value wins.
+                        rec.entries.retain(|(x, _)| *x != key);
+                        rec.entries.push((key, r));
+                    }
                     self.ws();
                     match self.peek() {
                         Some(0x2C) => self.i += 1,
@@ -171,7 +216,11 @@ impl Parser<'_> {
                     return Ok(Value::Object(vm.new_array(vals)));
                 }
                 loop {
-                    vals.push(self.value(vm)?);
+                    let r = self.value_rec(vm)?;
+                    vals.push(r.value.clone());
+                    if self.track {
+                        rec.elements.push(r);
+                    }
                     self.ws();
                     match self.peek() {
                         Some(0x2C) => self.i += 1,
@@ -207,14 +256,27 @@ impl Parser<'_> {
     }
 }
 
-/// InternalizeJSONProperty (§25.5.1.1).
-fn internalize(vm: &mut Vm, holder: ObjRef, name: PropKey, reviver: &Value, depth: usize) -> JsResult<Value> {
+/// InternalizeJSONProperty (§25.5.1.1, with json-parse-with-source's parse records).
+fn internalize(
+    vm: &mut Vm,
+    holder: ObjRef,
+    name: PropKey,
+    reviver: &Value,
+    rec: Option<&Rec>,
+    depth: usize,
+) -> JsResult<Value> {
     if depth > MAX_DEPTH {
         return vm.range_error("JSON nested too deeply");
     }
     let val = vm.get(holder, &name)?;
+    let context = vm.new_object();
+    let rec = rec.filter(|r| super::super::value::same_value(&r.value, &val));
+    if let Some(src) = rec.and_then(|r| r.source.clone()) {
+        vm.create_data_property_or_throw(context, PropKey::lit("source"), Value::String(src))?;
+    }
     if let Value::Object(o) = val {
-        let keys: Vec<PropKey> = if is_array(vm, &val)? {
+        let arr = is_array(vm, &val)?;
+        let keys: Vec<PropKey> = if arr {
             let len = vm.length_of_array_like(o)?;
             (0..len as u64).map(|i| PropKey::from_f64(i as f64)).collect()
         } else {
@@ -229,8 +291,15 @@ fn internalize(vm: &mut Vm, holder: ObjRef, name: PropKey, reviver: &Value, dept
             }
             ks
         };
-        for k in keys {
-            let nv = internalize(vm, o, k.clone(), reviver, depth + 1)?;
+        for (i, k) in keys.into_iter().enumerate() {
+            let sub = rec.and_then(|r| {
+                if arr {
+                    r.elements.get(i)
+                } else {
+                    r.entries.iter().find(|(x, _)| *x == k).map(|(_, e)| e)
+                }
+            });
+            let nv = internalize(vm, o, k.clone(), reviver, sub, depth + 1)?;
             if nv.is_undefined() {
                 vm.delete(o, &k)?;
             } else {
@@ -238,24 +307,32 @@ fn internalize(vm: &mut Vm, holder: ObjRef, name: PropKey, reviver: &Value, dept
             }
         }
     }
-    vm.call(reviver, Value::Object(holder), vec![name.to_value(), val])
+    vm.call(reviver, Value::Object(holder), vec![name.to_value(), val, Value::Object(context)])
 }
 
 fn parse(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let text = vm.to_string(&c.arg(0))?;
-    let mut p = Parser { s: &text, i: 0, depth: 0 };
-    let v = p.value(vm)?;
+    let reviver = c.arg(1);
+    let track = vm.is_callable(&reviver);
+    let mut p = Parser { s: &text, i: 0, depth: 0, track };
+    let rec = p.value_rec(vm)?;
     p.ws();
     if p.i != text.len() {
         return vm.syntax_error("Unexpected non-whitespace character after JSON");
     }
-    let reviver = c.arg(1);
-    if vm.is_callable(&reviver) {
+    if track {
+        // The records' values stay alive while the reviver runs: identity is compared.
+        let base = vm.roots.len();
+        rec.values(&mut vm.roots);
         let root = vm.new_object();
-        vm.create_data_property_or_throw(root, PropKey::lit(""), v)?;
-        return internalize(vm, root, PropKey::lit(""), &reviver, 0);
+        vm.roots.push(Value::Object(root));
+        let r = vm
+            .create_data_property_or_throw(root, PropKey::lit(""), rec.value.clone())
+            .and_then(|_| internalize(vm, root, PropKey::lit(""), &reviver, Some(&rec), 0));
+        vm.roots.truncate(base);
+        return r;
     }
-    Ok(v)
+    Ok(rec.value)
 }
 
 struct Ser {
@@ -316,6 +393,10 @@ impl Ser {
             v = vm.call(&r, Value::Object(holder), vec![key.to_value(), v])?;
         }
         if let Value::Object(o) = v {
+            if matches!(vm.heap.obj(o).kind, Kind::RawJSON) {
+                let raw = vm.get(o, &PropKey::lit("rawJSON"))?;
+                return Ok(Some(vm.to_string(&raw)?.to_vec()));
+            }
             v = match vm.heap.obj(o).kind {
                 Kind::BigInt(ref b) => Value::BigInt(b.clone()),
                 Kind::Number(_) => Value::Number(vm.to_number(&v)?),
@@ -499,4 +580,31 @@ pub(super) fn install(vm: &mut Vm) {
     realm::to_string_tag(vm, j, "JSON");
     method(vm, j, "parse", 2, parse);
     method(vm, j, "stringify", 3, stringify);
+    method(vm, j, "rawJSON", 1, raw_json);
+    method(vm, j, "isRawJSON", 1, |vm, c| {
+        Ok(Value::Bool(matches!(c.arg(0), Value::Object(o) if matches!(vm.heap.obj(o).kind, Kind::RawJSON))))
+    });
+}
+
+/// JSON.rawJSON (json-parse-with-source).
+fn raw_json(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+    let s = vm.to_string(&c.arg(0))?;
+    let bad_end = |u: Option<&u16>| u.is_none_or(|u| matches!(u, 0x09 | 0x0A | 0x0D | 0x20));
+    if bad_end(s.first()) || bad_end(s.last()) {
+        return vm.syntax_error("JSON.rawJSON: the text is empty or starts or ends with whitespace");
+    }
+    let mut p = Parser { s: &s, i: 0, depth: 0, track: false };
+    if matches!(p.peek(), Some(0x7B | 0x5B)) {
+        return vm.syntax_error("JSON.rawJSON: the text must be a primitive JSON value");
+    }
+    p.value(vm)?;
+    p.ws();
+    if p.i != s.len() {
+        return vm.syntax_error("Unexpected non-whitespace character after JSON");
+    }
+    let o = vm.heap.alloc(Object::new(None, Kind::RawJSON));
+    let obj = vm.heap.obj_mut(o);
+    obj.props.insert(PropKey::lit("rawJSON"), Prop::data(Value::String(s), false, true, false));
+    obj.extensible = false;
+    Ok(Value::Object(o))
 }
