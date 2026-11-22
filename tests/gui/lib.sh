@@ -94,7 +94,11 @@ PY
 
 start_browser() {
   [ "$GUI_OS" = x11 ] || build_driver
-  BB_TEST_STATE="$STATE" "$BIN" --window-size 1280x800 "$@" >"$OUT/browser.log" 2>&1 &
+  # WINDOW_SIZE= (empty) starts without --window-size (the profile's saved size applies).
+  local size=()
+  [ -n "${WINDOW_SIZE-1280x800}" ] && size=(--window-size "${WINDOW_SIZE-1280x800}")
+  rm -f "$STATE"
+  BB_TEST_STATE="$STATE" "$BIN" ${size[@]+"${size[@]}"} "$@" >>"$OUT/browser.log" 2>&1 &
   BB_PID=$!
   if [ "$GUI_OS" = x11 ]; then
     WID=$(vwait-window BannedBrowser 30) || fail "window did not appear"
@@ -109,6 +113,18 @@ start_browser() {
     mouse_move 400 300
   fi
   sleep 0.5
+}
+
+# quit_browser: Ctrl/Cmd+Q, then wait (up to 15 s) for the process to exit.
+quit_browser() {
+  key accel+q
+  local t=0
+  while kill -0 "$BB_PID" 2>/dev/null; do
+    [ $t -ge 150 ] && fail "the browser did not exit"
+    sleep 0.1; t=$((t+1))
+  done
+  wait "$BB_PID" 2>/dev/null || true
+  BB_PID=""
 }
 
 activate_window() {

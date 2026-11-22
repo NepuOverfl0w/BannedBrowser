@@ -22,7 +22,7 @@
 
 > **Status: [v0.1.0 "Hello, Old Web"](https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0) released.**
 > BannedBrowser renders example.com, theoldnet.com and archived 1990s sites convincingly, but
-> it has no JavaScript, cookies, bookmarks or sandboxing yet (that's v0.2). See
+> it has no JavaScript, bookmarks or sandboxing yet (that's v0.2, in progress on `main`). See
 > [PROGRESS.md](PROGRESS.md) for the honest details.
 
 ## 📑 Contents
@@ -148,9 +148,9 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 |---|---|
 | URL Standard | ✅ 100 % WPT urltestdata |
 | HTTP/1.1, HTTPS, gzip/deflate/br, chunked, redirects, proxies | ✅ |
-| Cookies (RFC 6265bis, Public Suffix List, SameSite) | ✅ |
+| Cookies (RFC 6265bis, Public Suffix List, SameSite), saved in the profile | ✅ |
 | Forms: typing, checkboxes, radios, drop-downs, buttons, GET/POST submission, Tab navigation | ✅ |
-| HTTP cache, saved cookies | 📋 M8 |
+| HTTP cache | 📋 M8 |
 | HTML parsing | ✅ 100 % html5lib tokenizer, 100 % WPT tree construction |
 | Legacy presentational attributes, quirks mode | ✅ |
 | CSS selectors, cascade, custom properties, `calc()`, media queries | ✅ |
@@ -340,7 +340,7 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 - [ ] M5 Paint (mostly done; 50 reftests)
 - [ ] M6 GUI shell core (started)
 - [ ] M7 Layout II (grid, transforms, `@font-face`, …)
-- [ ] M8 Forms ✅, cookies ✅, cache, profile storage
+- [ ] M8 Forms ✅, cookies ✅, profile storage ✅, cache
 - [ ] M9 Bookmarks, history, downloads, settings, Reader View, passwords
 - [ ] M10 JavaScript engine
 - [ ] M11 DevTools, performance, accessibility, packaging
@@ -349,7 +349,7 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 
 **Why not use Servo / a WebView?** Because then it would be someone else's browser. The whole point is to build the platform ourselves.
 
-**Is it safe for daily browsing?** Not yet. There is no sandboxing or process isolation, no JavaScript (which is safer but breaks many sites), and no cookies. Treat it as an experiment.
+**Is it safe for daily browsing?** Not yet. There is no sandboxing or process isolation, and no JavaScript (which is safer but breaks many sites). Treat it as an experiment.
 
 **Does it run JavaScript?** Not yet — milestone M10 brings a from-scratch engine (`bb-js`). Until then `<script>` is ignored and `<noscript>` content is shown.
 

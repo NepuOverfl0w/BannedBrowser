@@ -113,6 +113,7 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
 | `crates/bb-layout` | box tree, layout, paint (display-list building), hit testing, find-in-page |
 | `crates/bb-engine` | the `Page` pipeline, frames (`frames.rs`), focus/keyboard/form controls (`interact.rs`), form submission (`forms.rs`), internal pages |
 | `crates/bb-js` | placeholder for our own JS engine (M10) |
+| `crates/bb-profile` | the profile on disk: `profile.sqlite` (SQLite via rusqlite) with persistent cookies and prefs, locking, damage recovery |
 | `crates/bb-ui` | chrome widget toolkit, themes, original icons, text field |
 | `crates/bannedbrowser` | the binary: CLI, headless mode, GUI (`gui.rs`), tab workers (`tab.rs`) |
 | `resources/` | UA stylesheets, internal pages (`about:*`, error pages), app icons |

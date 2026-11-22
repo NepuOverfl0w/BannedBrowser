@@ -60,8 +60,9 @@ pub struct Cookie {
     pub same_site: SameSite,
     pub creation: i64,
     pub last_access: i64,
-    /// For ordering cookies created in the same second.
-    pub(crate) seq: u64,
+    /// For ordering cookies created in the same second; assigned by the jar (`load` and
+    /// `store` overwrite it), so code outside the jar can leave it 0.
+    pub seq: u64,
 }
 
 /// The context of a request, for SameSite (§5.2) and for "non-HTTP" APIs.
@@ -339,6 +340,8 @@ pub struct CookieJar {
 struct JarInner {
     cookies: Vec<Cookie>,
     seq: u64,
+    /// Bumped by every change that should be saved (stores, removals, evictions, clear).
+    generation: u64,
 }
 
 impl CookieJar {
@@ -355,13 +358,24 @@ impl CookieJar {
             .unwrap_or_default()
     }
 
-    /// Add previously stored cookies (e.g. loaded from the profile).
-    pub fn load(&self, cookies: Vec<Cookie>) {
+    /// Add previously stored cookies (e.g. loaded from the profile), oldest first. Expired ones
+    /// are skipped. This doesn't count as a change to save.
+    pub fn load(&self, mut cookies: Vec<Cookie>) {
+        let t = now();
+        cookies.sort_by_key(|c| c.creation);
         if let Ok(mut j) = self.inner.lock() {
             for mut c in cookies {
+                if c.expires.is_some_and(|e| e <= t) {
+                    continue;
+                }
                 j.seq += 1;
                 c.seq = j.seq;
-                j.cookies.retain(|o| !(o.name == c.name && o.domain == c.domain && o.path == c.path));
+                j.cookies.retain(|o| {
+                    !(o.name == c.name
+                        && o.domain == c.domain
+                        && o.host_only == c.host_only
+                        && o.path == c.path)
+                });
                 j.cookies.push(c);
             }
         }
@@ -370,7 +384,19 @@ impl CookieJar {
     pub fn clear(&self) {
         if let Ok(mut j) = self.inner.lock() {
             j.cookies.clear();
+            j.generation += 1;
         }
+    }
+
+    /// A counter that changes whenever cookies are added, replaced or removed (the profile saves
+    /// when it moves).
+    pub fn generation(&self) -> u64 {
+        self.inner.lock().map(|j| j.generation).unwrap_or(0)
+    }
+
+    /// The cookies a profile keeps across restarts: live persistent (non-session) cookies.
+    pub fn persistent(&self) -> Vec<Cookie> {
+        self.all().into_iter().filter(|c| c.expires.is_some()).collect()
     }
 
     /// §5.7: process a `Set-Cookie` header received for `url`. Returns whether it was stored
@@ -472,10 +498,12 @@ impl CookieJar {
             }
             creation = j.cookies[i].creation;
             j.cookies.remove(i);
+            j.generation += 1;
         }
         if expires.is_some_and(|e| e <= t) {
             return true; // expired: the old cookie (if any) is now gone
         }
+        j.generation += 1;
         j.seq += 1;
         let seq = j.seq;
         j.cookies.push(Cookie {

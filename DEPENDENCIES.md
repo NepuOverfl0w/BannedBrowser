@@ -17,7 +17,8 @@ the banned list on every CI run.
 | `flate2`, `brotli-decompressor` | bb-net | `gzip`/`deflate`/`br` content codings. |
 | `encoding_rs` | bb-net, bb-engine | WHATWG Encoding Standard decoders (windows-1252, Shift_JIS, …). |
 | `arboard` | shell | Clipboard. |
-| `dirs` | shell | Platform cache and profile directories (the Public Suffix List cache today; the profile in C3). |
+| `dirs` | shell | Platform cache and data directories (the Public Suffix List cache, the profile). |
+| `rusqlite` (`bundled`: SQLite compiled in, no system library) | bb-profile | The profile database (`profile.sqlite`): persistent cookies and prefs, with SQLite's locking and crash-safe transactions. Pulls in `libsqlite3-sys` and small helpers (`hashlink`, `fallible-iterator`, `fallible-streaming-iterator`). |
 | `serde_json` | shell, tests | GUI test-state file, spec-suite JSON. (`serde` derive comes with prefs in M8.) |
 | `log`, `env_logger` | all | Logging. |
 | `thiserror`, `anyhow` (binary only) | bb-net, shell | Error types. |
@@ -25,7 +26,7 @@ the banned list on every CI run.
 | `proptest` (dev) | parsers | Randomized robustness tests. |
 
 Planned (already allowed by the project rules, not yet used): `rfd`, `accesskit`,
-`accesskit_winit`, `keyring`, `rusqlite` (bundled), `once_cell`.
+`accesskit_winit`, `keyring`, `once_cell`.
 
 ## v0.2 decisions (maintainer, 2026-11-21)
 

@@ -29,6 +29,7 @@ bytes ─▶ bb-net ─▶ encoding sniff ─▶ bb-html tokenizer ─▶ tree b
 | `bb-paint` | Paths, exact-area anti-aliased rasterizer, gradients, clips, layers, blur shadows, glyph cache, display list renderer |
 | `bb-layout` | Box tree, block/inline/float/table/flex/positioned layout, list markers, replaced elements, display-list generation, hit testing |
 | `bb-engine` | Page pipeline (fetch → … → display list), parallel subresources, internal `about:` pages, error pages, frames (`frames.rs`), focus and interaction with page content (`interact.rs`), form submission (`forms.rs`) |
+| `bb-profile` | The profile directory's SQLite database: persistent cookies (saved by a background thread shortly after changes and at exit), prefs (window size); an exclusive lock per session, damaged files moved aside, newer schemas left alone |
 | `bb-ui` | Chrome toolkit: theme, original vector icons, text helpers, text-field model |
 | `bb-js` | JavaScript engine (milestone M10; empty for now) |
 | `bannedbrowser` | Binary: CLI, headless mode, winit/softbuffer shell, tab worker threads |

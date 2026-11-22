@@ -33,6 +33,7 @@ crossbeam-channel.workspace = true
 arboard.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
+bb-profile.workspace = true
 
 [[bin]]
 name = "bannedbrowser"

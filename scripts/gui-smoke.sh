@@ -36,6 +36,11 @@ status=0
 for t in tests/gui/*.sh; do
   [ "$(basename "$t")" = "lib.sh" ] && continue
   echo "== $t"
+  # Each test gets a fresh profile (never the user's own). A relative path works for the shell
+  # and the native browser on every OS.
+  export BB_PROFILE="tests/gui/out/profile-$(basename "$t" .sh)"
+  rm -rf "$BB_PROFILE"
+  : >tests/gui/out/browser.log
   bash "$t" || status=1
 done
 exit $status

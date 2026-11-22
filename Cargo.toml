@@ -14,6 +14,7 @@ members = [
     "crates/bb-layout",
     "crates/bb-js",
     "crates/bb-engine",
+    "crates/bb-profile",
     "crates/bb-ui",
     "crates/bannedbrowser",
     "xtask",
@@ -42,6 +43,7 @@ bb-paint = { path = "crates/bb-paint" }
 bb-layout = { path = "crates/bb-layout" }
 bb-engine = { path = "crates/bb-engine" }
 bb-ui = { path = "crates/bb-ui" }
+bb-profile = { path = "crates/bb-profile" }
 
 # --- platform glue & narrow utilities (see DEPENDENCIES.md) ---
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
@@ -64,6 +66,7 @@ encoding_rs = "0.8"
 arboard = { version = "3", default-features = false }
 serde_json = "1"
 dirs = "6"
+rusqlite = { version = "0.37", features = ["bundled"] }
 log = "0.4"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 thiserror = "2"

@@ -9,6 +9,13 @@ Everything on `main` after the 0.1.0 release commit counts toward v0.2.
 The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 
 ### Added
+- **Profile storage:** a profile directory (`--profile <dir>`, `$BB_PROFILE`, else the
+  platform's data directory, e.g. `~/.local/share/BannedBrowser/profile`) with one SQLite
+  database. Persistent cookies survive restarts (session cookies and private windows' cookies
+  are never written); they are saved a moment after they change and at exit. The window size and
+  maximized state are restored. A second BannedBrowser on the same profile runs without saving
+  instead of overwriting it; a damaged database is moved aside and a new one started; a profile
+  from a newer version is left untouched.
 - **Forms work:** click or Tab into text fields and type (selection, word moves, undo, copy,
   cut, paste, IME, `maxlength`, `readonly`, `placeholder`, `size`); textareas (`rows`/`cols`,
   Enter, Up/Down); checkboxes and radio groups (mouse, Space, arrow keys); `<select>` drop-downs

@@ -151,6 +151,31 @@ pub struct App {
     /// The About window, while open.
     about: Option<crate::about::AboutWindow>,
     about_modifiers: ModifiersState,
+    /// The profile (persistent cookies, prefs); `None` when it can't be used (see the status).
+    profile: Option<Arc<bb_profile::Profile>>,
+    profile_status: bb_profile::OpenStatus,
+    cookie_saver: Option<bb_profile::CookieSaver>,
+    /// The last normal window's size and maximized state, saved as prefs at exit.
+    last_geometry: Option<((u32, u32), bool)>,
+    /// Maximize the first window (restored from the prefs).
+    start_maximized: bool,
+}
+
+/// The profile directory: `--profile`, else `$BB_PROFILE`, else the platform's data directory
+/// (`~/.local/share/BannedBrowser/profile`, `~/Library/Application Support/...`,
+/// `%APPDATA%\BannedBrowser\profile`).
+fn profile_dir(args: &Args) -> Option<std::path::PathBuf> {
+    args.profile
+        .clone()
+        .or_else(|| std::env::var_os("BB_PROFILE").map(Into::into))
+        .or_else(|| dirs::data_dir().map(|d| d.join("BannedBrowser").join("profile")))
+}
+
+/// "1280x800" → (1280, 800), within sane bounds.
+fn parse_size(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once('x')?;
+    let (w, h) = (w.parse::<u32>().ok()?, h.parse::<u32>().ok()?);
+    ((360..=16384).contains(&w) && (240..=16384).contains(&h)).then_some((w, h))
 }
 
 /// Cmd on macOS, Ctrl elsewhere.
@@ -186,6 +211,22 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     let client = Arc::new(bb_engine::new_client_with(args.extra_ca.clone(), args.user_agent.clone()));
     let private_client = Arc::new(bb_engine::new_client_with(args.extra_ca.clone(), args.user_agent.clone()));
     refresh_public_suffix_list(&client);
+    let (profile, profile_status) = match profile_dir(&args) {
+        Some(dir) => bb_profile::Profile::open(&dir),
+        None => (None, bb_profile::OpenStatus::Failed("no data directory".into())),
+    };
+    match &profile_status {
+        bb_profile::OpenStatus::Opened | bb_profile::OpenStatus::Created => {}
+        other => log::warn!("profile: {other:?}; cookies and prefs won't be saved this session"),
+    }
+    let profile = profile.map(Arc::new);
+    if let Some(p) = &profile {
+        client.cookies().load(p.load_cookies());
+    }
+    let cookie_saver = profile.clone().map(|p| bb_profile::CookieSaver::start(p, client.clone()));
+    let saved_size = profile.as_ref().and_then(|p| p.pref("window.size")).and_then(|s| parse_size(&s));
+    let start_maximized = args.window_size.is_none()
+        && profile.as_ref().and_then(|p| p.pref("window.maximized")).as_deref() == Some("1");
     let mut initial: Vec<Url> =
         args.urls.iter().chain(args.new_tab.iter()).filter_map(|u| fixup_url(u)).collect();
     if initial.is_empty() {
@@ -199,16 +240,55 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         next_tab: 1,
         initial,
         initial_private: args.private_window,
-        window_size: args.window_size.unwrap_or((1280, 800)),
+        window_size: args.window_size.or(saved_size).unwrap_or((1280, 800)),
         test_state: std::env::var_os("BB_TEST_STATE").map(Into::into),
         closed: Vec::new(),
         context: None,
         force_dark: args.dark,
         about: None,
         about_modifiers: ModifiersState::empty(),
+        profile,
+        profile_status,
+        cookie_saver,
+        last_geometry: None,
+        start_maximized,
     };
     event_loop.run_app(&mut app)?;
+    app.save_profile();
     Ok(())
+}
+
+impl App {
+    /// Save the prefs and the cookies one last time (at exit).
+    fn save_profile(&mut self) {
+        if let (Some(p), Some(((w, h), maximized))) = (&self.profile, self.last_geometry) {
+            let r = p
+                .set_pref("window.size", &format!("{w}x{h}"))
+                .and_then(|_| p.set_pref("window.maximized", if maximized { "1" } else { "0" }));
+            if let Err(e) = r {
+                log::warn!("couldn't save the window size: {e}");
+            }
+        }
+        if let Some(s) = self.cookie_saver.take() {
+            s.finish();
+        }
+    }
+
+    /// Remember a normal window's geometry (private windows don't count).
+    fn note_geometry(&mut self, bw: &BrowserWindow) {
+        if bw.private {
+            return;
+        }
+        let maximized = bw.window.is_maximized();
+        let (w, h) = bw.logical_size();
+        let size = if maximized {
+            // Keep the size it had before it was maximized.
+            self.last_geometry.map_or((w.round() as u32, h.round() as u32), |g| g.0)
+        } else {
+            (w.round() as u32, h.round() as u32)
+        };
+        self.last_geometry = Some((size, maximized));
+    }
 }
 
 impl App {
@@ -512,6 +592,7 @@ impl App {
             v["maximized"] = serde_json::json!(w.window.is_maximized());
             v["has_focus"] = serde_json::json!(w.window.has_focus());
         }
+        v["profile"] = serde_json::json!(self.profile_status.code());
         v["about"] = match &self.about {
             Some(a) => {
                 let links: Vec<&str> = a.links().iter().map(|l| l.id).collect();
@@ -1311,8 +1392,18 @@ impl ApplicationHandler<UserEvent> for App {
         if self.windows.is_empty() {
             let urls = std::mem::take(&mut self.initial);
             let private = self.initial_private;
-            self.open_window(el, urls, private);
+            if let Some(id) = self.open_window(el, urls, private) {
+                if std::mem::take(&mut self.start_maximized) {
+                    if let Some(bw) = self.windows.get(&id) {
+                        bw.window.set_maximized(true);
+                    }
+                }
+            }
         }
+    }
+
+    fn exiting(&mut self, _el: &ActiveEventLoop) {
+        self.save_profile();
     }
 
     fn user_event(&mut self, _el: &ActiveEventLoop, event: UserEvent) {
@@ -1523,6 +1614,7 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             WindowEvent::CloseRequested => keep = false,
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                self.note_geometry(&bw);
                 bw.request_render();
                 bw.dirty = true;
                 state_changed = true;
