@@ -147,6 +147,16 @@ state_num() {
   "$PY" -c "import json,sys; print(int(round(json.load(open(sys.argv[1]))[sys.argv[2]])))" "$STATE" "$1"
 }
 
+# click_target <id>: click the centre of an element with that id on an internal page (the
+# browser reports their positions in the state file as .targets).
+click_target() {
+  local xy
+  xy=$("$PY" -c "import json,sys; t=json.load(open(sys.argv[1]))['targets'][sys.argv[2]]; print(int(t[0]), int(t[1]))" "$STATE" "$1") \
+    || fail "no target #$1 on the page"
+  # shellcheck disable=SC2086 # two numbers
+  click_at $xy
+}
+
 # key <combo>: e.g. accel+t, shift+Return, alt+Left, Escape.
 key() {
   local k="$1"

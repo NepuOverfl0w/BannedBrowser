@@ -215,8 +215,19 @@ fn https_with_extra_ca() {
     let strict = Client::new(ClientConfig { no_proxy_env: true, ..Default::default() });
     let e = strict.fetch(Request::get(u.clone())).unwrap_err();
     assert_eq!(e.kind, NetErrorKind::Certificate, "{e}");
-    // ...unless the user accepted the risk for that host.
-    strict.add_certificate_exception("127.0.0.1");
+    // The error says which certificate failed and why, readably.
+    let problem = *e.certificate.clone().expect("certificate problem attached");
+    assert_eq!(problem.host, "127.0.0.1");
+    assert_eq!(problem.code, "CERT_UNKNOWN_ISSUER", "{}", problem.reason);
+    assert!(problem.reason.contains("trusted authority"), "{}", problem.reason);
+    assert!(!problem.der.is_empty());
+    // An exception for a *different* certificate on the same host doesn't help...
+    let mut other = problem.clone();
+    other.der[problem.der.len() / 2] ^= 0xFF;
+    strict.add_certificate_exception(&other);
+    assert_eq!(strict.fetch(Request::get(u.clone())).unwrap_err().kind, NetErrorKind::Certificate);
+    // ...accepting the risk for exactly this certificate does.
+    strict.add_certificate_exception(&problem);
     assert_eq!(strict.fetch(Request::get(u)).unwrap().body, b"Hello, BannedBrowser!");
 }
 

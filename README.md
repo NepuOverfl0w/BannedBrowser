@@ -179,7 +179,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | WPT urltestdata | **904 / 904 (100 %)** |
 | html5lib tokenizer | **7046 / 7046 (100 %)** |
 | WPT tree construction | **1959 / 1959 (100 %)** |
-| Reftests | **48 / 48** |
+| Reftests | **50 / 50** |
 | test262 | 📋 (M10) |
 
 ## 🏗 Architecture
@@ -329,7 +329,7 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 - [x] M2 HTML
 - [ ] M3 CSS & style (mostly done)
 - [ ] M4 Layout I (mostly done)
-- [ ] M5 Paint (mostly done; 48 reftests)
+- [ ] M5 Paint (mostly done; 50 reftests)
 - [ ] M6 GUI shell core (started)
 - [ ] M7 Layout II (grid, transforms, `@font-face`, …)
 - [ ] M8 Forms, cookies, cache, profile storage

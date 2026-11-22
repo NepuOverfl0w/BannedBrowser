@@ -11,7 +11,7 @@ _Last updated: 2026-11-22 (session 2)._
 | M2 HTML | ✅ done | tokenizer 100 % (html5lib-tests), tree construction 100 % (WPT); processing instructions; lone surrogates in the tokenizer; `<selectedcontent>` |
 | M3 CSS + style | 🚧 mostly | parser, selectors, cascade, var(), calc(), media, UA sheet, presentational hints; see gaps |
 | M4 Layout I | 🚧 mostly | block/inline/floats/tables/flex(basic)/positioned/replaced; see gaps |
-| M5 Paint | 🚧 mostly | AA rasterizer, borders, gradients, shadows, clips, opacity, glyph cache; 48 reftests |
+| M5 Paint | 🚧 mostly | AA rasterizer, borders, gradients, shadows, clips, opacity, glyph cache; 50 reftests |
 | M6 GUI shell core | 🚧 started | tabs, toolbar, URL bar, overlay scrollbar, find bar, frames, links, multiple + private windows, test-state hook; menus 📋 |
 | M7–M11 | 📋 planned | |
 | **v0.1 "Hello, Old Web"** | ✅ released 2026-11-21 ([v0.1.0](https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0)) | example.com, theoldnet.com, 5 archived sites, snapshots, CI green on 3 OSes, packages; see checklist |
@@ -23,10 +23,10 @@ _Last updated: 2026-11-22 (session 2)._
 | WPT `url/resources/urltestdata.json` | **904 / 904 (100.0 %)** |
 | html5lib tokenizer (HEAD `c5495c5`) | **7018 / 7046 (99.60 %)**, nothing skipped (lone-surrogate cases run since session 2) |
 | Tree construction, WPT `html/syntax/parsing/resources` (pinned `9986bb3`, 2026-11-21) | **1959 / 1959 (100 %)**; 14 `#script-on` cases not run yet (need JS, milestone E) |
-| Reftests (`tests/reftests`) | **48 / 48** |
+| Reftests (`tests/reftests`) | **50 / 50** |
 | Snapshot regressions (`tests/pages/snapshots`) | 12 pages (example.com ×2, theoldnet ×2, myip.wtf, 5 archived sites, retro, frames), rendered with the bundled `tests/fonts/` only, so they run on every OS |
 | `cargo test --workspace` | 119 test functions, 0 failures |
-| GUI tests (`scripts/gui-smoke.sh`), Linux + Windows + macOS with real OS input | `basic.sh` (open, link click, back, wheel scroll, scrollbar track click + thumb drag, URL bar, new/close/reopen tab, resize, maximize, new window, private window), `frames.sh` (frameset render, wheel scrolls the frame under the pointer, targeted link loads into the named frame), `find.sh` (incremental find, stepping, scroll to match, not found, close) and `menus.sh` (≡ menu, link/tab/page/URL-bar context menus, keyboard and mouse, Esc and click-outside) pass |
+| GUI tests (`scripts/gui-smoke.sh`), Linux + Windows + macOS with real OS input | `basic.sh` (open, link click, back, wheel scroll, scrollbar track click + thumb drag, URL bar, new/close/reopen tab, resize, maximize, new window, private window), `frames.sh` (frameset render, wheel scrolls the frame under the pointer, targeted link loads into the named frame), `find.sh` (incremental find, stepping, scroll to match, not found, close) `menus.sh` (≡ menu, link/tab/page/URL-bar context menus, keyboard and mouse, Esc and click-outside) and `certerror.sh` (certificate error page: Go Back, a web page's forged accept link does nothing, Advanced… toggles, Accept the Risk and Continue loads the site) pass |
 | `scripts/check-deps.sh` | OK — 162 crates, none banned |
 | Cross targets | `cargo clippy --target x86_64-pc-windows-gnu -D warnings` ✅ and Windows release `.exe` builds; `cargo check --target aarch64-apple-darwin` ✅ for every crate except those linking `ring` (see gaps) |
 
@@ -75,6 +75,8 @@ _Last updated: 2026-11-22 (session 2)._
 * **Text:** bidi reordering is per text piece (no full UAX #9 incl. atomics); punctuation at RTL line ends can land on the wrong side; no small-caps; no `@font-face` loading yet (rules are parsed, fonts not fetched); no hinting.
 * **Paint:** SVG is not rendered (space reserved, nothing drawn); no `transform` beyond `translate()`; background-origin/clip ignored; GIF animation not played.
 * **Style:** no CSS counters, no `@layer` ordering (flattened), `:has()` sibling forms unsupported, nesting rules ignored, `lab()/lch()/oklch()/color-mix()` unsupported.
+* **Certificate exceptions:** a site whose certificate you accepted shows the normal secure icon in the address bar (no distinct "exception" indicator yet). Exceptions last for the session only (no permanent overrides).
+* **`<details>`:** toggles with the mouse; there is no keyboard activation yet (content has no focus model until forms/JS), and no `toggle` event (no JS).
 * **Forms:** controls (`<input>`, `<button>`, `<select>`, `<textarea>`) are only drawn. They can't be focused, typed into, opened or submitted, so search boxes like theoldnet's "Go" / "Search Archives" don't work. Interactive controls and form submission are milestone C.
 * **Network:** no cookies or cache yet (M8); no HTTP/2; `HTTP_PROXY` absolute-form only for plain http.
 * **Frames:** frame navigations are not in session history (Back leaves the frameset); no frame resizing by dragging borders (`noresize` is the only behaviour); iframes are opaque (child canvas background is always painted); `<object data=…html>` isn't a nested document; keyboard focus doesn't move into frames (keys scroll the largest frame of a frameset).
@@ -164,7 +166,7 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   - Links: what's new (release notes), `about:bannedbrowser` (credits and name origin), license (MIT OR Apache-2.0), source code.
   - The unofficial fan-project / not-affiliated note.
   - Drawn with `bb-ui` like the rest of the chrome, light and dark theme, HiDPI, keyboard accessible (Esc closes).
-* **Certificate error page** (requested by the maintainer):
+* **Certificate error page** (requested by the maintainer). **Done (session 2)**, as specified below: `bb-net` records the failing certificate and a readable reason with a code (`CERT_EXPIRED`, `CERT_UNKNOWN_ISSUER`, `CERT_WRONG_NAME`, …); `resources/pages/certerror.html` has Go Back and an `<details>` "Advanced…"; `bb-action:` links are handled by the tab worker, and accepting needs the session token and a top-level page that is that certificate's error page; the exception pins host + DER. Tested by `bb-net` integration tests, engine tests, two reftests and the GUI test `tests/gui/certerror.sh` on all three OSes.
   - Two buttons: **Go Back** (recommended; goes home if there is no history) and **Advanced…**.
   - Advanced reveals the warning, the readable reason and an error code, plus **Accept the Risk and Continue**.
   - The reason must be human-readable, e.g. "the certificate expired on 2026-07-01", instead of today's raw `ExpiredContext { time: UnixTime(…) }`.

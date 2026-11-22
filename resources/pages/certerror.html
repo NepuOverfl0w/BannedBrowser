@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Security risk: {{HOST}}</title><link rel="stylesheet" href="about:style.css"></head>
+<body><main class="certerror">
+<h1>Warning: Potential Security Risk Ahead</h1>
+<p>BannedBrowser stopped before connecting to <strong>{{HOST}}</strong> because the site's certificate can't be trusted.
+Someone could be pretending to be this site to steal what you send it, such as passwords or card numbers.</p>
+<p class="actions"><a class="btn" id="go-back" href="bb-action:go-back">Go Back (Recommended)</a></p>
+<details id="advanced">
+<summary class="btn-secondary" id="advanced-toggle">Advanced…</summary>
+<div class="card">
+<p>{{HOST}} uses a certificate that can't be trusted: {{REASON}}.</p>
+<p class="mono">Error code: {{CODE}}</p>
+<p>Only continue if you know why this happens, for example on your own test server. The exception
+lasts until you quit BannedBrowser and applies only to this exact certificate.</p>
+<p><a class="btn-secondary" id="accept" href="bb-action:accept-certificate?token={{TOKEN}}">Accept the Risk and Continue</a></p>
+</div>
+</details>
+</main></body></html>

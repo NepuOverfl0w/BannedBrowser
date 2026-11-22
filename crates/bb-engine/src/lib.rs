@@ -10,7 +10,7 @@ mod frames;
 mod internal;
 
 pub use frames::{ChildFrame, LinkDisposition, LinkHit, MAX_FRAMES, MAX_FRAME_DEPTH};
-pub use internal::{about_handler, error_page_html, snag_page_html};
+pub use internal::{about_handler, cert_error_page_html, error_page_html, snag_page_html};
 
 use bb_css::{MediaContext, MediaQueryList, Rule, Stylesheet};
 use bb_dom::{Document, NodeId};
@@ -194,7 +194,10 @@ fn fetch_document(client: &Client, url: &Url) -> Fetched {
                 ),
                 _ => ("Problem loading page", "The page could not be loaded."),
             };
-            let html = error_page_html(title, msg, &url.href(), &e.message);
+            let html = match &e.certificate {
+                Some(problem) => internal::cert_error_page_html(problem),
+                None => error_page_html(title, msg, &url.href(), &e.message),
+            };
             Fetched { url: url.clone(), status: 0, secure: false, html, error: Some(e) }
         }
     }
@@ -730,6 +733,58 @@ impl Page {
         self.find_matches.get(self.find_active?)?.first().copied()
     }
 
+    /// Border-box rects (page coordinates: x, y, w, h) of the laid-out elements that have an
+    /// `id`, in document order. The GUI tests use it to find buttons on internal pages.
+    pub fn element_rects_by_id(&self) -> Vec<(String, [f32; 4])> {
+        let mut out = Vec::new();
+        for n in self.doc.descendants(Document::ROOT) {
+            let Some(id) = self.doc.attr(n, "id") else { continue };
+            if let Some(&b) = self.layout.node_box.get(&n) {
+                let b = &self.layout.boxes[b];
+                out.push((id.to_string(), [b.x + b.rel_offset.0, b.y + b.rel_offset.1, b.w, b.h]));
+            }
+        }
+        out
+    }
+
+    /// Activation behaviour of a click at a page point that isn't on a link. Today: a
+    /// `summary` that is its `details` element's summary toggles the `open` attribute
+    /// (HTML §4.11.2). Returns whether the page changed and needs a new render.
+    pub fn activate_at(&mut self, x: f32, y: f32) -> bool {
+        if let Some((i, lx, ly)) = self.frame_at(x, y) {
+            return self.frames[i].page.activate_at(lx, ly);
+        }
+        let hit = bb_layout::hit_test(&self.layout, x, y);
+        let mut cur = hit.node;
+        while let Some(n) = cur {
+            if self.doc.is_html(n, "summary") {
+                if let Some(details) = self.details_for_summary(n) {
+                    if self.doc.attr(details, "open").is_some() {
+                        self.doc.remove_attr(details, "open");
+                    } else {
+                        self.doc.set_attr(details, "open", "");
+                    }
+                    // `details[open]` selectors and the hidden contents change.
+                    self.restyle();
+                    return true;
+                }
+            }
+            cur = self.doc.parent(n);
+        }
+        false
+    }
+
+    /// HTML §4.11.2: the `details` element a `summary` is "the summary for", i.e. the parent
+    /// `details` whose first `summary` child it is.
+    fn details_for_summary(&self, summary: NodeId) -> Option<NodeId> {
+        let parent = self.doc.parent(summary)?;
+        if !self.doc.is_html(parent, "details") {
+            return None;
+        }
+        let first = self.doc.children(parent).find(|&c| self.doc.is_html(c, "summary"))?;
+        (first == summary).then_some(parent)
+    }
+
     /// Cursor style at a page point.
     pub fn cursor_at(&self, x: f32, y: f32) -> Option<bb_style::Cursor> {
         if let Some((i, lx, ly)) = self.frame_at(x, y) {
@@ -765,6 +820,31 @@ impl Page {
 }
 
 /// Build the network client with the internal `about:` handler installed.
+/// A random secret for this browser session. Internal pages that can trigger privileged
+/// actions (e.g. the certificate error page's "Accept the Risk and Continue") embed it, and
+/// the browser only honours an action that carries it, so web pages can't link their way
+/// past a security warning.
+pub fn session_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| {
+        use std::hash::{BuildHasher, Hasher};
+        // Each RandomState is keyed from the OS's random source; two hashes give 128 bits.
+        let mut out = String::new();
+        for i in 0..2u8 {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u8(i);
+            h.write_u128(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0),
+            );
+            out.push_str(&format!("{:016x}", h.finish()));
+        }
+        out
+    })
+}
+
 pub fn new_client(extra_ca: Vec<std::path::PathBuf>) -> Client {
     new_client_with(extra_ca, None)
 }

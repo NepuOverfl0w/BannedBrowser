@@ -52,6 +52,9 @@ pub struct Frame {
     pub scroll_y: f32,
     /// Child frame rects in page coordinates (wheel events over them go to the tab).
     pub frames: Vec<bb_paint::Rect>,
+    /// For internal pages (about:, error pages): rects of elements with an `id`, in page
+    /// coordinates, so the GUI tests can find the page's buttons. Empty for web pages.
+    pub targets: Vec<(String, [f32; 4])>,
 }
 
 /// Where a clicked link should open.
@@ -92,9 +95,50 @@ pub enum TabEvent {
     WheelUnconsumed {
         dy: f32,
     },
+    /// An internal page asked the browser to go back (or home when there's no history).
+    GoBack,
 }
 
 pub type Notify = Box<dyn Fn(u64, TabEvent) + Send>;
+
+/// Scheme of the links internal pages use to ask the browser to do something. They are never
+/// fetched; see `browser_action`.
+pub const BB_ACTION: &str = "bb-action";
+
+/// Run a `bb-action:` link clicked in the current top-level page.
+///   - `bb-action:go-back` — go back, or home when there's no history.
+///   - `bb-action:accept-certificate?token=…` — on a certificate error page, trust that exact
+///     certificate for this session and load the page again. The token must be this session's
+///     secret (`bb_engine::session_token`), which only our error pages contain, and the page
+///     must itself be the error page for the certificate being accepted.
+fn browser_action(id: u64, p: &Page, client: &Client, url: &Url, notify: &Notify) {
+    match url.pathname().as_str() {
+        "go-back" => notify(id, TabEvent::GoBack),
+        "accept-certificate" => {
+            let token = url
+                .query()
+                .unwrap_or_default()
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("token="))
+                .unwrap_or_default()
+                .to_string();
+            if token != bb_engine::session_token() {
+                log::warn!("tab {id}: ignoring certificate exception request without a valid token");
+                return;
+            }
+            let Some(problem) = p.error.as_ref().and_then(|e| e.certificate.as_deref()) else {
+                log::warn!(
+                    "tab {id}: ignoring certificate exception request outside a certificate error page"
+                );
+                return;
+            };
+            client.add_certificate_exception(problem);
+            log::warn!("user accepted the certificate for {} ({})", problem.host, problem.code);
+            notify(id, TabEvent::Clicked { link: Some(p.url.clone()), open: LinkOpen::Current });
+        }
+        other => log::warn!("tab {id}: unknown browser action {other:?}"),
+    }
+}
 
 pub fn spawn(id: u64, client: Arc<Client>, notify: Notify) -> Sender<TabCmd> {
     let (tx, rx) = crossbeam_channel::unbounded();
@@ -108,19 +152,25 @@ pub fn spawn(id: u64, client: Arc<Client>, notify: Notify) -> Sender<TabCmd> {
 fn worker(id: u64, client: Arc<Client>, rx: Receiver<TabCmd>, notify: Notify) {
     let mut page: Option<Page> = None;
     let mut last_render: Option<(f32, f32, f32, f32, bool)> = None;
-    let render =
-        |page: &mut Page, viewport: (f32, f32), scale: f32, scroll_y: f32, dark: bool| -> Option<Frame> {
-            page.set_dark(dark);
-            page.set_viewport(viewport.0, viewport.1);
-            let (w, h) = ((viewport.0 * scale).round() as u32, (viewport.1 * scale).round() as u32);
-            if w == 0 || h == 0 {
-                return None;
-            }
-            let max_scroll = (page.content_height() - viewport.1).max(0.0);
-            let sy = scroll_y.clamp(0.0, max_scroll);
-            let c = page.render(sy, scale, w, h);
-            Some(Frame { pixels: Arc::new(c.pixels), w, h, scroll_y: sy, frames: page.frame_rects() })
-        };
+    let render = |page: &mut Page,
+                  viewport: (f32, f32),
+                  scale: f32,
+                  scroll_y: f32,
+                  dark: bool|
+     -> Option<Frame> {
+        page.set_dark(dark);
+        page.set_viewport(viewport.0, viewport.1);
+        let (w, h) = ((viewport.0 * scale).round() as u32, (viewport.1 * scale).round() as u32);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let max_scroll = (page.content_height() - viewport.1).max(0.0);
+        let sy = scroll_y.clamp(0.0, max_scroll);
+        let c = page.render(sy, scale, w, h);
+        let internal = page.error.is_some() || page.url.scheme() == "about";
+        let targets = if internal { page.element_rects_by_id() } else { Vec::new() };
+        Some(Frame { pixels: Arc::new(c.pixels), w, h, scroll_y: sy, frames: page.frame_rects(), targets })
+    };
     while let Ok(cmd) = rx.recv() {
         // Coalesce queued render requests: only the newest matters.
         let mut cmd = cmd;
@@ -214,9 +264,25 @@ fn handle(
         TabCmd::Click { x, y, new_tab } => {
             let Some(p) = page.as_mut() else { return };
             let Some(hit) = p.link_hit_at(x, y) else {
+                // Not a link: the click's activation behaviour (e.g. a <summary> toggles its
+                // <details>), then a fresh frame if the page changed.
+                if !new_tab && p.activate_at(x, y) {
+                    if let Some((vw, vh, scale, sy, dark)) = *last_render {
+                        if let Some(f) = render(p, (vw, vh), scale, sy, dark) {
+                            notify(id, TabEvent::Frame(f));
+                        }
+                    }
+                }
                 notify(id, TabEvent::Clicked { link: None, open: LinkOpen::Current });
                 return;
             };
+            if hit.url.scheme() == BB_ACTION {
+                // Only a top-level internal page's own links, opened in place, are actions.
+                if !new_tab && hit.frame_path.is_empty() {
+                    browser_action(id, p, client, &hit.url, notify);
+                }
+                return;
+            }
             if new_tab {
                 notify(id, TabEvent::Clicked { link: Some(hit.url), open: LinkOpen::BackgroundTab });
                 return;

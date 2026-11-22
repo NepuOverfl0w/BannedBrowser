@@ -816,8 +816,54 @@ impl<'a> Builder<'a> {
 
     fn build_children(&mut self, node: NodeId, parent: BoxId, prev_space: &mut bool, word_start: &mut bool) {
         let kids: Vec<NodeId> = self.doc.children(node).collect();
+        if self.doc.is_html(node, "details") {
+            self.build_details(node, &kids, parent, prev_space, word_start);
+            return;
+        }
         for k in kids {
             self.build(k, parent, prev_space, word_start);
+        }
+    }
+
+    /// HTML §4.11.1 / §15.5.4: a `details` element shows its first `summary` child (or a
+    /// UA-provided "Details" summary) and, only while it has the `open` attribute, the rest of
+    /// its contents. The summary always comes first.
+    fn build_details(
+        &mut self,
+        node: NodeId,
+        kids: &[NodeId],
+        parent: BoxId,
+        prev_space: &mut bool,
+        word_start: &mut bool,
+    ) {
+        let open = self.doc.attr(node, "open").is_some();
+        let summary = kids.iter().copied().find(|&k| self.doc.is_html(k, "summary"));
+        match summary {
+            Some(sm) => self.build(sm, parent, prev_space, word_start),
+            None => {
+                // The default summary: a block with a disclosure triangle and "Details".
+                let pstyle = self.tree.boxes[parent].style.clone();
+                let mut st = ComputedStyle::inherit_from(&pstyle);
+                st.display = Display::Block;
+                let st = Rc::new(st);
+                let mut b = LBox::new(BoxKind::Block, st.clone(), None);
+                b.anonymous = true;
+                let id = self.tree.add(b, Some(parent));
+                let ty = if open { ListStyleType::DisclosureOpen } else { ListStyleType::DisclosureClosed };
+                let mut t =
+                    LBox::new(BoxKind::Text(format!("{} Details", counter_text(1, ty)).into()), st, None);
+                t.anonymous = true;
+                self.tree.add(t, Some(id));
+                *prev_space = true;
+                *word_start = true;
+            }
+        }
+        if open {
+            for &k in kids {
+                if Some(k) != summary {
+                    self.build(k, parent, prev_space, word_start);
+                }
+            }
         }
     }
 }

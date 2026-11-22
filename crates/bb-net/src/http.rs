@@ -448,7 +448,17 @@ fn open_connection(client: &Client, req: &Request, deadline: Instant) -> NetResu
         match tls.conn.complete_io(&mut tls.sock) {
             Ok(_) => {}
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => continue,
-            Err(e) => return Err(io_err(e)),
+            Err(e) => {
+                let mut err = io_err(e);
+                if err.kind == NetErrorKind::Certificate {
+                    // The verifier recorded which certificate failed and why.
+                    if let Some(p) = client.tls.take_failure(&host_name) {
+                        err.message = format!("{} ({})", p.reason, p.code);
+                        err.certificate = Some(Box::new(p));
+                    }
+                }
+                return Err(err);
+            }
         }
     }
     Ok((Stream::Tls(Box::new(tls)), false))

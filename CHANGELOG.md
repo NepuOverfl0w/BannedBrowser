@@ -32,6 +32,14 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   (without scripts, frames, embeds or objects). The drop-down shows the option the DOM says is
   selected.
 
+- **Certificate error page:** "Go Back (Recommended)" (home when there's no history) and
+  "Advanced…", which shows a readable reason (e.g. "the certificate expired on 2026-07-01"), an
+  error code and **Accept the Risk and Continue**. Accepting trusts only that exact certificate
+  for that host, for the session, and only works from the error page itself (a per-session
+  secret token; web pages can't link past the warning).
+- **`<details>` and `<summary>`:** closed details show only their summary (or a default
+  "Details"), the summary comes first, and clicking it toggles `open`.
+
 ### Fixed
 - `</font>` (and other end tags) no longer reach past a `<select>`: `select` is a scope boundary.
 - `<frameset>` after a `<template>` in the head: implicitly inserting `<body>` resets the

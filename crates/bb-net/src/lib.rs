@@ -21,6 +21,7 @@ mod tls;
 
 pub use headers::Headers;
 pub use mime::{parse_content_type, ContentType};
+pub use tls::CertificateProblem;
 
 use bb_url::Url;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -66,11 +67,13 @@ pub enum NetErrorKind {
 pub struct NetError {
     pub kind: NetErrorKind,
     pub message: String,
+    /// For `NetErrorKind::Certificate`: the certificate that failed and why.
+    pub certificate: Option<Box<CertificateProblem>>,
 }
 
 impl NetError {
     pub fn new(kind: NetErrorKind, message: impl Into<String>) -> Self {
-        NetError { kind, message: message.into() }
+        NetError { kind, message: message.into(), certificate: None }
     }
 }
 
@@ -230,10 +233,10 @@ impl Client {
         Client { config, tls, proxies, pool: Mutex::new(http::Pool::default()) }
     }
 
-    /// Accept an untrusted certificate for `host` for the rest of the session
-    /// (the "Accept the Risk and Continue" button).
-    pub fn add_certificate_exception(&self, host: &str) {
-        self.tls.add_exception(host);
+    /// Trust a certificate that failed verification, for its host only and only that exact
+    /// certificate, for the rest of the session (the "Accept the Risk and Continue" button).
+    pub fn add_certificate_exception(&self, problem: &CertificateProblem) {
+        self.tls.add_exception(&problem.host, &problem.der);
     }
 
     /// Perform a fetch, following redirects if requested.

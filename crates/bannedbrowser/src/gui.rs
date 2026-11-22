@@ -326,6 +326,15 @@ impl App {
                 v["frame_renders"] = serde_json::json!(t.frame_renders);
                 v["scrollbar_visible"] = serde_json::json!(w.scrollbar().is_some() && w.scrollbar_visible());
                 v["scrollbar_dragging"] = serde_json::json!(w.drag_thumb.is_some());
+                // Centres of internal pages' id'd elements, in window content coordinates.
+                let mut targets = serde_json::Map::new();
+                if let Some(f) = &t.frame {
+                    for (id, [x, y, bw_, bh]) in &f.targets {
+                        let cy = y + bh / 2.0 + CHROME_H - t.scroll_y;
+                        targets.insert(id.clone(), serde_json::json!([(x + bw_ / 2.0).round(), cy.round()]));
+                    }
+                }
+                v["targets"] = serde_json::Value::Object(targets);
             }
             // Window geometry for the GUI test drivers, which send real OS input in screen
             // coordinates: the content area's position and size in logical pixels.
@@ -1062,6 +1071,16 @@ impl ApplicationHandler<UserEvent> for App {
             let Some(ti) = bw.tabs.iter().position(|t| t.id == tab) else { continue };
             let is_active = ti == bw.active;
             match ev {
+                TabEvent::GoBack => {
+                    if is_active {
+                        if bw.tab().is_some_and(|t| t.index > 0) {
+                            bw.go_history(-1);
+                        } else if let Ok(u) = Url::parse(HOME) {
+                            bw.navigate(u);
+                        }
+                        state_changed = true;
+                    }
+                }
                 TabEvent::Started => {
                     let t = &mut bw.tabs[ti];
                     t.loading = true;
