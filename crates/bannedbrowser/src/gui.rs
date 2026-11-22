@@ -100,6 +100,9 @@ enum Target {
 
 struct BrowserWindow {
     window: Rc<Window>,
+    /// The window's inner size in physical pixels, from `Resized` events. (winit's X11
+    /// `inner_size()` asks the X server every time and panics if that fails.)
+    size: winit::dpi::PhysicalSize<u32>,
     surface: softbuffer::Surface<Rc<Window>, Rc<Window>>,
     tabs: Vec<Tab>,
     active: usize,
@@ -463,6 +466,7 @@ impl App {
         let id = window.id();
         let size = window.inner_size();
         let mut bw = BrowserWindow {
+            size,
             window,
             surface,
             tabs: Vec::new(),
@@ -646,7 +650,7 @@ impl BrowserWindow {
     }
 
     fn logical_size(&self) -> (f32, f32) {
-        let s = self.window.inner_size();
+        let s = self.size;
         let k = self.scale();
         (s.width as f32 / k, s.height as f32 / k)
     }
@@ -1326,7 +1330,7 @@ impl BrowserWindow {
     }
 
     fn redraw(&mut self) {
-        let size = self.window.inner_size();
+        let size = self.size;
         let (pw, ph) = (size.width.max(1), size.height.max(1));
         if self.canvas.w != pw || self.canvas.h != ph {
             self.canvas = SoftwareCanvas::new(pw, ph);
@@ -1647,7 +1651,15 @@ impl ApplicationHandler<UserEvent> for App {
         let mut state_changed = false;
         match event {
             WindowEvent::CloseRequested => keep = false,
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+            WindowEvent::Resized(sz) => {
+                bw.size = sz;
+                self.note_geometry(&bw);
+                bw.request_render();
+                bw.dirty = true;
+                state_changed = true;
+            }
+            // A Resized event with the new physical size follows.
+            WindowEvent::ScaleFactorChanged { .. } => {
                 self.note_geometry(&bw);
                 bw.request_render();
                 bw.dirty = true;

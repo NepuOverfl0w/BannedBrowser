@@ -19,12 +19,10 @@ key Return
 wait_state '.history_len == 3 and .loading == false and .title == "hits=1"'
 
 # Reload asks the server again.
-key F5
-wait_state '.title == "hits=2" and .loading == false'
+key_until F5 '.title == "hits=2" and .loading == false'
 
 # Hard reload (Ctrl+Shift+R) bypasses the cache.
-key accel+shift+r
-wait_state '.title == "hits=3" and .loading == false'
+key_until accel+shift+r '.title == "hits=3" and .loading == false'
 
 # Somewhere else, then Back: the cached copy, no request.
 key accel+l

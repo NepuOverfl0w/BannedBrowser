@@ -42,5 +42,7 @@ for t in tests/gui/*.sh; do
   rm -rf "$BB_PROFILE"
   : >tests/gui/out/browser.log
   bash "$t" || status=1
+  # Keep each test's browser output for the CI artifact.
+  cp tests/gui/out/browser.log "tests/gui/out/browser-$(basename "$t" .sh).log" 2>/dev/null || true
 done
 exit $status
