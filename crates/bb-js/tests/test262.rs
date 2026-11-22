@@ -1,10 +1,9 @@
 //! test262 (`test/language`, `test/built-ins`, `test/annexB`; pinned in
 //! scripts/fetch-spec-tests.sh): the parse phase. Every test is parsed in the variants its
 //! flags ask for (strict and sloppy, module, raw); it passes when it fails to parse exactly when
-//! its metadata says `negative: phase: parse`. Running the tests comes with the interpreter.
+//! its metadata says `negative: phase: parse`. Running the tests is `test262_exec.rs`.
 //!
-//! The parse phase passes 100 % (`FLOOR` is the whole suite at the pinned commit); running the
-//! tests (milestone D's interpreter) comes next.
+//! The parse phase passes 100 % (`FLOOR` is the whole suite at the pinned commit).
 //! `cargo test -p bb-js --test test262 -- --nocapture` prints the numbers; failures go to
 //! `target/test262-parse-failures.txt`.
 

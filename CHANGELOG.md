@@ -11,7 +11,10 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 ### Added
 - **JavaScript engine, first part (milestone D in progress):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
-  measured against test262. Scripts don't run yet.
+  measured against test262. Its interpreter has started: bytecode compiler, stack VM, garbage
+  collector and the core built-ins (Object, Function, errors, Array, String, Number, Boolean,
+  Symbol, Math, Reflect); 42 % of test262 runs correctly so far. The browser doesn't run page
+  scripts with it yet (that's milestone E).
 - **HTTP/2** (RFC 9113) with our own HPACK (RFC 7541, incl. Huffman coding), negotiated with
   ALPN `h2` over TLS (also through CONNECT proxies); HTTP/1.1 otherwise. One connection per
   origin carries every request to it (multiplexed, up to the server's

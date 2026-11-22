@@ -3333,3 +3333,26 @@ pub fn parse_script(src: &str) -> Result<Program, ParseError> {
 pub fn parse_module(src: &str) -> Result<Program, ParseError> {
     Parser::new(src, true)?.parse_program()
 }
+
+/// Where a direct `eval` runs, for the early errors of its code (§19.2.1.1 PerformEval
+/// steps 5–7: `new.target`, `super` and `arguments` follow the calling context).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EvalContext {
+    pub strict: bool,
+    pub new_target: bool,
+    pub super_prop: bool,
+    pub super_call: bool,
+    /// Inside a class field initializer: `arguments` is an error.
+    pub no_arguments: bool,
+}
+
+/// Parse eval code: a script, strict when the caller is.
+pub fn parse_eval(src: &str, ctx: EvalContext) -> Result<Program, ParseError> {
+    let mut p = Parser::new(src, false)?;
+    p.strict = ctx.strict;
+    p.fns[0].new_target = ctx.new_target;
+    p.fns[0].super_prop = ctx.super_prop;
+    p.fns[0].super_call = ctx.super_call;
+    p.fns[0].no_arguments = ctx.no_arguments;
+    p.parse_program()
+}

@@ -1,6 +1,6 @@
 [package]
 name = "bb-js"
-description = "JavaScript engine (milestone 10; not yet implemented)"
+description = "JavaScript engine: parser, bytecode interpreter, garbage collector, built-ins"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
