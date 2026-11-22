@@ -118,6 +118,16 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def server_bind(self):
+        # http.server.HTTPServer.server_bind resolves the host with socket.getfqdn(), a reverse
+        # DNS lookup. On macOS that goes through Bonjour, which is slow and pops up the "find
+        # devices on local networks" privacy prompt over the GUI under test. We only serve
+        # 127.0.0.1, so skip the lookup.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
 
 def main():
     ap = argparse.ArgumentParser()
