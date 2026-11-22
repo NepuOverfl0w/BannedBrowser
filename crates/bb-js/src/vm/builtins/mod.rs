@@ -2,6 +2,7 @@
 
 mod array;
 mod collections;
+mod date;
 mod json;
 mod number;
 mod object;
@@ -41,6 +42,7 @@ pub(super) fn install(vm: &mut Vm) {
     install_regexp(vm);
     collections::install(vm);
     json::install(vm);
+    date::install(vm);
     typed::install(vm);
     install_global(vm);
 }
