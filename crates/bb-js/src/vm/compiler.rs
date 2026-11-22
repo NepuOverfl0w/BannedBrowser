@@ -1497,11 +1497,19 @@ impl<'a> Compiler<'a> {
             Pat::Expr(e) => self.bind_target_expr(e),
             Pat::Object(props, rest) => {
                 self.emit(Op::RequireCoercible);
+                // The source (and the excluded keys) stay on the stack: a generator's
+                // `return` from inside the pattern pops them before closing iterators.
+                self.ctl.push(Ctl::Pop);
                 if rest.is_some() {
                     self.emit(Op::Array);
                     self.emit(Op::Swap);
+                    self.ctl.push(Ctl::Pop);
                 }
                 for (k, sub) in props {
+                    if let (Bind::Assign, Some(e)) = (mode, member_target(sub)) {
+                        self.keyed_member_target(k, rest.is_some(), e, sub);
+                        continue;
+                    }
                     self.emit(Op::Dup);
                     match k {
                         crate::ast::PropKey::Ident(_)
@@ -1524,16 +1532,33 @@ impl<'a> Compiler<'a> {
                     self.bind(sub, mode);
                 }
                 if let Some(r) = rest {
-                    self.emit(Op::Swap);
-                    self.emit(Op::ObjRest);
-                    self.bind(r, mode);
+                    if let (Bind::Assign, Some(e)) = (mode, member_target(r)) {
+                        // AssignmentRestProperty: the target reference first (§13.15.5.4).
+                        let (mr, n) = self.push_ref_tracked(e);
+                        let p = mr.parts() + 1;
+                        self.emit(Op::Roll(p));
+                        self.emit(Op::Roll(p));
+                        self.emit(Op::Swap);
+                        self.emit(Op::ObjRest);
+                        self.ref_set(mr);
+                        self.emit(Op::Pop);
+                        self.pop_ctls(n);
+                    } else {
+                        self.emit(Op::Swap);
+                        self.emit(Op::ObjRest);
+                        self.bind(r, mode);
+                    }
+                    self.ctl.pop();
                 } else {
                     self.emit(Op::Pop);
                 }
+                self.ctl.pop();
             }
             Pat::Array(elems, rest) => {
                 self.emit(Op::GetIter);
                 let at = self.emit(Op::TryStart(0));
+                // A generator's `return` inside the pattern closes the iterator.
+                self.ctl.push(Ctl::Iter);
                 self.ctl.push(Ctl::Handler);
                 for e in elems {
                     match e {
@@ -1542,17 +1567,42 @@ impl<'a> Compiler<'a> {
                             self.emit(Op::Pop);
                         }
                         Some(p) => {
-                            self.emit(Op::IterValue);
-                            self.bind(p, mode);
+                            if let (Bind::Assign, Some(t)) = (mode, member_target(p)) {
+                                // The target reference is evaluated before the step (§13.15.5.5).
+                                let (mr, n) = self.push_ref_tracked(t);
+                                self.emit(Op::Pick(mr.parts()));
+                                self.emit(Op::IterValue);
+                                self.emit(Op::Swap);
+                                self.emit(Op::Pop);
+                                self.member_default(p);
+                                self.ref_set(mr);
+                                self.emit(Op::Pop);
+                                self.pop_ctls(n);
+                            } else {
+                                self.emit(Op::IterValue);
+                                self.bind(p, mode);
+                            }
                         }
                     }
                 }
                 if let Some(r) = rest {
-                    self.emit(Op::IterRest);
-                    self.bind(r, mode);
+                    if let (Bind::Assign, Some(t)) = (mode, member_target(r)) {
+                        let (mr, n) = self.push_ref_tracked(t);
+                        self.emit(Op::Pick(mr.parts()));
+                        self.emit(Op::IterRest);
+                        self.emit(Op::Swap);
+                        self.emit(Op::Pop);
+                        self.ref_set(mr);
+                        self.emit(Op::Pop);
+                        self.pop_ctls(n);
+                    } else {
+                        self.emit(Op::IterRest);
+                        self.bind(r, mode);
+                    }
                 }
                 self.ctl.pop();
                 self.emit(Op::TryEnd);
+                self.ctl.pop();
                 self.emit(Op::IterClose);
                 let done = self.emit(Op::Jump(0));
                 self.patch(at);
@@ -1560,6 +1610,93 @@ impl<'a> Compiler<'a> {
                 self.patch(done);
             }
         }
+    }
+
+    /// Pop `n` `Ctl::Pop` entries.
+    fn pop_ctls(&mut self, n: usize) {
+        for _ in 0..n {
+            self.ctl.pop();
+        }
+    }
+
+    /// `[v] → [v']`: a member target's initializer, when `p` has one.
+    fn member_default(&mut self, p: &'a Pat) {
+        if let Pat::Default(_, def) = p {
+            let j = self.emit(Op::JumpIfNotUndef(0));
+            self.emit(Op::Pop);
+            self.expr(def);
+            self.patch(j);
+        }
+    }
+
+    /// Push a member target's reference parts (keys unconverted: PutValue converts them),
+    /// each covered by a `Ctl::Pop`; returns the reference and the number of entries.
+    fn push_ref_tracked(&mut self, e: &'a Expr) -> (MRef, usize) {
+        match e {
+            Expr::Paren(i) => self.push_ref_tracked(i),
+            Expr::Member { object, prop, computed: true, .. } => {
+                self.expr(object);
+                self.ctl.push(Ctl::Pop);
+                self.expr(prop);
+                self.ctl.push(Ctl::Pop);
+                (MRef::Computed, 2)
+            }
+            Expr::Member { object, prop, .. } => {
+                self.expr(object);
+                self.ctl.push(Ctl::Pop);
+                (MRef::Named(self.member_key(prop)), 1)
+            }
+            _ => {
+                let r = self.push_ref(e, true).unwrap_or(MRef::Computed);
+                let n = r.parts() as usize;
+                for _ in 0..n {
+                    self.ctl.push(Ctl::Pop);
+                }
+                (r, n)
+            }
+        }
+    }
+
+    /// `[src] → [src]`: one AssignmentProperty whose target is a member expression:
+    /// PropertyName, then the target reference, then GetV, the initializer and PutValue
+    /// (§13.15.5.3, KeyedDestructuringAssignmentEvaluation).
+    fn keyed_member_target(&mut self, k: &'a crate::ast::PropKey, has_rest: bool, e: &'a Expr, sub: &'a Pat) {
+        self.emit(Op::Dup);
+        self.ctl.push(Ctl::Pop);
+        let named = match k {
+            crate::ast::PropKey::Ident(_) | crate::ast::PropKey::Str(_) | crate::ast::PropKey::Num(_)
+                if !has_rest =>
+            {
+                Some(self.key(static_key(k)))
+            }
+            _ => {
+                self.prop_key(k);
+                if has_rest {
+                    self.emit(Op::AppendKey);
+                }
+                self.ctl.push(Ctl::Pop);
+                None
+            }
+        };
+        let (mr, n) = self.push_ref_tracked(e);
+        let kp = if named.is_some() { 0 } else { 1 };
+        for _ in 0..=kp {
+            self.emit(Op::Roll(mr.parts() + kp));
+        }
+        match named {
+            Some(ki) => {
+                self.emit(Op::GetNamed(ki));
+            }
+            None => {
+                self.emit(Op::GetProp);
+            }
+        }
+        // The source copy and key are consumed.
+        self.pop_ctls(1 + kp as usize);
+        self.member_default(sub);
+        self.ref_set(mr);
+        self.emit(Op::Pop);
+        self.pop_ctls(n);
     }
 
     /// `[v] → []`: assign to a member expression (or throw for call targets).
@@ -2546,6 +2683,20 @@ impl MRef {
             _ => 2,
         }
     }
+}
+
+/// A destructuring assignment target that is a member expression (after its initializer).
+fn member_target(p: &Pat) -> Option<&Expr> {
+    let p = match p {
+        Pat::Default(t, _) => t,
+        p => p,
+    };
+    let Pat::Expr(e) = p else { return None };
+    let mut t: &Expr = e;
+    while let Expr::Paren(i) = t {
+        t = i;
+    }
+    matches!(t, Expr::Member { .. } | Expr::PrivateMember { .. } | Expr::SuperMember { .. }).then_some(t)
 }
 
 fn binary_op(op: &str) -> Op {

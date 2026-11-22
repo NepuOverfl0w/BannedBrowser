@@ -1045,7 +1045,12 @@ impl Vm {
                 let k = self.pop();
                 let o = self.pop();
                 if o.is_nullish() {
-                    let ks = self.to_property_key(&k).map(|k| k.display()).unwrap_or_default();
+                    // The key isn't converted (that would run user code) for the message.
+                    let ks = match &k {
+                        Value::String(s) => to_rust(s),
+                        Value::Number(n) => value::number_to_string(*n),
+                        _ => String::new(),
+                    };
                     return self.type_error(&format!(
                         "Cannot set properties of {} (setting '{ks}')",
                         ops::nullish_name(&o)
