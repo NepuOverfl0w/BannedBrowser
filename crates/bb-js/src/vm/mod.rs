@@ -366,11 +366,49 @@ impl Vm {
 
     pub fn error(&mut self, kind: ErrorKind, msg: &str) -> Value {
         let proto = self.realm.error_proto(kind);
-        let o = self.heap.alloc(Object::new(Some(proto), Kind::Error));
+        let o = self.heap.alloc(Object::new(Some(proto), Kind::Error(Default::default())));
         if !msg.is_empty() {
             self.heap.obj_mut(o).props.insert(PropKey::lit("message"), Prop::method(Value::str(msg)));
         }
+        let name = match kind {
+            ErrorKind::Error => "Error",
+            ErrorKind::Type => "TypeError",
+            ErrorKind::Range => "RangeError",
+            ErrorKind::Reference => "ReferenceError",
+            ErrorKind::Syntax => "SyntaxError",
+            ErrorKind::Eval => "EvalError",
+            ErrorKind::Uri => "URIError",
+        };
+        self.capture_stack(o, name);
         Value::Object(o)
+    }
+
+    /// Record the stack trace of a new error: `Name: message`, then a line per frame.
+    pub(crate) fn capture_stack(&mut self, o: ObjRef, name: &str) {
+        let mut s = String::from(name);
+        if let Some(Prop { slot: Slot::Data(Value::String(m)), .. }) =
+            self.heap.obj(o).props.get(&PropKey::lit("message"))
+        {
+            if !m.is_empty() {
+                s.push_str(": ");
+                s.push_str(&to_rust(m));
+            }
+        }
+        for f in self.frames.iter().rev().take(10) {
+            let fname = f.callee.and_then(|c| match self.heap.obj(c).props.get(&PropKey::lit("name")) {
+                Some(Prop { slot: Slot::Data(Value::String(n)), .. }) if !n.is_empty() => Some(to_rust(n)),
+                _ => None,
+            });
+            s.push_str("\n    at ");
+            match (fname, f.callee) {
+                (Some(n), _) => s.push_str(&n),
+                (None, Some(_)) => s.push_str("<anonymous>"),
+                (None, None) => s.push_str(f.code.referrer.as_deref().unwrap_or("<script>")),
+            }
+        }
+        if let Kind::Error(st) = &mut self.heap.obj_mut(o).kind {
+            *st = s.into();
+        }
     }
     pub fn type_error<T>(&mut self, msg: &str) -> JsResult<T> {
         Err(self.error(ErrorKind::Type, msg))
@@ -1924,7 +1962,9 @@ impl Vm {
             (None, Some(g)) => js_str(g),
             _ => js_str(""),
         };
-        let proto = if f.is_generator {
+        let proto = if f.is_generator && f.is_async {
+            self.realm.async_generator_function_proto
+        } else if f.is_generator {
             self.realm.generator_function_proto
         } else if f.is_async {
             self.realm.async_function_proto

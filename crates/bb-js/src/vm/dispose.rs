@@ -109,10 +109,11 @@ impl Vm {
     /// A newly created SuppressedError (DisposeResources step 3.e.iii.1).
     pub(super) fn suppressed_error(&mut self, error: Value, suppressed: Value) -> Value {
         let proto = self.realm.suppressed_error_proto;
-        let o = self.heap.alloc(Object::new(Some(proto), Kind::Error));
+        let o = self.heap.alloc(Object::new(Some(proto), Kind::Error(Default::default())));
         let props = &mut self.heap.obj_mut(o).props;
         props.insert(PropKey::lit("error"), Prop::method(error));
         props.insert(PropKey::lit("suppressed"), Prop::method(suppressed));
+        self.capture_stack(o, "SuppressedError");
         Value::Object(o)
     }
 
@@ -328,7 +329,7 @@ pub(super) fn install(vm: &mut Vm) {
         |vm, c| {
             let nt = c.new_target.unwrap_or(c.callee);
             let proto = vm.prototype_from_ctor(nt, |r| r.suppressed_error_proto)?;
-            let o = vm.heap.alloc(Object::new(Some(proto), Kind::Error));
+            let o = vm.heap.alloc(Object::new(Some(proto), Kind::Error(Default::default())));
             let msg = c.arg(2);
             if !msg.is_undefined() {
                 let m = vm.to_string(&msg)?;
@@ -337,6 +338,7 @@ pub(super) fn install(vm: &mut Vm) {
             let props = &mut vm.heap.obj_mut(o).props;
             props.insert(PropKey::lit("error"), Prop::method(c.arg(0)));
             props.insert(PropKey::lit("suppressed"), Prop::method(c.arg(1)));
+            vm.capture_stack(o, "SuppressedError");
             Ok(Value::Object(o))
         },
         sp,

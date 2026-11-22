@@ -1956,7 +1956,7 @@ impl Parser {
             if !member_decorators.is_empty() {
                 self.pending_member_decorators.push((members.len(), member_decorators));
             }
-            let start = self.tok.start;
+            let mut start = self.tok.start;
             let mut is_static = false;
             if self.is_kw("static") {
                 let n = self.peek()?;
@@ -1971,6 +1971,8 @@ impl Parser {
                         members.push(ClassMember::StaticBlock(self.static_block(start)?));
                         continue;
                     }
+                    // A static method's source text starts after `static` (§15.4).
+                    start = self.tok.start;
                 }
             }
             // `accessor x = 1;` (auto-accessors, with decorators): a field with generated get/set.

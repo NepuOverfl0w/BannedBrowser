@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 42_938;
+const FLOOR: usize = 43_011;
 
 /// Instructions per test variant before it counts as hung.
 const FUEL: u64 = 20_000_000;
@@ -62,7 +62,8 @@ fn meta(src: &str) -> Meta {
     let fm = src.find("/*---").and_then(|a| src[a..].find("---*/").map(|b| &src[a + 5..a + b])).unwrap_or("");
     let mut m = Meta::default();
     let mut section = "";
-    for line in fm.lines() {
+    // Some tests use CR line terminators.
+    for line in fm.split(['\n', '\r']) {
         let t = line.trim();
         if !line.starts_with(' ') && !line.starts_with('\t') && t.contains(':') {
             let (k, v) = t.split_once(':').unwrap_or((t, ""));

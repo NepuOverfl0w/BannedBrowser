@@ -164,7 +164,7 @@ fn object_to_string(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
                 Kind::Array => "Array",
                 Kind::Arguments | Kind::MappedArguments(_) => "Arguments",
                 Kind::Function(_) | Kind::Native(_) | Kind::Bound(_) => "Function",
-                Kind::Error => "Error",
+                Kind::Error(_) => "Error",
                 Kind::Boolean(_) => "Boolean",
                 Kind::Number(_) => "Number",
                 Kind::String(_) => "String",
@@ -581,6 +581,8 @@ fn function_to_string(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
             };
             format!("function {name}() {{ [native code] }}")
         }
+        // A callable proxy: NativeFunction syntax (§20.2.3.5 step 4).
+        Kind::Proxy(p) if p.callable => "function () { [native code] }".to_string(),
         _ => return vm.type_error("Function.prototype.toString requires that 'this' be a Function"),
     };
     Ok(Value::str(&s))

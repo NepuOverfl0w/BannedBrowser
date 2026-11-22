@@ -215,7 +215,7 @@ fn error_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let nt = c.new_target.unwrap_or(c.callee);
     let ek = ERROR_NAMES[kind].1;
     let proto = vm.prototype_from_ctor(nt, move |r| r.error_proto(ek))?;
-    let o = vm.heap.alloc(Object::new(Some(proto), Kind::Error));
+    let o = vm.heap.alloc(Object::new(Some(proto), Kind::Error(Default::default())));
     let msg = c.arg(0);
     if !msg.is_undefined() {
         let m = vm.to_string(&msg)?;
@@ -229,6 +229,7 @@ fn error_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
             vm.heap.obj_mut(o).props.insert(ck, Prop::method(cause));
         }
     }
+    vm.capture_stack(o, ERROR_NAMES[kind].0);
     Ok(Value::Object(o))
 }
 
@@ -254,10 +255,45 @@ fn install_errors(vm: &mut Vm) {
         value(vm, g, name, Value::Object(c));
         if i == 0 {
             base_ctor = Some(c);
+            // Error.prototype.stack (error-stack-accessor proposal).
+            accessor(
+                vm,
+                proto,
+                PropKey::lit("stack"),
+                Some(|vm, c| {
+                    let Value::Object(o) = c.this else {
+                        return vm.type_error("Error.prototype.stack getter called on a non-object");
+                    };
+                    match &vm.heap.obj(o).kind {
+                        Kind::Error(s) => Ok(Value::str(s)),
+                        _ => Ok(Value::Undefined),
+                    }
+                }),
+                Some(|vm, c| {
+                    let Value::Object(o) = c.this else {
+                        return vm.type_error("Error.prototype.stack setter called on a non-object");
+                    };
+                    let v = c.arg(0);
+                    if !matches!(v, Value::String(_)) {
+                        return vm.type_error("Error.prototype.stack must be set to a string");
+                    }
+                    // SetterThatIgnoresPrototypeProperties(this, %Error.prototype%, "stack", v).
+                    if o == vm.realm.error_proto(ErrorKind::Error) {
+                        return vm.type_error("Cannot set Error.prototype.stack on Error.prototype");
+                    }
+                    let k = PropKey::lit("stack");
+                    if vm.get_own_property(o, &k)?.is_none() {
+                        vm.create_data_property_or_throw(o, k, v)?;
+                    } else {
+                        vm.set_or_throw(o, k, v)?;
+                    }
+                    Ok(Value::Undefined)
+                }),
+            );
             // Error.isError (ES2026 §20.5.2.1): has an [[ErrorData]] slot.
             method(vm, c, "isError", 1, |vm, c| {
                 Ok(Value::Bool(
-                    matches!(c.arg(0), Value::Object(o) if matches!(vm.heap.obj(o).kind, Kind::Error)),
+                    matches!(c.arg(0), Value::Object(o) if matches!(vm.heap.obj(o).kind, Kind::Error(_))),
                 ))
             });
             method(vm, proto, "toString", 0, |vm, c| {
@@ -596,7 +632,7 @@ fn install_aggregate_error(vm: &mut Vm) {
         |vm, c| {
             let nt = c.new_target.unwrap_or(c.callee);
             let proto = vm.prototype_from_ctor(nt, |r| r.aggregate_error_proto)?;
-            let o = vm.heap.alloc(Object::new(Some(proto), Kind::Error));
+            let o = vm.heap.alloc(Object::new(Some(proto), Kind::Error(Default::default())));
             let msg = c.arg(1);
             if !msg.is_undefined() {
                 let m = vm.to_string(&msg)?;
@@ -612,6 +648,7 @@ fn install_aggregate_error(vm: &mut Vm) {
             let errors = vm.iterate_to_vec(&c.arg(0))?;
             let arr = vm.new_array(errors);
             vm.heap.obj_mut(o).props.insert(PropKey::lit("errors"), Prop::method(Value::Object(arr)));
+            vm.capture_stack(o, "AggregateError");
             Ok(Value::Object(o))
         },
         proto,

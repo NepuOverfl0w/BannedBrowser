@@ -344,7 +344,8 @@ pub enum Kind {
     String(JsString),
     Symbol(Sym),
     BigInt(Rc<super::bigint::BigInt>),
-    Error,
+    /// [[ErrorData]], holding the stack trace captured at creation (`Error.prototype.stack`).
+    Error(Rc<str>),
     Date(f64),
     RegExp(Box<super::builtins::regexp::RegExpData>),
     RegExpStringIter(Box<super::builtins::regexp::RegExpStringIter>),
