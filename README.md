@@ -187,7 +187,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | WPT tree construction | **1959 / 1959 (100 %)** |
 | Reftests | **50 / 50** |
 | test262 parse phase (`language`, `built-ins`, `annexB`) | **48803 / 48803 (100 %)** |
-| test262 execution (interpreter in progress) | **40235 / 48803 (82 %)** |
+| test262 execution (interpreter in progress) | **42767 / 48803 (87.6 %)** |
 | Public Suffix List tests | **78 / 78 (100 %)** |
 
 ## 🏗 Architecture
