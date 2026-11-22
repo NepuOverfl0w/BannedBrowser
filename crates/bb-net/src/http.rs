@@ -488,13 +488,10 @@ fn build_request(client: &Client, req: &Request, absolute_form: bool) -> Vec<u8>
         s.push_str("\r\n");
     };
     push("Host", &url.host_with_port());
-    let defaults: [(&str, &str); 4] = [
-        ("User-Agent", client.config.user_agent()),
-        ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/png,image/*;q=0.8,*/*;q=0.5"),
-        ("Accept-Language", "en-US,en;q=0.5"),
-        ("Accept-Encoding", "gzip, deflate, br"),
-    ];
-    for (k, v) in defaults {
+    if !req.headers.contains("user-agent") {
+        push("User-Agent", client.config.user_agent());
+    }
+    for (k, v) in DEFAULT_HEADERS {
         if !req.headers.contains(k) {
             push(k, v);
         }
@@ -522,6 +519,16 @@ fn build_request(client: &Client, req: &Request, absolute_form: bool) -> Vec<u8>
     }
     bytes
 }
+
+/// Request headers sent when the request doesn't set them (besides `User-Agent`).
+pub(crate) const DEFAULT_HEADERS: [(&str, &str); 3] = [
+    (
+        "Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/png,image/*;q=0.8,*/*;q=0.5",
+    ),
+    ("Accept-Language", "en-US,en;q=0.5"),
+    ("Accept-Encoding", "gzip, deflate, br"),
+];
 
 /// One HTTP exchange (no redirect handling).
 pub(crate) fn fetch(client: &Client, req: &Request, deadline: Instant) -> NetResult<Response> {
@@ -624,6 +631,8 @@ fn exchange(
         headers,
         body,
         secure,
+        cache: crate::cache::CacheStatus::Network,
+        complete,
     })
 }
 

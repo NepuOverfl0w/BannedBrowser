@@ -105,7 +105,7 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
 |---|---|
 | `crates/bb-str` | WTF-8 strings (web strings with lone surrogates) |
 | `crates/bb-url` | WHATWG URL Standard |
-| `crates/bb-net` | HTTP/1.1, TLS, proxies, codings, `data:`/`file:`/`about:`, encoding sniffing, cookies and the Public Suffix List (its `build.rs` downloads the list) (HTTP/2 and HTTP/3 go here in v0.2) |
+| `crates/bb-net` | HTTP/1.1, TLS, proxies, codings, `data:`/`file:`/`about:`, encoding sniffing, the HTTP cache, cookies and the Public Suffix List (its `build.rs` downloads the list) (HTTP/2 and HTTP/3 go here in v0.2) |
 | `crates/bb-dom`, `bb-html` | DOM; HTML tokenizer and tree builder |
 | `crates/bb-css`, `bb-style` | CSS parsing and selectors; cascade, computed values, UA sheet, presentational hints |
 | `crates/bb-text` | fonts, fallback, shaping, line breaking and bidi helpers |

@@ -9,6 +9,7 @@
 //! * Encoding detection for HTML (BOM → Content-Type → `<meta>` prescan →
 //!   fallback), see [`encoding`].
 
+pub mod cache;
 pub mod cookies;
 pub mod data_url;
 pub mod encoding;
@@ -114,8 +115,10 @@ pub struct Request {
     pub progress: Option<ProgressFn>,
     /// Send and store cookies (`false` for requests that must not carry them).
     pub credentials: bool,
-    /// Who asked for this request, for SameSite cookie rules.
+    /// Who asked for this request, for SameSite cookie rules (and the cache partition).
     pub cookie_context: cookies::CookieContext,
+    /// How this request uses the HTTP cache.
+    pub cache_mode: cache::CacheMode,
 }
 
 impl std::fmt::Debug for Request {
@@ -137,6 +140,7 @@ impl Request {
             progress: None,
             credentials: true,
             cookie_context: cookies::CookieContext::default(),
+            cache_mode: cache::CacheMode::Default,
         }
     }
 
@@ -163,6 +167,10 @@ pub struct Response {
     pub body: Vec<u8>,
     /// Whether the response came over a TLS connection.
     pub secure: bool,
+    /// Whether it came from the network or the HTTP cache.
+    pub cache: cache::CacheStatus,
+    /// The whole body arrived (false when the connection ended early).
+    pub complete: bool,
 }
 
 impl Response {
@@ -187,6 +195,8 @@ impl Response {
             headers,
             body,
             secure: false,
+            cache: cache::CacheStatus::Network,
+            complete: true,
         }
     }
 }
@@ -210,6 +220,8 @@ pub struct ClientConfig {
     pub do_not_track: bool,
     /// Override the `User-Agent` header (default: [`USER_AGENT`]).
     pub user_agent: Option<String>,
+    /// The HTTP cache (none: every request goes to the network).
+    pub cache: Option<Arc<cache::HttpCache>>,
 }
 
 impl ClientConfig {
@@ -257,6 +269,109 @@ impl Client {
     /// This client's cookie jar.
     pub fn cookies(&self) -> &cookies::CookieJar {
         &self.cookies
+    }
+
+    /// This client's HTTP cache, if it has one.
+    pub fn cache(&self) -> Option<&cache::HttpCache> {
+        self.config.cache.as_deref()
+    }
+
+    /// The value the HTTP layer sends for a request header the request doesn't set itself.
+    pub(crate) fn default_request_header(&self, name: &str) -> Option<String> {
+        let n = name.to_ascii_lowercase();
+        http::DEFAULT_HEADERS
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(&n))
+            .map(|(_, v)| v.to_string())
+            .or_else(|| (n == "user-agent").then(|| self.config.user_agent().to_string()))
+    }
+
+    /// One HTTP(S) exchange through the cache (RFC 9111; see `cache.rs`).
+    fn http_cached(&self, req: &Request, deadline: std::time::Instant) -> NetResult<Response> {
+        use cache::{CacheMode, CacheStatus, Plan};
+        let Some(c) = self.config.cache.as_deref() else { return http::fetch(self, req, deadline) };
+        let defaults = |n: &str| self.default_request_header(n);
+        if !matches!(req.method.as_str(), "GET" | "HEAD" | "OPTIONS" | "TRACE") {
+            // §4.4: a non-error response to an unsafe method invalidates the target URI and the
+            // same-origin Location / Content-Location.
+            let resp = http::fetch(self, req, deadline)?;
+            if resp.status < 400 {
+                c.remove(&cache::key(req));
+                for h in ["location", "content-location"] {
+                    if let Some(u) = resp.headers.get(h).and_then(|v| req.url.join(v.trim()).ok()) {
+                        if u.origin().same_origin(&req.url.origin()) {
+                            let mut r = req.clone();
+                            r.url = u;
+                            c.remove(&cache::key(&r));
+                        }
+                    }
+                }
+            }
+            return Ok(resp);
+        }
+        let conditional =
+            ["if-none-match", "if-modified-since", "if-match", "if-unmodified-since", "if-range"]
+                .iter()
+                .any(|h| req.headers.contains(h));
+        if req.method != "GET" || conditional || req.cache_mode == CacheMode::NoStore {
+            return http::fetch(self, req, deadline);
+        }
+        let key = cache::key(req);
+        let now = cookies::now();
+        match cache::plan(c, &key, req, req.cache_mode, now, &defaults) {
+            Plan::Use(meta) => {
+                if let Some(body) = c.body(&key) {
+                    return Ok(cache::response_from(&meta, body, req, now, CacheStatus::Hit));
+                }
+            }
+            Plan::Validate(cond) => {
+                let mut r = req.clone();
+                for (k, v) in cond {
+                    r.headers.set(k, &v);
+                }
+                let t0 = cookies::now();
+                let resp = http::fetch(self, &r, deadline)?;
+                let t1 = cookies::now();
+                if resp.status == 304 {
+                    if let Some(meta) = c.freshen(&key, &resp.headers, t0, t1) {
+                        if let Some(body) = c.body(&key) {
+                            let mut out =
+                                cache::response_from(&meta, body, req, t1, CacheStatus::Revalidated);
+                            // Cookies always come from the network response.
+                            for sc in resp.headers.get_all("set-cookie") {
+                                out.headers.append("Set-Cookie", sc);
+                            }
+                            return Ok(out);
+                        }
+                    }
+                    // The entry vanished meanwhile: ask again without conditions.
+                } else {
+                    self.store_or_forget(c, &key, req, &resp, t0, t1);
+                    return Ok(resp);
+                }
+            }
+            Plan::Network => {}
+        }
+        let t0 = cookies::now();
+        let resp = http::fetch(self, req, deadline)?;
+        self.store_or_forget(c, &key, req, &resp, t0, cookies::now());
+        Ok(resp)
+    }
+
+    fn store_or_forget(
+        &self,
+        c: &cache::HttpCache,
+        key: &str,
+        req: &Request,
+        resp: &Response,
+        t0: i64,
+        t1: i64,
+    ) {
+        if cache::storable(req, resp) {
+            c.store(key, req, resp, t0, t1, &|n: &str| self.default_request_header(n));
+        } else {
+            c.remove(key);
+        }
     }
 
     /// Perform a fetch, following redirects if requested.
@@ -318,7 +433,7 @@ impl Client {
 
     fn fetch_one(&self, req: &Request, deadline: std::time::Instant) -> NetResult<Response> {
         match req.url.scheme() {
-            "http" | "https" => http::fetch(self, req, deadline),
+            "http" | "https" => self.http_cached(req, deadline),
             "data" => data_url::fetch(&req.url),
             "file" => file::fetch(&req.url),
             "about" => {

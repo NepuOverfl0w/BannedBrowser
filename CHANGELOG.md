@@ -9,6 +9,14 @@ Everything on `main` after the 0.1.0 release commit counts toward v0.2.
 The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 
 ### Added
+- **HTTP cache** (RFC 9111): responses are reused while fresh (`max-age`, `Expires`, or a
+  heuristic from `Last-Modified`) and revalidated with `If-None-Match` / `If-Modified-Since`
+  when stale (a 304 refreshes the stored headers); `Vary`, `no-store`, `no-cache`, and
+  invalidation after POST and other unsafe methods. The cache is partitioned by top-level site,
+  stored on disk (256 MB, least recently used entries evicted), and never stores or replays
+  `Set-Cookie`. Reload revalidates, Ctrl+Shift+R / Ctrl+F5 / Shift+Reload bypass the cache,
+  Back/Forward prefer it. Private windows get a memory-only cache, forgotten with the last
+  private window.
 - **Profile storage:** a profile directory (`--profile <dir>`, `$BB_PROFILE`, else the
   platform's data directory, e.g. `~/.local/share/BannedBrowser/profile`) with one SQLite
   database. Persistent cookies survive restarts (session cookies and private windows' cookies

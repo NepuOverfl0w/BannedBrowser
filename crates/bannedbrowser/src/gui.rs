@@ -5,6 +5,7 @@ use crate::cli::{fixup_url, Args};
 use crate::menu::{primary_label, Action, Entry, Menu};
 use crate::tab::{self, Frame, HistoryEntry, LinkOpen, TabCmd, TabEvent};
 use bb_engine::{FocusKind, KeyMods, NavRequest, PageKey, SelectPopup};
+use bb_net::cache::CacheMode;
 use bb_paint::{Canvas, Color, DisplayList, ImageData, Item, Rect, SoftwareCanvas};
 use bb_ui::icons::Icon;
 use bb_ui::textfield::TextField;
@@ -171,6 +172,11 @@ fn profile_dir(args: &Args) -> Option<std::path::PathBuf> {
         .or_else(|| dirs::data_dir().map(|d| d.join("BannedBrowser").join("profile")))
 }
 
+/// The disk HTTP cache's size limit.
+const HTTP_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+/// The memory-only caches' limit (private windows, or no usable profile).
+const MEMORY_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// "1280x800" → (1280, 800), within sane bounds.
 fn parse_size(s: &str) -> Option<(u32, u32)> {
     let (w, h) = s.split_once('x')?;
@@ -208,13 +214,35 @@ fn refresh_public_suffix_list(client: &Arc<bb_net::Client>) {
 pub fn run(args: Args) -> anyhow::Result<()> {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let client = Arc::new(bb_engine::new_client_with(args.extra_ca.clone(), args.user_agent.clone()));
-    let private_client = Arc::new(bb_engine::new_client_with(args.extra_ca.clone(), args.user_agent.clone()));
-    refresh_public_suffix_list(&client);
     let (profile, profile_status) = match profile_dir(&args) {
         Some(dir) => bb_profile::Profile::open(&dir),
         None => (None, bb_profile::OpenStatus::Failed("no data directory".into())),
     };
+    // The HTTP cache: on disk next to the profile (an explicit --profile / $BB_PROFILE keeps it
+    // inside that directory), in memory only when the profile isn't usable and for private
+    // windows.
+    let explicit = args.profile.is_some() || std::env::var_os("BB_PROFILE").is_some();
+    let cache_dir = match &profile {
+        Some(p) if explicit => Some(p.dir().join("cache")),
+        Some(_) => dirs::cache_dir().map(|d| d.join("BannedBrowser").join("http-cache")),
+        None => None,
+    };
+    let cache = Arc::new(match cache_dir {
+        Some(d) => bb_net::cache::HttpCache::on_disk(&d, HTTP_CACHE_BYTES),
+        None => bb_net::cache::HttpCache::in_memory(MEMORY_CACHE_BYTES),
+    });
+    let private_cache = Arc::new(bb_net::cache::HttpCache::in_memory(MEMORY_CACHE_BYTES));
+    let client = Arc::new(bb_engine::new_client_with_cache(
+        args.extra_ca.clone(),
+        args.user_agent.clone(),
+        Some(cache),
+    ));
+    let private_client = Arc::new(bb_engine::new_client_with_cache(
+        args.extra_ca.clone(),
+        args.user_agent.clone(),
+        Some(private_cache),
+    ));
+    refresh_public_suffix_list(&client);
     match &profile_status {
         bb_profile::OpenStatus::Opened | bb_profile::OpenStatus::Created => {}
         other => log::warn!("profile: {other:?}; cookies and prefs won't be saved this session"),
@@ -695,7 +723,10 @@ impl BrowserWindow {
             t.load_started = Instant::now();
             if !same_document {
                 t.scroll_y = 0.0;
-                let _ = t.tx.send(TabCmd::Navigate(Box::new(entry.request())));
+                // History navigation prefers the cache, even stale entries.
+                let mut req = entry.request();
+                req.cache_mode = CacheMode::ForceCache;
+                let _ = t.tx.send(TabCmd::Navigate(Box::new(req)));
             }
             if !entry.frames.is_empty() {
                 let _ = t.tx.send(TabCmd::RestoreFrames(entry.frames));
@@ -707,12 +738,15 @@ impl BrowserWindow {
         self.dirty = true;
     }
 
-    fn reload(&mut self) {
+    /// Reload: revalidate everything with the server; `hard` bypasses the HTTP cache.
+    fn reload(&mut self, hard: bool) {
         if let Some(t) = self.tab_mut() {
             if let Some(h) = t.history.get(t.index).cloned() {
                 t.loading = true;
                 t.load_started = Instant::now();
-                let _ = t.tx.send(TabCmd::Navigate(Box::new(h.request())));
+                let mut req = h.request();
+                req.cache_mode = if hard { CacheMode::Reload } else { CacheMode::NoCache };
+                let _ = t.tx.send(TabCmd::Navigate(Box::new(req)));
             }
         }
         self.dirty = true;
@@ -1858,9 +1892,12 @@ impl ApplicationHandler<UserEvent> for App {
             for t in &bw.tabs {
                 let _ = t.tx.send(TabCmd::Shutdown);
             }
-            // The private session ends with the last private window: forget its cookies.
+            // The private session ends with the last private window: forget its cookies and cache.
             if bw.private && !self.windows.values().any(|w| w.private) {
                 self.private_client.cookies().clear();
+                if let Some(c) = self.private_client.cache() {
+                    c.clear();
+                }
             }
             if self.windows.is_empty() {
                 el.exit();
@@ -1930,7 +1967,7 @@ impl App {
                 true
             }
             Target::Reload => {
-                bw.reload();
+                bw.reload(bw.modifiers.shift_key());
                 true
             }
             Target::Home => {
@@ -2110,7 +2147,7 @@ impl App {
             Action::Quit => el.exit(),
             Action::Back => bw.go_history(-1),
             Action::Forward => bw.go_history(1),
-            Action::Reload => bw.reload(),
+            Action::Reload => bw.reload(false),
             Action::OpenInNewTab(u) => {
                 // Background tab right after the current one (Firefox's default).
                 let t = self.new_tab(bw, Some(u));
@@ -2132,7 +2169,9 @@ impl App {
                     if let Some(h) = t.history.get(t.index).cloned() {
                         t.loading = true;
                         t.load_started = Instant::now();
-                        let _ = t.tx.send(TabCmd::Navigate(Box::new(h.request())));
+                        let mut req = h.request();
+                        req.cache_mode = CacheMode::NoCache;
+                        let _ = t.tx.send(TabCmd::Navigate(Box::new(req)));
                     }
                 }
             }
@@ -2339,7 +2378,8 @@ impl App {
             }
         }
         if (p && ch("r")) || matches!(key, Key::Named(NamedKey::F5)) {
-            bw.reload();
+            // Ctrl+Shift+R, Ctrl+F5 and Shift+F5 reload past the cache.
+            bw.reload(shift || (p && matches!(key, Key::Named(NamedKey::F5))));
             return true;
         }
         if (alt && matches!(key, Key::Named(NamedKey::ArrowLeft)))

@@ -9,6 +9,9 @@ and GUI tests. Prints "PORT <n>" (and "HTTPS_PORT <n>") on stdout once ready.
 import argparse, gzip, http.server, json, os, socketserver, ssl, sys, threading, time, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Requests seen per /cache id (the HTTP cache tests count them).
+CACHE_HITS = {}
+CACHE_LOCK = threading.Lock()
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 # brotli.compress(b"Hello, brotli! " * 20)
 UNHANDLED = object()
@@ -109,6 +112,47 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             esc = c.replace("&", "&amp;").replace("<", "&lt;")
             body = f"<!DOCTYPE html><title>{esc}</title><p>{esc}</p>".encode()
             return self.send_body(body, "text/html; charset=utf-8")
+        if path == "/cache":
+            # A cacheable response for the HTTP cache tests. Query: id (counter), cc
+            # (Cache-Control), etag, lm (Last-Modified, seconds ago), expires (seconds from now),
+            # vary, status, location, cookie (Set-Cookie). The body says how many requests the
+            # id has seen; a matching If-None-Match gets 304.
+            import email.utils
+            from urllib.parse import parse_qs
+            q = parse_qs(query, keep_blank_values=True)
+            one = lambda k: q[k][0] if k in q else None
+            with CACHE_LOCK:
+                ident = one("id") or ""
+                CACHE_HITS[ident] = CACHE_HITS.get(ident, 0) + 1
+                n = CACHE_HITS[ident]
+            hdrs = [("X-Hits", str(n)), ("Date", email.utils.formatdate(usegmt=True))]
+            if one("cc") is not None:
+                hdrs.append(("Cache-Control", one("cc")))
+            if one("etag"):
+                hdrs.append(("ETag", '"%s"' % one("etag")))
+            if one("lm"):
+                hdrs.append(("Last-Modified", email.utils.formatdate(time.time() - int(one("lm")), usegmt=True)))
+            if one("expires"):
+                hdrs.append(("Expires", email.utils.formatdate(time.time() + int(one("expires")), usegmt=True)))
+            if one("vary"):
+                hdrs.append(("Vary", one("vary")))
+            if one("location"):
+                hdrs.append(("Location", one("location")))
+            if one("cookie"):
+                hdrs.append(("Set-Cookie", one("cookie")))
+            inm = self.headers.get("If-None-Match")
+            ims = self.headers.get("If-Modified-Since")
+            if (one("etag") and inm == '"%s"' % one("etag")) or (not one("etag") and one("lm") and ims):
+                self.send_response(304)
+                for k, v in hdrs:
+                    self.send_header(k, v)
+                self.end_headers()
+                return
+            status = int(one("status") or 200)
+            if one("html"):
+                body = ("<!DOCTYPE html><title>hits=%d</title><p>hits=%d" % (n, n)).encode()
+                return self.send_body(body, "text/html; charset=utf-8", status=status, headers=hdrs)
+            return self.send_body(("hits=%d" % n).encode(), status=status, headers=hdrs)
         if path == "/form-title":
             # A page whose title is the request method and its query (GET) or body (POST).
             data = self.req_body.decode("utf-8", "replace") if self.command == "POST" else query

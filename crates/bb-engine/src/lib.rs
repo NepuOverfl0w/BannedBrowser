@@ -155,6 +155,23 @@ pub(crate) fn with_top_site<R>(top: &Url, f: impl FnOnce() -> R) -> R {
     r
 }
 
+thread_local! {
+    /// The cache mode of the page load running on this thread.
+    static CACHE_MODE: std::cell::Cell<bb_net::cache::CacheMode> = const { std::cell::Cell::new(bb_net::cache::CacheMode::Default) };
+}
+
+/// Run `f` with this thread's fetches using `mode` (restored afterwards).
+pub(crate) fn with_cache_mode<R>(mode: bb_net::cache::CacheMode, f: impl FnOnce() -> R) -> R {
+    let old = CACHE_MODE.with(|m| m.replace(mode));
+    let r = f();
+    CACHE_MODE.with(|m| m.set(old));
+    r
+}
+
+pub(crate) fn cache_mode() -> bb_net::cache::CacheMode {
+    CACHE_MODE.with(|m| m.get())
+}
+
 /// The top-level site for requests made while building `page_url`'s document.
 pub(crate) fn top_site(page_url: &Url) -> Url {
     TOP_SITE.with(|t| t.borrow().clone()).unwrap_or_else(|| page_url.clone())
@@ -177,6 +194,7 @@ fn fetch_document(client: &Client, url: &Url, frame_top: Option<&Url>, post: Opt
         None => Request::get(url.clone()),
     };
     req.timeout = Duration::from_secs(45);
+    req.cache_mode = cache_mode();
     if let Some(top) = frame_top {
         req.cookie_context = bb_net::cookies::CookieContext {
             site_for_cookies: Some(top.clone()),
@@ -373,6 +391,7 @@ fn fetch_bytes(
     page_url: &Url,
 ) -> HashMap<String, Result<Vec<u8>, String>> {
     let ctx = subresource_context(page_url);
+    let mode = cache_mode();
     let mut out = HashMap::new();
     if urls.is_empty() {
         return out;
@@ -398,6 +417,7 @@ fn fetch_bytes(
                     let mut req = Request::get(u.clone());
                     req.timeout = remaining.min(Duration::from_secs(20));
                     req.cookie_context = ctx.clone();
+                    req.cache_mode = mode;
                     match client.fetch(req) {
                         Ok(resp) if resp.ok() || resp.status == 0 => Ok(resp.body),
                         Ok(resp) => Err(format!("HTTP {}", resp.status)),
@@ -500,7 +520,7 @@ impl Page {
 
     /// Load a navigation request (a URL, or a form POST) completely (blocking).
     pub fn load_request(client: &Client, req: &NavRequest, config: PageConfig) -> Page {
-        Self::load_in(client, &req.url, config, None, req.post.as_ref())
+        with_cache_mode(req.cache_mode, || Self::load_in(client, &req.url, config, None, req.post.as_ref()))
     }
 
     /// Load `url`; `frame_top` is the top-level document's URL when this page is a frame.
@@ -956,10 +976,20 @@ pub fn new_client(extra_ca: Vec<std::path::PathBuf>) -> Client {
 
 /// [`new_client`] with an optional `User-Agent` override.
 pub fn new_client_with(extra_ca: Vec<std::path::PathBuf>, user_agent: Option<String>) -> Client {
+    new_client_with_cache(extra_ca, user_agent, None)
+}
+
+/// [`new_client_with`] and an HTTP cache.
+pub fn new_client_with_cache(
+    extra_ca: Vec<std::path::PathBuf>,
+    user_agent: Option<String>,
+    cache: Option<Arc<bb_net::cache::HttpCache>>,
+) -> Client {
     Client::new(bb_net::ClientConfig {
         extra_ca_files: extra_ca,
         user_agent,
         about_handler: Some(Arc::new(about_handler)),
+        cache,
         ..Default::default()
     })
 }

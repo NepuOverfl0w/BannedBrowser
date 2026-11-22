@@ -22,11 +22,14 @@ pub struct PostBody {
 pub struct NavRequest {
     pub url: Url,
     pub post: Option<PostBody>,
+    /// How the load uses the HTTP cache (its document, subresources and frames): reload
+    /// revalidates, a hard reload bypasses, Back/Forward prefers the cache.
+    pub cache_mode: bb_net::cache::CacheMode,
 }
 
 impl NavRequest {
     pub fn get(url: Url) -> Self {
-        NavRequest { url, post: None }
+        NavRequest { url, post: None, cache_mode: Default::default() }
     }
 }
 
@@ -342,7 +345,7 @@ pub fn submission(
         ("http" | "https" | "data" | "file", "get") => {
             // "Mutate action URL": the query becomes the entry list (the fragment stays).
             url.set_query_encoded(Some(&urlencode(&entries, enc)));
-            NavRequest { url, post: None }
+            NavRequest::get(url)
         }
         ("http" | "https", "post") => {
             let post = match enctype.as_str() {
@@ -361,11 +364,11 @@ pub fn submission(
                     body: urlencode(&entries, enc).into_bytes(),
                 },
             };
-            NavRequest { url, post: Some(post) }
+            NavRequest { url, post: Some(post), cache_mode: Default::default() }
         }
         // data: POST navigates to the action as is; mailto:, javascript: and others aren't
         // supported (javascript: needs the JS engine; mailto: an external mail client).
-        ("data", "post") => NavRequest { url, post: None },
+        ("data", "post") => NavRequest::get(url),
         _ => return None,
     };
     Some(FormSubmission { request, target })

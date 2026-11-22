@@ -102,7 +102,7 @@ impl HistoryEntry {
     }
 
     pub fn request(&self) -> NavRequest {
-        NavRequest { url: self.url.clone(), post: self.post.clone() }
+        NavRequest { url: self.url.clone(), post: self.post.clone(), cache_mode: Default::default() }
     }
 }
 

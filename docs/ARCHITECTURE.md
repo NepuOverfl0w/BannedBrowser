@@ -19,7 +19,7 @@ bytes ─▶ bb-net ─▶ encoding sniff ─▶ bb-html tokenizer ─▶ tree b
 |---|---|
 | `bb-str` | WTF-8 strings (`Wtf8Buf`): UTF-8 that can also hold lone surrogates, for web strings; UTF-16 conversion |
 | `bb-url` | WHATWG URL parser/serializer, hosts (IPv4/IPv6/IDNA), percent-encoding, form encoding |
-| `bb-net` | HTTP/1.1 client with keep-alive pool, TLS (rustls), CONNECT proxies, content codings, redirects, `data:`/`file:`/`about:`, encoding sniffing, cookies (`cookies.rs`, RFC 6265bis) and the Public Suffix List (`psl.rs`; embedded by `build.rs`, refreshed daily by the shell) |
+| `bb-net` | HTTP/1.1 client with keep-alive pool, TLS (rustls), CONNECT proxies, content codings, redirects, `data:`/`file:`/`about:`, encoding sniffing, the HTTP cache (`cache.rs`, RFC 9111), cookies (`cookies.rs`, RFC 6265bis) and the Public Suffix List (`psl.rs`; embedded by `build.rs`, refreshed daily by the shell) |
 | `bb-dom` | Arena DOM (`NodeId` indices), dirty flags, html5lib dump, serializer; select/option state (`select.rs`) and form control values, checkedness, form owners (`forms.rs`) |
 | `bb-html` | HTML tokenizer (full state machine + entity table) and tree builder (all insertion modes) |
 | `bb-css` | CSS Syntax 3 tokenizer/parser, Selectors 4 matching, media queries, `@supports`, colors, `calc()` |

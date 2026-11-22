@@ -286,10 +286,17 @@ impl Page {
         // Frames' requests are made in the top-level document's site (cookies).
         let top = crate::top_site(&self.url);
         let top_ref = &top;
+        let mode = crate::cache_mode();
         let fetched: Vec<Option<crate::Fetched>> = std::thread::scope(|sc| {
             let handles: Vec<_> = urls
                 .iter()
-                .map(|u| u.as_ref().map(|u| sc.spawn(move || fetch_document(client, u, Some(top_ref), None))))
+                .map(|u| {
+                    u.as_ref().map(|u| {
+                        sc.spawn(move || {
+                            crate::with_cache_mode(mode, || fetch_document(client, u, Some(top_ref), None))
+                        })
+                    })
+                })
                 .collect();
             handles.into_iter().map(|h| h.and_then(|h| h.join().ok())).collect()
         });
@@ -413,7 +420,11 @@ impl Page {
     /// Follow a link hit: HTML §7.3.1.7 "the rules for choosing a navigable".
     pub fn follow_link(&mut self, client: &Client, hit: LinkHit) -> LinkDisposition {
         let t = hit.target.to_ascii_lowercase();
-        let req = crate::NavRequest { url: hit.url.clone(), post: hit.post.clone() };
+        let req = crate::NavRequest {
+            url: hit.url.clone(),
+            post: hit.post.clone(),
+            cache_mode: Default::default(),
+        };
         let path = match t.as_str() {
             "" | "_self" => hit.frame_path,
             "_parent" => {

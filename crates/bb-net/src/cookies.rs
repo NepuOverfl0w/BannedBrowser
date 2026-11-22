@@ -317,6 +317,18 @@ fn secure_origin(url: &Url) -> bool {
     url.scheme() == "https" || url.host().is_some_and(|h| h.is_loopback())
 }
 
+/// A URL's schemeful site (HTML §7.1.1): scheme and registrable domain (or host, or the
+/// serialized origin for URLs without a host).
+pub(crate) fn site_of(u: &Url) -> String {
+    match host_of(u) {
+        Some((h, ip)) => {
+            let host = if ip { h } else { psl::registrable_domain(&h).unwrap_or(h) };
+            format!("{}://{host}", u.scheme())
+        }
+        None => u.origin().serialize(),
+    }
+}
+
 /// Schemeful same-site (HTML §7.1.1): same scheme and same registrable domain (or host).
 pub fn same_site(a: &Url, b: &Url) -> bool {
     let site = |u: &Url| {

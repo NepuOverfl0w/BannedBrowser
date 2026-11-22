@@ -334,3 +334,167 @@ fn same_site_cookies_on_cross_site_subresources() {
     };
     assert_eq!(echo_cookie(&c, Some(own)).as_deref(), Some("lax=1"));
 }
+
+// ----- HTTP cache (RFC 9111) -----
+
+fn cached_client(dir: Option<&std::path::Path>) -> Client {
+    let cache = match dir {
+        Some(d) => bb_net::cache::HttpCache::on_disk(d, 8 * 1024 * 1024),
+        None => bb_net::cache::HttpCache::in_memory(8 * 1024 * 1024),
+    };
+    Client::new(ClientConfig {
+        no_proxy_env: true,
+        cache: Some(std::sync::Arc::new(cache)),
+        ..Default::default()
+    })
+}
+
+fn cget(c: &Client, path: &str, mode: bb_net::cache::CacheMode) -> bb_net::Response {
+    let mut req = Request::get(url(path));
+    req.cache_mode = mode;
+    c.fetch(req).unwrap_or_else(|e| panic!("GET {path}: {e}"))
+}
+
+fn hits(r: &bb_net::Response) -> String {
+    String::from_utf8_lossy(&r.body).into_owned()
+}
+
+use bb_net::cache::{CacheMode as M, CacheStatus as S};
+
+#[test]
+fn cache_fresh_responses_are_reused() {
+    let c = cached_client(None);
+    let p = "/cache?id=fresh&cc=max-age%3D600";
+    let a = cget(&c, p, M::Default);
+    assert_eq!((hits(&a).as_str(), a.cache), ("hits=1", S::Network));
+    let b = cget(&c, p, M::Default);
+    assert_eq!((hits(&b).as_str(), b.cache), ("hits=1", S::Hit));
+    assert!(b.headers.get("age").is_some());
+    // Reload (no-cache) revalidates: no validator here, so a full request.
+    let r = cget(&c, p, M::NoCache);
+    assert_eq!((hits(&r).as_str(), r.cache), ("hits=2", S::Network));
+    // Hard reload ignores the entry but stores the response.
+    let h = cget(&c, p, M::Reload);
+    assert_eq!(hits(&h), "hits=3");
+    assert_eq!(hits(&cget(&c, p, M::Default)), "hits=3");
+    // no-store neither reads nor writes.
+    assert_eq!(hits(&cget(&c, p, M::NoStore)), "hits=4");
+    assert_eq!(hits(&cget(&c, p, M::Default)), "hits=3");
+}
+
+#[test]
+fn cache_stale_responses_are_revalidated() {
+    let c = cached_client(None);
+    let p = "/cache?id=etag&cc=max-age%3D0&etag=v1";
+    assert_eq!(hits(&cget(&c, p, M::Default)), "hits=1");
+    let r = cget(&c, p, M::Default);
+    // The server saw a second (conditional) request and answered 304; the body is the stored one.
+    assert_eq!((r.status, hits(&r).as_str(), r.cache), (200, "hits=1", S::Revalidated));
+    assert_eq!(r.headers.get("x-hits"), Some("2"), "freshened from the 304");
+    // Last-Modified alone validates too.
+    let p = "/cache?id=lm&cc=no-cache&lm=3600";
+    cget(&c, p, M::Default);
+    assert_eq!(cget(&c, p, M::Default).cache, S::Revalidated);
+    // Back/Forward (force-cache) uses a stale entry without asking.
+    assert_eq!(cget(&c, p, M::ForceCache).cache, S::Hit);
+}
+
+#[test]
+fn cache_storability() {
+    let c = cached_client(None);
+    for (p, cached) in [
+        ("/cache?id=s1&cc=no-store%2C+max-age%3D600", false),
+        ("/cache?id=s2&cc=max-age%3D600&vary=*", false),
+        ("/cache?id=s3", false), // 200 without freshness info: stored, but stale at once (no validator)
+        ("/cache?id=s4&expires=600", true),
+        ("/cache?id=s5&lm=100000", true), // heuristic freshness
+        ("/cache?id=s6&status=302&location=%2Fhello", false),
+        ("/cache?id=s7&status=404&cc=max-age%3D600", true),
+    ] {
+        let mut req = Request::get(url(p));
+        req.follow_redirects = false;
+        c.fetch(req.clone()).unwrap();
+        let r = c.fetch(req).unwrap();
+        assert_eq!(r.cache == S::Hit, cached, "{p}");
+    }
+}
+
+#[test]
+fn cache_vary_and_partitions() {
+    let c = cached_client(None);
+    let p = "/cache?id=vary&cc=max-age%3D600&vary=X-Lang";
+    let mut req = Request::get(url(p));
+    req.headers.set("X-Lang", "en");
+    assert_eq!(hits(&c.fetch(req.clone()).unwrap()), "hits=1");
+    assert_eq!(c.fetch(req.clone()).unwrap().cache, S::Hit);
+    req.headers.set("X-Lang", "fr");
+    assert_eq!(hits(&c.fetch(req.clone()).unwrap()), "hits=2");
+    // The same URL requested by a page on another site is a separate entry.
+    let p = "/cache?id=part&cc=max-age%3D600";
+    assert_eq!(hits(&cget(&c, p, M::Default)), "hits=1");
+    let mut other = Request::get(url(p));
+    other.cookie_context.site_for_cookies = Some(Url::parse("https://other.example/").unwrap());
+    assert_eq!(hits(&c.fetch(other.clone()).unwrap()), "hits=2");
+    assert_eq!(c.fetch(other).unwrap().cache, S::Hit);
+}
+
+#[test]
+fn cache_unsafe_methods_invalidate() {
+    let c = cached_client(None);
+    let p = "/cache?id=inv&cc=max-age%3D600";
+    cget(&c, p, M::Default);
+    assert_eq!(cget(&c, p, M::Default).cache, S::Hit);
+    c.fetch(Request::post(url(p), "text/plain", b"x".to_vec())).unwrap();
+    let r = cget(&c, p, M::Default);
+    assert_eq!(r.cache, S::Network);
+}
+
+#[test]
+fn cache_never_stores_or_replays_cookies() {
+    let c = cached_client(None);
+    let p = "/cache?id=ck&cc=max-age%3D600&cookie=cached%3D1";
+    cget(&c, p, M::Default);
+    assert!(c.cookies().all().iter().any(|k| k.name == "cached"));
+    c.cookies().clear();
+    let r = cget(&c, p, M::Default);
+    assert_eq!(r.cache, S::Hit);
+    assert!(r.headers.get("set-cookie").is_none());
+    assert!(c.cookies().all().is_empty(), "a cache hit doesn't set cookies again");
+}
+
+#[test]
+fn cache_persists_on_disk_and_survives_damage() {
+    let dir = std::env::temp_dir().join(format!("bb-http-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let p = "/cache?id=disk&cc=max-age%3D600";
+    {
+        let c = cached_client(Some(&dir));
+        assert_eq!(hits(&cget(&c, p, M::Default)), "hits=1");
+    }
+    let c = cached_client(Some(&dir));
+    let r = cget(&c, p, M::Default);
+    assert_eq!((hits(&r).as_str(), r.cache), ("hits=1", S::Hit), "read back from disk");
+    // Damage every entry file: they read as misses and are replaced.
+    for e in std::fs::read_dir(&dir).unwrap().flatten() {
+        std::fs::write(e.path(), b"garbage").unwrap();
+    }
+    let c = cached_client(Some(&dir));
+    assert_eq!(hits(&cget(&c, p, M::Default)), "hits=2");
+    assert_eq!(cget(&c, p, M::Default).cache, S::Hit);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn cache_evicts_least_recently_used() {
+    let cache = std::sync::Arc::new(bb_net::cache::HttpCache::in_memory(80));
+    let c =
+        Client::new(ClientConfig { no_proxy_env: true, cache: Some(cache.clone()), ..Default::default() });
+    // Each body is "hits=1" (6 bytes); at most 80/8 = 10 bytes per entry, 80 in total.
+    for i in 0..20 {
+        cget(&c, &format!("/cache?id=lru{i}&cc=max-age%3D600"), M::Default);
+    }
+    let (n, total) = cache.stats();
+    assert!(total <= 80 && n <= 13, "{n} entries, {total} bytes");
+    assert_eq!(cget(&c, "/cache?id=lru19&cc=max-age%3D600", M::Default).cache, S::Hit);
+    assert_eq!(cget(&c, "/cache?id=lru0&cc=max-age%3D600", M::Default).cache, S::Network);
+}
