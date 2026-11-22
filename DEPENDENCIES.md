@@ -17,7 +17,7 @@ the banned list on every CI run.
 | `flate2`, `brotli-decompressor` | bb-net | `gzip`/`deflate`/`br` content codings. |
 | `encoding_rs` | bb-net, bb-engine | WHATWG Encoding Standard decoders (windows-1252, Shift_JIS, …). |
 | `arboard` | shell | Clipboard. |
-| `dirs` (planned, M8) | shell | Platform profile directory. |
+| `dirs` | shell | Platform cache and profile directories (the Public Suffix List cache today; the profile in C3). |
 | `serde_json` | shell, tests | GUI test-state file, spec-suite JSON. (`serde` derive comes with prefs in M8.) |
 | `log`, `env_logger` | all | Logging. |
 | `thiserror`, `anyhow` (binary only) | bb-net, shell | Error types. |
@@ -54,4 +54,4 @@ it is first used.
 
 | File | Source and licence | Used by |
 |---|---|---|
-| `resources/psl/public_suffix_list.dat` | Public Suffix List, <https://publicsuffix.org/list/>, MPL-2.0, unmodified (`scripts/update-psl.sh`) | `bb-net` cookies (`psl.rs`) |
+| Public Suffix List (not in the repository) | <https://publicsuffix.org/list/public_suffix_list.dat>, MPL-2.0, unmodified. `crates/bb-net/build.rs` downloads it with the system `curl` and embeds it (`BB_PSL_FILE=<path>` uses a local copy, `BB_PSL_OFFLINE=1` embeds none); the browser downloads it again at first start and then at most once a day into its cache directory (`dirs::cache_dir()/BannedBrowser/psl`), as publicsuffix.org asks. The notice is on `about:bannedbrowser`. | `bb-net` cookies and same-site checks (`psl.rs`) |

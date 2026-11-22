@@ -243,6 +243,10 @@ More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 cargo run --release -- https://example.com
 ```
 
+The build downloads the current [Public Suffix List](https://publicsuffix.org/list/) (used for
+cookies) with `curl`. Offline, set `BB_PSL_FILE=/path/to/public_suffix_list.dat`, or
+`BB_PSL_OFFLINE=1` to build without it; the browser then downloads it at first start.
+
 <details>
 <summary>Windows</summary>
 

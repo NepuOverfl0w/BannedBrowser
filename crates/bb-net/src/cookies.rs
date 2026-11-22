@@ -376,6 +376,13 @@ impl CookieJar {
     /// §5.7: process a `Set-Cookie` header received for `url`. Returns whether it was stored
     /// (or removed an existing cookie).
     pub fn store(&self, url: &Url, header: &str, ctx: &CookieContext) -> bool {
+        self.store_with(url, header, ctx, psl::available())
+    }
+
+    /// [`store`](Self::store), told whether a Public Suffix List is available. Without one,
+    /// nothing is known to be a public suffix, so a `Domain` attribute that names a parent
+    /// domain is ignored (the cookie stays host-only) instead of trusted.
+    fn store_with(&self, url: &Url, header: &str, ctx: &CookieContext, have_psl: bool) -> bool {
         let t = now();
         let Some(sc) = parse_set_cookie(header, t) else { return false };
         let Some((host, host_is_ip)) = host_of(url) else { return false };
@@ -386,12 +393,17 @@ impl CookieJar {
                 Some(d) => domain = d,
                 None => return false,
             }
-            if !host_is_ip && psl::is_public_suffix(&domain) {
+            if !host_is_ip && have_psl && psl::is_public_suffix(&domain) {
                 if domain == host {
                     domain.clear(); // a public suffix setting a cookie for itself: host-only
                 } else {
                     return false;
                 }
+            } else if !host_is_ip && !have_psl && domain != host {
+                if !domain_matches(&host, &domain, false) {
+                    return false;
+                }
+                domain.clear();
             }
         }
         let (domain, host_only) = if domain.is_empty() {
@@ -425,7 +437,9 @@ impl CookieJar {
         if lname.starts_with("__secure-") && !(sc.secure && secure_url) {
             return false;
         }
-        if lname.starts_with("__host-") && !(sc.secure && secure_url && host_only && path == "/") {
+        if lname.starts_with("__host-")
+            && !(sc.secure && secure_url && host_only && sc.domain.is_none() && path == "/")
+        {
             return false;
         }
         // A nameless cookie whose value looks like a prefixed name is refused too.
@@ -588,7 +602,26 @@ mod tests {
     }
 
     fn top() -> CookieContext {
+        // These tests assume the real list (public suffixes, registrable domains).
+        crate::psl::tests::list();
         CookieContext::default()
+    }
+
+    #[test]
+    fn without_a_public_suffix_list_domain_attributes_stay_host_only() {
+        let jar = CookieJar::new();
+        let ctx = CookieContext::default();
+        let url = u("https://www.example.co.uk/");
+        // A parent domain is ignored (it might be a public suffix): host-only.
+        assert!(jar.store_with(&url, "a=1; Domain=co.uk", &ctx, false));
+        assert!(jar.store_with(&url, "b=2; Domain=example.co.uk", &ctx, false));
+        assert!(jar.store_with(&url, "c=3; Domain=www.example.co.uk", &ctx, false));
+        // A domain the host isn't in is still refused.
+        assert!(!jar.store_with(&url, "d=4; Domain=other.co.uk", &ctx, false));
+        assert_eq!(jar.cookie_header(&u("https://other.example.co.uk/"), &ctx), None);
+        assert_eq!(jar.cookie_header(&url, &ctx).as_deref(), Some("a=1; b=2; c=3"));
+        // __Host- still refuses any Domain attribute.
+        assert!(!jar.store_with(&url, "__Host-x=1; Secure; Path=/; Domain=example.co.uk", &ctx, false));
     }
 
     #[test]

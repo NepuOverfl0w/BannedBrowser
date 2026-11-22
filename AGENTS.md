@@ -17,10 +17,11 @@ Windows, macOS and Linux. Every web-platform component is ours.
 - v0.1.0 "Hello, Old Web" is released:
   https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0
 - `main` is the development branch.
-- **v0.2 is next.** It covers M3–M11 in full, plus:
+- **v0.2 is in progress** (milestones A–M in PROGRESS.md; A and B are done, C is under way).
+  It covers M3–M11 in full, plus:
   - HTTP/2 and HTTP/3
   - WebExtensions parity: uBlock Origin, Privacy Badger, SponsorBlock on youtube.com, SteamDB on store.steampowered.com
-  - video playback, GPU acceleration, and the certificate-error page buttons
+  - video playback, GPU acceleration (incl. WebGPU and WebGL 1 + 2)
 - v0.2 is verified against https://www.whatismybrowser.com. See PROGRESS.md for the details.
 
 ## Hard rules
@@ -63,10 +64,11 @@ Windows, macOS and Linux. Every web-platform component is ours.
      behind `#[cfg(target_os = ...)]`.
    - Use Cmd on macOS and Ctrl elsewhere. Get HiDPI from `scale_factor()`.
 7. **Original branding only:**
-   - Data files maintained by others are fine when their licence allows it and they ship
-     unmodified with their notice, e.g. the Public Suffix List (`resources/psl/`, MPL-2.0, run by
-     Mozilla; maintainer decision 2026-11-22). The "no Mozilla code" rule is about code and
-     branding.
+   - Data files maintained by others are fine when their licence allows it and they are used
+     unmodified with their notice, e.g. the Public Suffix List (MPL-2.0, run by Mozilla;
+     maintainer decision 2026-11-22). It is not kept in the repository: `bb-net`'s build script
+     downloads it, and the browser downloads it at first start and then daily. The "no Mozilla
+     code" rule is about code and branding.
    - No Firefox/Mozilla names, logos, icons or code.
    - No Honkai: Star Rail art, logos or fonts.
    - The name is a fan nod to Silver Wolf's handle `@Banned_Player`. Keep the disclaimers in
@@ -103,7 +105,7 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
 |---|---|
 | `crates/bb-str` | WTF-8 strings (web strings with lone surrogates) |
 | `crates/bb-url` | WHATWG URL Standard |
-| `crates/bb-net` | HTTP/1.1, TLS, proxies, codings, `data:`/`file:`/`about:`, encoding sniffing (HTTP/2 and HTTP/3 go here in v0.2) |
+| `crates/bb-net` | HTTP/1.1, TLS, proxies, codings, `data:`/`file:`/`about:`, encoding sniffing, cookies and the Public Suffix List (its `build.rs` downloads the list) (HTTP/2 and HTTP/3 go here in v0.2) |
 | `crates/bb-dom`, `bb-html` | DOM; HTML tokenizer and tree builder |
 | `crates/bb-css`, `bb-style` | CSS parsing and selectors; cascade, computed values, UA sheet, presentational hints |
 | `crates/bb-text` | fonts, fallback, shaping, line breaking and bidi helpers |
@@ -121,7 +123,10 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
 
 - **Spec suites** (fetched into `third_party/`, which is git-ignored):
   - Run `scripts/fetch-spec-tests.sh`, then `cargo test -p bb-url --test wpt_urltestdata -- --nocapture`
-    and `cargo test -p bb-html --test html5lib -- --nocapture`.
+    and `cargo test -p bb-html --test html5lib -- --nocapture`, and
+    `cargo test -p bb-net --test psl -- --nocapture` (the Public Suffix List's own vectors).
+  - The build downloads the Public Suffix List (`crates/bb-net/build.rs`, with `curl`); bb-net's
+    tests need it. Offline, set `BB_PSL_FILE` to a copy.
 - **Reftests:**
   - `tests/reftests/NAME.html` carries `<link rel="match" href="NAME-ref.html">`.
   - Run them with `cargo test -p bb-engine --test reftests`.
@@ -146,7 +151,8 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
   - `scripts/archived-sites.sh` (also the CI workflow "Archived sites") renders the sites listed in
     `tests/pages/archived-sites.txt` live and snapshots them.
   - It needs a network that can reach theoldnet.com and web.archive.org.
-- **Network tests:** `cargo test -p bb-net --test http_integration`. They spawn
+- **Network tests:** `cargo test -p bb-net --test http_integration`. `scripts/gui-smoke.sh`
+  sets `BB_PSL_UPDATE=0` so the GUI tests never download the Public Suffix List. They spawn
   `tests/server/testserver.py` (HTTP + HTTPS with a test-only CA in `tests/certs/`).
 
 ## Workflow

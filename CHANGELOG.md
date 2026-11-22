@@ -37,6 +37,13 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   `github.io`), SameSite rules for subresources and frames (unset means Lax), `__Secure-` and
   `__Host-` prefixes, eviction limits. Private windows have their own cookies, forgotten when
   the last private window closes. Cookies last for the session until profile storage arrives.
+- **Public Suffix List kept current:** the list isn't stored in the repository. The build
+  downloads it and embeds it, and the browser downloads it again at first start and then at
+  most once a day (publicsuffix.org's guidance), installing it only if it is a valid, newer
+  list. Domains with a trailing dot keep it (`example.com.` → `com.`), and domains with empty
+  labels have no registrable domain. Without any list (an offline build before the first
+  download), `Domain` attributes that name a parent domain are ignored, so cookies stay
+  host-only. The list's own `test_psl.txt` vectors run in CI.
 - **Certificate error page:** "Go Back (Recommended)" (home when there's no history) and
   "Advanced…", which shows a readable reason (e.g. "the certificate expired on 2026-07-01"), an
   error code and **Accept the Risk and Continue**. Accepting trusts only that exact certificate

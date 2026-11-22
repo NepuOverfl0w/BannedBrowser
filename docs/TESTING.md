@@ -3,7 +3,7 @@
 | Layer | Command | Notes |
 |---|---|---|
 | Unit tests | `cargo test --workspace` | every crate |
-| Spec suites | `scripts/fetch-spec-tests.sh` then `cargo test -p bb-url --test wpt_urltestdata -- --nocapture` and `cargo test -p bb-html --test html5lib -- --nocapture` | html5lib-tests tokenizer (HEAD), WPT tree-construction `.dat` files (`html/syntax/parsing/resources`, pinned to a WPT commit in the script), WPT `urltestdata.json` |
+| Spec suites | `scripts/fetch-spec-tests.sh` then `cargo test -p bb-url --test wpt_urltestdata -- --nocapture` and `cargo test -p bb-html --test html5lib -- --nocapture` and `cargo test -p bb-net --test psl -- --nocapture` | html5lib-tests tokenizer (HEAD), WPT tree-construction `.dat` files (`html/syntax/parsing/resources`, pinned to a WPT commit in the script), WPT `urltestdata.json`, the Public Suffix List's `test_psl.txt` (HEAD) against the list the build embedded |
 | Network integration | `cargo test -p bb-net --test http_integration` | spawns `tests/server/testserver.py` (HTTP + HTTPS with a test-only CA) |
 | Reftests | `scripts/run-reftests.sh` | `tests/reftests/*.html` with `<link rel="match">`; diffs land in `tests/reftests/out/` |
 | Robustness | part of `cargo test` | proptest / seeded random input for URL, HTML, CSS, HTTP decoding, images |

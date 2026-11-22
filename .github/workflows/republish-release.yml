@@ -65,6 +65,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
       - name: package
         shell: bash
+        # Packages must embed the Public Suffix List (bb-net's build script downloads it).
+        env:
+          BB_PSL_REQUIRED: "1"
         run: scripts/package.sh
       - uses: actions/upload-artifact@v4
         with:

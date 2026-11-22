@@ -155,11 +155,30 @@ fn primary(m: ModifiersState) -> bool {
     }
 }
 
+/// Keep the Public Suffix List current (cookies depend on it): load the cached copy and, at most
+/// once a day, download the current one, on a background thread. `BB_PSL_UPDATE=0` turns it off
+/// (the GUI tests do, so they never touch the network or the user's cache).
+fn refresh_public_suffix_list(client: &Arc<bb_net::Client>) {
+    if std::env::var("BB_PSL_UPDATE").is_ok_and(|v| v == "0") {
+        return;
+    }
+    let Some(dir) = dirs::cache_dir().map(|d| d.join("BannedBrowser").join("psl")) else { return };
+    let client = client.clone();
+    let spawned = std::thread::Builder::new().name("psl-refresh".into()).spawn(move || {
+        let outcome = bb_net::psl::refresh(&client, &dir);
+        log::info!("public suffix list: {outcome:?} (in use: {})", bb_net::psl::version());
+    });
+    if let Err(e) = spawned {
+        log::warn!("couldn't start the public suffix list refresh: {e}");
+    }
+}
+
 pub fn run(args: Args) -> anyhow::Result<()> {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let client = Arc::new(bb_engine::new_client_with(args.extra_ca.clone(), args.user_agent.clone()));
     let private_client = Arc::new(bb_engine::new_client_with(args.extra_ca.clone(), args.user_agent.clone()));
+    refresh_public_suffix_list(&client);
     let mut initial: Vec<Url> =
         args.urls.iter().chain(args.new_tab.iter()).filter_map(|u| fixup_url(u)).collect();
     if initial.is_empty() {

@@ -7,27 +7,28 @@ _Last updated: 2026-11-22 (session 2)._
 | Milestone | Status | Notes |
 |---|---|---|
 | M0 Scaffold | ✅ done | workspace, check-deps, CI workflow, docs, headless PNG, window under Xvfb + Fluxbox |
-| M1 URL + networking | ✅ done | 904/904 WPT urltestdata; HTTP/1.1 + TLS + proxies + codings + redirects; 16 integration tests |
+| M1 URL + networking | ✅ done | 904/904 WPT urltestdata; HTTP/1.1 + TLS + proxies + codings + redirects; cookies (RFC 6265bis) with the Public Suffix List |
 | M2 HTML | ✅ done | tokenizer 100 % (html5lib-tests), tree construction 100 % (WPT); processing instructions; lone surrogates in the tokenizer; `<selectedcontent>` |
 | M3 CSS + style | 🚧 mostly | parser, selectors, cascade, var(), calc(), media, UA sheet, presentational hints; see gaps |
 | M4 Layout I | 🚧 mostly | block/inline/floats/tables/flex(basic)/positioned/replaced; see gaps |
 | M5 Paint | 🚧 mostly | AA rasterizer, borders, gradients, shadows, clips, opacity, glyph cache; 50 reftests |
-| M6 GUI shell core | 🚧 started | tabs, toolbar, URL bar, overlay scrollbar, find bar, frames, links, multiple + private windows, test-state hook; menus 📋 |
+| M6 GUI shell core | 🚧 started | tabs, toolbar, URL bar, overlay scrollbar, find bar, frames, links, multiple + private windows, test-state hook, ≡ and context menus, About window, certificate error page, frame history |
 | M7–M11 | 📋 planned | |
 | **v0.1 "Hello, Old Web"** | ✅ released 2026-11-21 ([v0.1.0](https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0)) | example.com, theoldnet.com, 5 archived sites, snapshots, CI green on 3 OSes, packages; see checklist |
 
-## Test numbers (session 1)
+## Test numbers (session 2)
 
 | Suite | Result |
 |---|---|
 | WPT `url/resources/urltestdata.json` | **904 / 904 (100.0 %)** |
-| html5lib tokenizer (HEAD `c5495c5`) | **7018 / 7046 (99.60 %)**, nothing skipped (lone-surrogate cases run since session 2) |
+| html5lib tokenizer (HEAD) | **7046 / 7046 (100 %)**, nothing skipped (incl. the 4 lone-surrogate cases) |
+| Public Suffix List `tests/test_psl.txt` (HEAD) against the list the build embedded | **78 / 78 (100 %)** |
 | Tree construction, WPT `html/syntax/parsing/resources` (pinned `9986bb3`, 2026-11-21) | **1959 / 1959 (100 %)**; 14 `#script-on` cases not run yet (need JS, milestone E) |
 | Reftests (`tests/reftests`) | **50 / 50** |
 | Snapshot regressions (`tests/pages/snapshots`) | 12 pages (example.com ×2, theoldnet ×2, myip.wtf, 5 archived sites, retro, frames), rendered with the bundled `tests/fonts/` only, so they run on every OS |
-| `cargo test --workspace` | 119 test functions, 0 failures |
-| GUI tests (`scripts/gui-smoke.sh`), Linux + Windows + macOS with real OS input | `basic.sh` (open, link click, back, wheel scroll, scrollbar track click + thumb drag, URL bar, new/close/reopen tab, resize, maximize, new window, private window), `frames.sh` (frameset render, wheel scrolls the frame under the pointer, targeted link loads into the named frame), `find.sh` (incremental find, stepping, scroll to match, not found, close), `menus.sh` (≡ menu, link/tab/page/URL-bar context menus, keyboard and mouse, Esc and click-outside) and `certerror.sh` (certificate error page: Go Back, a web page's forged accept link does nothing, Advanced… toggles, Accept the Risk and Continue loads the site), `about.sh` (About window from the ≡ menu, update check result, Tab/Enter opens a link in a tab, Esc closes) and `about-offline.sh` (a failed check says so and offers the releases page) pass |
-| `scripts/check-deps.sh` | OK — 162 crates, none banned |
+| `cargo test --workspace` | 172 tests, 0 failures |
+| GUI tests (`scripts/gui-smoke.sh`), Linux + Windows + macOS with real OS input | `basic.sh` (open, link click, back, wheel scroll, scrollbar track click + thumb drag, URL bar, new/close/reopen tab, resize, maximize, new window, private window), `frames.sh` (frameset render, wheel scrolls the frame under the pointer, targeted link loads into the named frame), `find.sh` (incremental find, stepping, scroll to match, not found, close), `menus.sh` (≡ menu, link/tab/page/URL-bar context menus, keyboard and mouse, Esc and click-outside) and `certerror.sh` (certificate error page: Go Back, a web page's forged accept link does nothing, Advanced… toggles, Accept the Risk and Continue loads the site), `about.sh` (About window from the ≡ menu, update check result, Tab/Enter opens a link in a tab, Esc closes) and `about-offline.sh` (a failed check says so and offers the releases page) and `cookies.sh` (cookies shared across tabs, not sent from a private window) pass |
+| `scripts/check-deps.sh` | OK — 163 crates, none banned |
 | Cross targets | `cargo clippy --target x86_64-pc-windows-gnu -D warnings` ✅ and Windows release `.exe` builds; `cargo check --target aarch64-apple-darwin` ✅ for every crate except those linking `ring` (see gaps) |
 
 ### Failing / excluded spec cases
@@ -78,11 +79,11 @@ _Last updated: 2026-11-22 (session 2)._
 * **Certificate exceptions:** a site whose certificate you accepted shows the normal secure icon in the address bar (no distinct "exception" indicator yet). Exceptions last for the session only (no permanent overrides).
 * **`<details>`:** toggles with the mouse; there is no keyboard activation yet (content has no focus model until forms/JS), and no `toggle` event (no JS).
 * **Forms:** controls (`<input>`, `<button>`, `<select>`, `<textarea>`) are only drawn. They can't be focused, typed into, opened or submitted, so search boxes like theoldnet's "Go" / "Search Archives" don't work. Interactive controls and form submission are milestone C.
-* **Cookies:** RFC 6265bis cookies with the Public Suffix List, SameSite (unset = Lax), Secure/HttpOnly, `__Secure-`/`__Host-` prefixes, eviction limits; private windows have their own jar, cleared when the last one closes. Not yet: persistence (C3: profile storage), `document.cookie` (E), partitioned/third-party cookie isolation, and cross-site link clicks are treated as same-site top-level navigations (the navigation's initiator isn't passed yet, so Strict cookies go along).
+* **Cookies:** RFC 6265bis cookies with the Public Suffix List, SameSite (unset = Lax), Secure/HttpOnly, `__Secure-`/`__Host-` prefixes, eviction limits; private windows have their own jar, cleared when the last one closes. Not yet: persistence (C3: profile storage), `document.cookie` (E), partitioned/third-party cookie isolation, and cross-site link clicks are treated as same-site top-level navigations (the navigation's initiator isn't passed yet, so Strict cookies go along). A build made offline (`BB_PSL_OFFLINE=1`) has no list until the browser's first successful download; until then `Domain` attributes naming a parent domain are ignored (host-only cookies) and each host is its own site.
 * **Network:** no cache yet (M8); no HTTP/2; `HTTP_PROXY` absolute-form only for plain http.
 * **Frames:** frame navigations are in session history (each history entry stores its frames' URLs; Back/Forward reload only the frames that differ), but frame scroll positions aren't restored; no frame resizing by dragging borders (`noresize` is the only behaviour); iframes are opaque (child canvas background is always painted); `<object data=…html>` isn't a nested document; keyboard focus doesn't move into frames (keys scroll the largest frame of a frameset).
 * **Find:** top-level document only (not inside frames); RTL runs highlight approximately; the counter is per tab but isn't refreshed when switching tabs with the bar open.
-* **GUI:** menus are drawn inside the window (can't extend past its edges); the About window is opened from the ≡ menu only: macOS's app menu "About" item still shows the system's standard panel (replacing it needs AppKit calls; possible now that `unsafe` is allowed, planned), and "About BannedBrowser" sits directly in the ≡ menu because menus have no submenus (no Help submenu) yet; no bookmarks; no session restore; private windows share the network client (no cookies exist yet, so nothing leaks); screenshots of overlapping windows in GUI tests can be stale.
+* **GUI:** menus are drawn inside the window (can't extend past its edges); the About window is opened from the ≡ menu only: macOS's app menu "About" item still shows the system's standard panel (replacing it needs AppKit calls; possible now that `unsafe` is allowed, planned), and "About BannedBrowser" sits directly in the ≡ menu because menus have no submenus (no Help submenu) yet; no bookmarks; no session restore; screenshots of overlapping windows in GUI tests can be stale.
 * **macOS cross-check:** `ring`'s build script needs the macOS SDK headers to compile its C/asm, which the Linux VM doesn't have; the macOS CI job covers it. Two attempts (clang + generic headers) failed; not retried further.
 * **Packages:** not code-signed or notarized (macOS Gatekeeper / Windows SmartScreen will warn); no Windows icon resource embedded in the `.exe` yet.
 * **Environment:** `web.archive.org` blocked by the dev sandbox's egress policy (archived-site checks run on GitHub runners); theoldnet.com serves "Hello World" to non-browser user agents (our UA is fine).
@@ -99,7 +100,7 @@ and CHANGELOG `[Unreleased]` updated, pushed to `main`.
 | **C** | M8 network + storage | Cookies, HTTP cache, profile storage (rusqlite), forms; HTTP/2 (HPACK, RFC 9113, ALPN). |
 | **D** | M10a JS core | Parser, bytecode, interpreter, GC, built-ins, RegExp, Promise/async, modules; test262 `language`/`built-ins`/`annexB` in CI. |
 | **E** | M10b Web APIs | DOM bindings, events + event loop, timers, fetch/XHR, storage, workers, `document.write`, Canvas 2D; `#script-on` cases; first whatismybrowser.com check. |
-| **E2** | JIT | `bb-js-jit` (second `unsafe` exception); every suite passes with and without it. |
+| **E2** | JIT | `bb-js-jit`; every suite passes with and without it. |
 | **F** | M3/M4/M7 CSS + layout | Every gap above, grid, transforms, sticky/fixed, `@font-face` + WOFF/WOFF2, full bidi, counters, `@layer`, nesting, color functions; WPT CSS subset; ≥150 reftests. |
 | **G** | M5 paint + GPU | SVG, CSS animations/transitions, GIF/APNG animation, filters; wgpu compositing/raster in `bb-gpu` (software renderer stays the reference); **full WebGPU and WebGL 1 + 2** for web content (needs E's JS bindings). |
 | **H** | HTTP/3 | Our QUIC (RFC 9000/9001/9002), QPACK, HTTP/3 framing; `Alt-Svc`. |
@@ -116,7 +117,7 @@ CI is green on all three OSes with every suite at 100 % and the GUI tests on eac
 session history. Remaining placement gaps (macOS app-menu About, no Help submenu) are listed under
 "Known gaps".
 
-**Now:** milestone C (M8 network + storage: cookies, HTTP cache, profile storage, forms, HTTP/2).
+**Now:** milestone C (M8 network + storage). Done: C1 cookies with the Public Suffix List (kept current: downloaded at build time, at first start and then daily). Next: C2 interactive forms, then C3 profile storage, C4 HTTP cache, C5 HTTP/2.
 
 ## v0.2 scope (agreed with the maintainer)
 
@@ -192,9 +193,8 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   decided when milestone G starts.
 
 **JavaScript and media decisions (maintainer, 2026-11-21, session 2):**
-* **JIT allowed.** `bb-js` gets a JIT in a separate crate, `crates/bb-js-jit`, the second
-  `unsafe` exception (AGENTS.md hard rule 3). The bytecode interpreter stays `unsafe`-free and
-  is the reference. test262 and every other suite must pass both with and without the JIT.
+* **JIT allowed.** `bb-js` gets a JIT in a separate crate, `crates/bb-js-jit`. The bytecode
+  interpreter is the reference. test262 and every other suite must pass both with and without the JIT.
 * **test262 scope:** `test/language`, `test/built-ins` and `test/annexB` must pass 100 %.
   `test/intl402` (the Intl API) and `test/staging` (proposals still in draft) are **out of
   scope for v0.2** and not run. This is a stated scope limit, not an exclusion inside a suite.
@@ -204,14 +204,14 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
 
 **Dependency decisions for v0.2 (decided by the maintainer 2026-11-21; details in
 DEPENDENCIES.md):** GPU = `wgpu` (may also back WebGPU for content); video = OS
-hardware decoders in `bb-media-os` (an `unsafe` exception, enforced by
-`check-deps.sh`) plus our own VP9 fallback; audio = `cpal` for output, all codecs
+hardware decoders in `bb-media-os` plus our own VP9 fallback; audio = `cpal` for output, all codecs
 ours. The original options, for the record:
 1. *GPU backend.* `wgpu` implements the WebGPU standard, so it falls under the
    "no web-standard crates" rule; raw API bindings (`ash`/`metal`/`windows`)
    need `unsafe`, which the workspace forbids. Options: a narrowly scoped,
    documented `unsafe` exception confined to a `bb-gpu` platform crate, or an
-   explicit allowance for `wgpu` as platform glue.
+   explicit allowance for `wgpu` as platform glue. (Superseded 2026-11-22: `unsafe` is
+   allowed everywhere.)
 2. *Codecs and audio output.* Video codecs are not web standards, but writing
    H.264/VP9/AV1 decoders from scratch is a multi-month project each.
    Options: our own decoders (start with VP9 or AV1 for YouTube), OS decoders

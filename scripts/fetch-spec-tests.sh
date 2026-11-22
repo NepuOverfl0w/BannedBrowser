@@ -6,6 +6,8 @@
 #     it deliberately and fix what the new tests reveal.
 #   - WPT url/resources/urltestdata.json
 #   - WHATWG entities.json (used to regenerate the named character reference table)
+#   - The Public Suffix List's own test vectors (tests/test_psl.txt, HEAD). The list itself
+#     is downloaded by bb-net's build script, so both are current.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TP="$ROOT/third_party"
@@ -34,4 +36,7 @@ mkdir -p wpt-url
 [ -s wpt-url/urltestdata.json ] || curl -fsSL -o wpt-url/urltestdata.json \
   https://raw.githubusercontent.com/web-platform-tests/wpt/master/url/resources/urltestdata.json
 [ -s entities.json ] || curl -fsSL -o entities.json https://html.spec.whatwg.org/entities.json
+mkdir -p psl
+[ -s psl/test_psl.txt ] || curl -fsSL -o psl/test_psl.txt \
+  https://raw.githubusercontent.com/publicsuffix/list/main/tests/test_psl.txt
 echo "spec suites ready in $TP"
