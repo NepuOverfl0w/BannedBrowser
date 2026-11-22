@@ -29,7 +29,12 @@ const HOME: &str = "about:newtab";
 
 #[derive(Debug)]
 pub enum UserEvent {
-    Tab { tab: u64, ev: TabEvent },
+    Tab {
+        tab: u64,
+        ev: Box<TabEvent>,
+    },
+    /// The About window's update check finished.
+    Update(crate::about::UpdateStatus),
 }
 
 struct Tab {
@@ -134,6 +139,9 @@ pub struct App {
     context: Option<softbuffer::Context<Rc<Window>>>,
     /// `--dark` / `--light` override of the OS theme.
     force_dark: Option<bool>,
+    /// The About window, while open.
+    about: Option<crate::about::AboutWindow>,
+    about_modifiers: ModifiersState,
 }
 
 /// Cmd on macOS, Ctrl elsewhere.
@@ -166,12 +174,127 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         closed: Vec::new(),
         context: None,
         force_dark: args.dark,
+        about: None,
+        about_modifiers: ModifiersState::empty(),
     };
     event_loop.run_app(&mut app)?;
     Ok(())
 }
 
 impl App {
+    /// Open the About window (or bring it to the front), and start its update check.
+    fn open_about(&mut self, el: &ActiveEventLoop) {
+        if let Some(a) = &self.about {
+            a.window.focus_window();
+            return;
+        }
+        let attrs = Window::default_attributes()
+            .with_title("About BannedBrowser")
+            .with_inner_size(LogicalSize::new(crate::about::SIZE.0, crate::about::SIZE.1))
+            .with_resizable(false);
+        let window = match el.create_window(attrs) {
+            Ok(w) => Rc::new(w),
+            Err(e) => {
+                log::error!("cannot create the About window: {e}");
+                return;
+            }
+        };
+        if self.context.is_none() {
+            self.context = softbuffer::Context::new(window.clone()).ok();
+        }
+        let Some(context) = self.context.as_ref() else { return };
+        let dark = self.force_dark.unwrap_or(matches!(window.theme(), Some(winit::window::Theme::Dark)));
+        let Some(about) = crate::about::AboutWindow::new(window, context, dark) else { return };
+        about.window.request_redraw();
+        self.about = Some(about);
+        // The check runs off the UI thread and reports back as a user event.
+        let (client, proxy) = (self.client.clone(), self.proxy.clone());
+        let _ = std::thread::Builder::new().name("update-check".into()).spawn(move || {
+            let status = crate::about::check_for_updates(&client);
+            let _ = proxy.send_event(UserEvent::Update(status));
+        });
+        self.write_state();
+    }
+
+    /// Events for the About window.
+    fn about_event(&mut self, el: &ActiveEventLoop, event: WindowEvent) {
+        let Some(a) = self.about.as_mut() else { return };
+        let mut open_link: Option<usize> = None;
+        let mut close = false;
+        match event {
+            WindowEvent::CloseRequested => close = true,
+            WindowEvent::RedrawRequested => a.redraw(),
+            WindowEvent::Focused(_) => {}
+            WindowEvent::ThemeChanged(t) => {
+                let dark = self.force_dark.unwrap_or(t == winit::window::Theme::Dark);
+                a.theme = if dark { Theme::dark() } else { Theme::light() };
+                a.window.request_redraw();
+            }
+            WindowEvent::ModifiersChanged(m) => self.about_modifiers = m.state(),
+            WindowEvent::CursorMoved { position, .. } => {
+                let k = a.window.scale_factor() as f32;
+                let over = a.set_hover(position.x as f32 / k, position.y as f32 / k);
+                a.window.set_cursor(if over { CursorIcon::Pointer } else { CursorIcon::Default });
+            }
+            WindowEvent::CursorLeft { .. } => {
+                a.set_hover(-1.0, -1.0);
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                // The hovered link (set_hover tracks the pointer).
+                open_link = a.hovered();
+            }
+            WindowEvent::KeyboardInput { event, is_synthetic: false, .. }
+                if event.state == ElementState::Pressed =>
+            {
+                let m = self.about_modifiers;
+                match &event.logical_key {
+                    Key::Named(NamedKey::Escape) => close = true,
+                    Key::Named(NamedKey::Tab) => a.move_focus(m.shift_key()),
+                    Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => open_link = a.focus,
+                    Key::Character(c) if primary(m) && c.eq_ignore_ascii_case("w") => close = true,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        if let Some(i) = open_link {
+            if let Some(link) = a.links().get(i).cloned() {
+                self.open_link_from_about(el, &link.url);
+            }
+        }
+        if close {
+            self.about = None;
+        }
+        self.write_state();
+    }
+
+    /// Open a link from the About window in a new tab of a browser window (a new window if
+    /// there is none).
+    fn open_link_from_about(&mut self, el: &ActiveEventLoop, url: &str) {
+        let Ok(u) = Url::parse(url) else { return };
+        let target = self
+            .windows
+            .iter()
+            .find(|(_, w)| w.window.has_focus())
+            .map(|(id, _)| *id)
+            .or_else(|| self.windows.iter().find(|(_, w)| !w.private).map(|(id, _)| *id));
+        match target.and_then(|id| self.windows.remove(&id).map(|bw| (id, bw))) {
+            Some((id, mut bw)) => {
+                let t = self.new_tab(&mut bw, Some(u));
+                bw.tabs.push(t);
+                bw.active = bw.tabs.len() - 1;
+                bw.sync_url_field();
+                bw.dirty = true;
+                bw.window.request_redraw();
+                bw.window.focus_window();
+                self.windows.insert(id, bw);
+            }
+            None => {
+                self.open_window(el, vec![u], false);
+            }
+        }
+    }
+
     fn open_window(&mut self, el: &ActiveEventLoop, urls: Vec<Url>, private: bool) -> Option<WindowId> {
         let title = if private { "BannedBrowser Private Browsing" } else { "BannedBrowser" };
         let attrs = Window::default_attributes()
@@ -246,7 +369,7 @@ impl App {
             id,
             self.client.clone(),
             Box::new(move |tab, ev| {
-                let _ = proxy.send_event(UserEvent::Tab { tab, ev });
+                let _ = proxy.send_event(UserEvent::Tab { tab, ev: Box::new(ev) });
             }),
         );
         let mut t = Tab {
@@ -350,6 +473,18 @@ impl App {
             v["maximized"] = serde_json::json!(w.window.is_maximized());
             v["has_focus"] = serde_json::json!(w.window.has_focus());
         }
+        v["about"] = match &self.about {
+            Some(a) => {
+                let links: Vec<&str> = a.links().iter().map(|l| l.id).collect();
+                serde_json::json!({
+                    "update": a.update.code(),
+                    "focus": a.focus.and_then(|i| links.get(i).copied()),
+                    "links": links,
+                    "has_focus": a.window.has_focus(),
+                })
+            }
+            None => serde_json::Value::Null,
+        };
         let tmp = path.with_extension("tmp");
         if std::fs::write(&tmp, v.to_string()).is_ok() {
             let _ = std::fs::rename(&tmp, path);
@@ -1065,7 +1200,16 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn user_event(&mut self, _el: &ActiveEventLoop, event: UserEvent) {
-        let UserEvent::Tab { tab, ev } = event;
+        let (tab, ev) = match event {
+            UserEvent::Tab { tab, ev } => (tab, *ev),
+            UserEvent::Update(status) => {
+                if let Some(a) = self.about.as_mut() {
+                    a.set_update(status);
+                }
+                self.write_state();
+                return;
+            }
+        };
         let mut state_changed = false;
         for bw in self.windows.values_mut() {
             let Some(ti) = bw.tabs.iter().position(|t| t.id == tab) else { continue };
@@ -1199,6 +1343,10 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.about.as_ref().is_some_and(|a| a.window.id() == id) {
+            self.about_event(el, event);
+            return;
+        }
         let Some(mut bw) = self.windows.remove(&id) else { return };
         let mut keep = true;
         let mut state_changed = false;
@@ -1671,8 +1819,7 @@ impl App {
                 self.open_window(el, home().into_iter().collect(), true);
             }
             Action::FindInPage => bw.open_find(),
-            // TODO(v0.2): a Firefox-style About window (see PROGRESS.md); the page for now.
-            Action::About => self.open_tab(bw, Url::parse("about:bannedbrowser").ok()),
+            Action::About => self.open_about(el),
             Action::Quit => el.exit(),
             Action::Back => bw.go_history(-1),
             Action::Forward => bw.go_history(1),

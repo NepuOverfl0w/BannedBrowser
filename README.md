@@ -119,6 +119,8 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Light / dark theme following the OS (`--dark` / `--light` override) | ✅ |
 | Find in page (Ctrl+F) with highlights and match counter | ✅ |
 | ≡ app menu; context menus for pages, links, images, tabs and the URL bar | ✅ |
+| About window (version, release name, update check, credits, license, source) | ✅ |
+| Certificate error page (Go Back, Advanced…, Accept the Risk and Continue) | ✅ |
 | Sidebars | 📋 |
 | Session restore, pinned tabs, drag to reorder | 📋 |
 

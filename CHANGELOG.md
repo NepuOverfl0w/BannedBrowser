@@ -37,6 +37,11 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   error code and **Accept the Risk and Continue**. Accepting trusts only that exact certificate
   for that host, for the session, and only works from the error page itself (a per-session
   secret token; web pages can't link past the warning).
+- **About window** (≡ menu → About BannedBrowser): logo and wordmark, version and architecture,
+  release name, an update check against the GitHub Releases API ("up to date" only after a
+  successful answer; development builds and failures say so, with a link to the releases page),
+  links to what's new, credits, license and source code, and the fan-project note. Light and
+  dark, HiDPI, keyboard (Tab, Enter, Esc). Nothing is installed automatically.
 - **`<details>` and `<summary>`:** closed details show only their summary (or a default
   "Details"), the summary comes first, and clicking it toggles `open`.
 
