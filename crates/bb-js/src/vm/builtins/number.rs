@@ -599,24 +599,6 @@ fn install_math(vm: &mut Vm) {
     });
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fixed_and_radix() {
-        assert_eq!(to_fixed(0.5, 0), "1");
-        assert_eq!(to_fixed(2.5, 0), "3");
-        assert_eq!(to_fixed(1.005, 2), "1.00");
-        assert_eq!(to_fixed(123.456, 1), "123.5");
-        assert_eq!(to_fixed(0.000001, 2), "0.00");
-        assert_eq!(to_fixed(999.99, 1), "1000.0");
-        assert_eq!(to_radix(255.0, 16), "ff");
-        assert_eq!(to_radix(-255.0, 2), "-11111111");
-        assert_eq!(to_radix(0.5, 2), "0.1");
-    }
-}
-
 fn this_bigint(vm: &mut Vm, v: &Value) -> JsResult<std::rc::Rc<BigInt>> {
     match v {
         Value::BigInt(b) => Ok(b.clone()),
@@ -680,4 +662,22 @@ fn install_bigint(vm: &mut Vm) {
     });
     method(vm, bp, "valueOf", 0, |vm, c| Ok(Value::BigInt(this_bigint(vm, &c.this)?)));
     realm::to_string_tag(vm, bp, "BigInt");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_and_radix() {
+        assert_eq!(to_fixed(0.5, 0), "1");
+        assert_eq!(to_fixed(2.5, 0), "3");
+        assert_eq!(to_fixed(1.005, 2), "1.00");
+        assert_eq!(to_fixed(123.456, 1), "123.5");
+        assert_eq!(to_fixed(0.000001, 2), "0.00");
+        assert_eq!(to_fixed(999.99, 1), "1000.0");
+        assert_eq!(to_radix(255.0, 16), "ff");
+        assert_eq!(to_radix(-255.0, 2), "-11111111");
+        assert_eq!(to_radix(0.5, 2), "0.1");
+    }
 }

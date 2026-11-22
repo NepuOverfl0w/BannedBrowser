@@ -171,6 +171,18 @@ fn divrem_mag(a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
     (q, r)
 }
 
+impl Ord for BigInt {
+    fn cmp(&self, o: &BigInt) -> Ordering {
+        self.compare(o)
+    }
+}
+
+impl PartialOrd for BigInt {
+    fn partial_cmp(&self, o: &BigInt) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
 impl BigInt {
     pub fn zero() -> BigInt {
         BigInt::default()
@@ -340,7 +352,7 @@ impl BigInt {
         let t = self.neg().sub(&one).shr_mag(n);
         t.neg().sub(&one)
     }
-    pub fn cmp(&self, o: &BigInt) -> Ordering {
+    fn compare(&self, o: &BigInt) -> Ordering {
         match (self.neg, o.neg) {
             (false, true) => Ordering::Greater,
             (true, false) => Ordering::Less,

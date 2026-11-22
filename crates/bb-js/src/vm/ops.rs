@@ -374,10 +374,10 @@ impl Vm {
                     return Ok(Some(a.cmp(b) == std::cmp::Ordering::Less))
                 }
                 (Value::BigInt(a), Value::String(s)) => {
-                    return Ok(BigInt::parse_js(s).map(|b| a.cmp(&b) == std::cmp::Ordering::Less))
+                    return Ok(BigInt::parse_js(s).map(|b| (**a).cmp(&b) == std::cmp::Ordering::Less))
                 }
                 (Value::String(s), Value::BigInt(b)) => {
-                    return Ok(BigInt::parse_js(s).map(|a| a.cmp(b) == std::cmp::Ordering::Less))
+                    return Ok(BigInt::parse_js(s).map(|a| a.cmp(&**b) == std::cmp::Ordering::Less))
                 }
                 _ => {}
             }
