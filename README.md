@@ -21,9 +21,11 @@
 ---
 
 > **Status: [v0.1.0 "Hello, Old Web"](https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0) released.**
-> BannedBrowser renders example.com, theoldnet.com and archived 1990s sites convincingly, but
-> it has no JavaScript, bookmarks or sandboxing yet (that's v0.2, in progress on `main`). See
-> [PROGRESS.md](PROGRESS.md) for the honest details.
+> BannedBrowser renders example.com, theoldnet.com and archived 1990s sites convincingly.
+> Since then `main` (on its way to v0.2) has gained working forms, a persistent profile, an HTTP
+> cache, HTTP/2 and the first part of its own JavaScript engine (the parser). It doesn't run
+> JavaScript yet, and has no bookmarks or sandboxing. See [PROGRESS.md](PROGRESS.md) for the
+> honest details.
 
 ## 📑 Contents
 
@@ -134,7 +136,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Bookmarks (toolbar, menu, Library, HTML import/export) | 📋 M9 |
 | History with frecency, sidebar, Library | 📋 M9 |
 | Downloads manager | 📋 M9 |
-| Private browsing (separate in-memory state) | 🚧 windows exist; no persistent state is written yet anyway |
+| Private browsing (separate in-memory state) | ✅ own cookie jar and memory-only cache; nothing is written to the profile |
 | Search engines + keywords | 🚧 non-URL input searches DuckDuckGo |
 | Reader View | 📋 M9 |
 | View source, DevTools, Browser Console | 📋 M11 |
@@ -164,7 +166,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Bidi text | 🚧 basic reordering |
 | Frames: `<frameset>`, `<iframe>` (src/srcdoc), link targets, per-frame scrolling, frame navigations in history | ✅ |
 | SVG | 📋 |
-| JavaScript | 📋 M10 (own engine) |
+| JavaScript | 🚧 own engine: parser done (100 % of test262's parse phase); interpreter in progress |
 
 </details>
 
@@ -172,7 +174,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 
 | Site | Status |
 |---|---|
-| example.com | ✅ (static HTML; its JS-added translations need M10) |
+| example.com | ✅ (static HTML; its JS-added translations need the JS engine) |
 | theoldnet.com (start page + lite) | ✅ |
 | myip.wtf, myip.wtf/headers | ✅ |
 | Archived 1996–99 sites via theoldnet: GeoCities (home + a fan page), Netscape, WinZip, Microsoft IE | ✅ live + offline snapshots |
@@ -184,7 +186,9 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | html5lib tokenizer | **7046 / 7046 (100 %)** |
 | WPT tree construction | **1959 / 1959 (100 %)** |
 | Reftests | **50 / 50** |
-| test262 | 📋 (M10) |
+| test262 parse phase (`language`, `built-ins`, `annexB`) | **48803 / 48803 (100 %)** |
+| test262 execution | 📋 (needs the interpreter) |
+| Public Suffix List tests | **78 / 78 (100 %)** |
 
 ## 🏗 Architecture
 
@@ -218,7 +222,7 @@ flowchart TB
 |---|---|
 | `bb-str` | WTF-8 strings (web strings that may hold lone surrogates) |
 | `bb-url` | WHATWG URL parser & serializer |
-| `bb-net` | HTTP/1.1, TLS, proxies, content codings, `data:`/`file:`/`about:`, encoding sniffing |
+| `bb-net` | HTTP/1.1, HTTP/2 (own HPACK), TLS, proxies, content codings, cookies, Public Suffix List, HTTP cache, `data:`/`file:`/`about:`, encoding sniffing |
 | `bb-dom` | Arena DOM with dirty flags |
 | `bb-html` | HTML tokenizer & tree builder |
 | `bb-css` | CSS syntax, selectors, media queries, values |
@@ -227,9 +231,10 @@ flowchart TB
 | `bb-image` | Image decoding |
 | `bb-paint` | Display list & software rasterizer |
 | `bb-layout` | Box tree, layout, display-list generation, hit testing |
-| `bb-engine` | Per-page pipeline |
+| `bb-engine` | Per-page pipeline, forms, focus |
+| `bb-profile` | Profile storage (SQLite): cookies, preferences |
 | `bb-ui` | Chrome widget toolkit & icons |
-| `bb-js` | JavaScript engine (M10) |
+| `bb-js` | JavaScript engine: lexer, parser, early errors, RegExp syntax (interpreter in progress) |
 | `bannedbrowser` | The app: CLI, headless mode, windowed shell |
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -237,7 +242,9 @@ More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## 🚀 Getting started
 
 **Prebuilt binaries:** see [Releases](https://github.com/NepuOverfl0w/BannedBrowser/releases)
-(Windows `.zip`, macOS `.app` zip, Linux tarball) once v0.1 is tagged.
+(Windows `.zip`, macOS `.app` zip, Linux tarball). The latest is
+[v0.1.0](https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0); it predates forms,
+the profile, the HTTP cache and HTTP/2, which are on `main`.
 
 **Build from source** (stable Rust 1.85+):
 
@@ -293,7 +300,7 @@ bannedbrowser [OPTIONS] [URL]...
   --extra-ca <FILE.pem>      Trust an extra CA bundle (also honours SSL_CERT_FILE)
   --private-window           Open a private window
   --new-tab <URL>            Open URL in a new tab
-  --profile <DIR>            Profile directory (used from M8)
+  --profile <DIR>            Profile directory (also BB_PROFILE)
 ```
 
 HTTPS/HTTP proxies are taken from `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY`.
@@ -306,19 +313,19 @@ HTTPS/HTTP proxies are taken from `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `
 | Next / previous tab | Ctrl+Tab / Ctrl+Shift+Tab | Ctrl+Tab / Ctrl+Shift+Tab |
 | Go to tab 1…8 / last | Ctrl+1…8 / Ctrl+9 (Alt+1…9) | Cmd+1…8 / Cmd+9 |
 | Back / forward | Alt+← / Alt+→ | Cmd+[ / Cmd+] |
-| Reload | Ctrl+R, F5 | Cmd+R |
+| Reload / reload bypassing the cache | Ctrl+R, F5 / Ctrl+Shift+R | Cmd+R / Cmd+Shift+R |
 | Home | Alt+Home | Alt+Home |
 | Scroll | Space, Shift+Space, PageUp/Down, arrows, Home/End | same |
 | Quit | Ctrl+Q | Cmd+Q |
 
 **`about:` pages:** `about:newtab`, `about:home`, `about:blank`, `about:bannedbrowser`, `about:about`.
 
-**Profile location** (used from M8): `%APPDATA%\BannedBrowser`, `~/Library/Application Support/BannedBrowser`, `~/.config/bannedbrowser`.
+**Profile location** (cookies, window size; `--profile` or `BB_PROFILE` overrides it): `%APPDATA%\BannedBrowser\profile`, `~/Library/Application Support/BannedBrowser/profile`, `~/.local/share/BannedBrowser/profile` (`$XDG_DATA_HOME`). The HTTP cache and the downloaded Public Suffix List live under the OS cache directory (`BannedBrowser/http-cache`, `BannedBrowser/psl`).
 
 ## 🧾 Testing
 
 ```bash
-scripts/fetch-spec-tests.sh            # html5lib-tests, WPT urltestdata, entities.json → third_party/
+scripts/fetch-spec-tests.sh            # html5lib-tests, WPT, test262, PSL tests, entities.json → third_party/
 cargo test --workspace                 # unit, spec, integration, robustness, reftests, snapshots
 scripts/run-reftests.sh                # reftests only (diff PNGs in tests/reftests/out/)
 scripts/gui-smoke.sh                   # GUI tests with real OS input (Linux, Windows, macOS)
@@ -342,16 +349,16 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 - [ ] M7 Layout II (grid, transforms, `@font-face`, …)
 - [x] M8 Forms, cookies, profile storage, HTTP cache
 - [ ] M9 Bookmarks, history, downloads, settings, Reader View, passwords
-- [ ] M10 JavaScript engine
+- [ ] M10 JavaScript engine (started: parser done, interpreter in progress)
 - [ ] M11 DevTools, performance, accessibility, packaging
 
 ## ❓ FAQ
 
 **Why not use Servo / a WebView?** Because then it would be someone else's browser. The whole point is to build the platform ourselves.
 
-**Is it safe for daily browsing?** Not yet. There is no sandboxing or process isolation, and no JavaScript (which is safer but breaks many sites). Treat it as an experiment.
+**Is it safe for daily browsing?** Not yet. There is no sandboxing or process isolation, and no JavaScript yet (safer, but it breaks many sites). Treat it as an experiment.
 
-**Does it run JavaScript?** Not yet — milestone M10 brings a from-scratch engine (`bb-js`). Until then `<script>` is ignored and `<noscript>` content is shown.
+**Does it run JavaScript?** Not yet. The from-scratch engine (`bb-js`) parses all of test262 correctly, and its interpreter is being written now. Until it runs, `<script>` is ignored and `<noscript>` content is shown.
 
 **Why Rust?** Memory safety for parsers that eat hostile input all day, great tooling, and fearless threading for the per-tab pipelines. Every engine crate is `#![forbid(unsafe_code)]`.
 
