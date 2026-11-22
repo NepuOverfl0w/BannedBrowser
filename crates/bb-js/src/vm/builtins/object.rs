@@ -478,6 +478,16 @@ fn lookup_accessor(vm: &mut Vm, c: NativeCall, getter: bool) -> JsResult<Value> 
 
 /// CreateDynamicFunction (§20.2.1.1.1) for normal functions.
 fn function_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+    // The kind is the constructor's slot: 0 Function, 1 GeneratorFunction,
+    // 2 AsyncFunction, 3 AsyncGeneratorFunction.
+    let kind = match &vm.heap.obj(c.callee).kind {
+        Kind::Native(n) => match n.slots.first() {
+            Some(Value::Number(k)) => *k as u8,
+            _ => 0,
+        },
+        _ => 0,
+    };
+    let prefix = ["function", "function*", "async function", "async function*"][kind as usize];
     let n = c.args.len();
     let mut params = Vec::new();
     for a in c.args.iter().take(n.saturating_sub(1)) {
@@ -485,10 +495,10 @@ fn function_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     }
     let body = if n > 0 { to_rust(&vm.to_string(&c.args[n - 1])?) } else { String::new() };
     let p = params.join(",");
-    let source = format!("function anonymous({p}\n) {{\n{body}\n}}");
+    let source = format!("{prefix} anonymous({p}\n) {{\n{body}\n}}");
     // Parameters and body must each parse on their own (no `){` injection).
-    let check_params = format!("(function ({p}\n) {{}})");
-    let check_body = format!("(function () {{\n{body}\n}})");
+    let check_params = format!("({prefix} ({p}\n) {{}})");
+    let check_body = format!("({prefix} () {{\n{body}\n}})");
     let ok_alone = |s: &str| {
         matches!(crate::parse_script(s), Ok(prog) if prog.body.len() == 1
             && matches!(&prog.body[0], crate::ast::Stmt::Expr(crate::ast::Expr::Paren(e)) if matches!(**e, crate::ast::Expr::Function(_))))
@@ -519,7 +529,11 @@ fn function_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let fo = vm.make_function(tmpl, genv, None, true);
     if let Some(nt) = c.new_target {
         if nt != c.callee {
-            let p = vm.prototype_from_ctor(nt, |r| r.function_proto)?;
+            let p = if kind == 1 {
+                vm.prototype_from_ctor(nt, |r| r.generator_function_proto)?
+            } else {
+                vm.prototype_from_ctor(nt, |r| r.function_proto)?
+            };
             vm.heap.obj_mut(fo).proto = Some(p);
         }
     }
@@ -628,4 +642,20 @@ fn install_function(vm: &mut Vm) {
         );
     }
     let _ = (value, ErrorKind::Type);
+}
+
+/// %GeneratorFunction% (§27.3.1): not a global; reached through generator functions.
+pub(super) fn install_dynamic_kinds(vm: &mut Vm) {
+    let gfp = vm.realm.generator_function_proto;
+    let f = realm::native_with(vm, "GeneratorFunction", 1, function_ctor, true, vec![Value::Number(1.0)]);
+    let fc = vm.realm.function_ctor;
+    vm.heap.obj_mut(f).proto = Some(fc);
+    vm.heap
+        .obj_mut(f)
+        .props
+        .insert(PropKey::named("prototype"), Prop::data(Value::Object(gfp), false, false, false));
+    vm.heap
+        .obj_mut(gfp)
+        .props
+        .insert(PropKey::named("constructor"), Prop::data(Value::Object(f), false, false, true));
 }

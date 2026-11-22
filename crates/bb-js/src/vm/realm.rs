@@ -82,6 +82,8 @@ realm_objects!(
     map_proto,
     set_proto,
     map_iterator_proto,
+    generator_function_proto,
+    generator_proto,
     set_iterator_proto,
     eval,
     throw_type_error,

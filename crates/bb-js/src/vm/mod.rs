@@ -17,6 +17,7 @@ mod class;
 pub mod code;
 pub mod compiler;
 mod env;
+mod generator;
 pub mod heap;
 pub mod object;
 pub mod ops;
@@ -57,6 +58,18 @@ pub struct Frame {
     fenv: Option<EnvRef>,
     /// [[Construct]]: the allocated `this` (base constructors) or `None` (derived).
     construct: Option<Option<Value>>,
+    /// The generator (or async function state) this frame belongs to.
+    pub generator: Option<ObjRef>,
+    /// How the frame was resumed after its last `yield`.
+    pub resume: Resume,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Resume {
+    #[default]
+    Next,
+    Throw,
+    Return,
 }
 
 impl Frame {
@@ -78,6 +91,7 @@ impl Frame {
         es.extend(self.fenv);
         es.extend(self.handlers.iter().map(|h| h.env));
         os.extend(self.callee);
+        os.extend(self.generator);
     }
 }
 
@@ -105,6 +119,8 @@ pub struct Vm {
     /// Symbol.for registry (§20.4.2.2).
     pub registry: HashMap<Vec<u16>, value::Sym>,
     templates: HashMap<(usize, u32), ObjRef>,
+    /// The last suspension was `yield*` passing an inner result object through as-is.
+    pub(crate) yield_raw: bool,
     /// Values hosts keep alive across calls.
     pub roots: Vec<Value>,
     /// Text written by `print` (test harnesses).
@@ -133,6 +149,7 @@ impl Vm {
             registry: HashMap::new(),
             templates: HashMap::new(),
             roots: Vec::new(),
+            yield_raw: false,
             output: Vec::new(),
             fuel: None,
             terminated: false,
@@ -186,6 +203,8 @@ impl Vm {
             completion: Value::Undefined,
             fenv: None,
             construct: None,
+            generator: None,
+            resume: Resume::Next,
         }
     }
 
@@ -448,7 +467,9 @@ impl Vm {
                             f.stack.push(e);
                             break;
                         }
-                        self.frames.pop();
+                        if let Some(g) = self.frames.pop().and_then(|f| f.generator) {
+                            self.generator_completed(g);
+                        }
                         if self.frames.len() <= base {
                             return Err(e);
                         }
@@ -500,6 +521,9 @@ impl Vm {
     /// Return from the top frame; `Some` when it was this run's base frame.
     fn do_return(&mut self, v: Value, base: usize) -> JsResult<Option<Value>> {
         let f = self.frames.pop().expect("frame");
+        if let Some(g) = f.generator {
+            self.generator_completed(g);
+        }
         let v = match f.construct {
             None => v,
             Some(this) => {
@@ -1275,6 +1299,18 @@ impl Vm {
                 }
                 return self.syntax_error(&s);
             }
+            Op::GeneratorStart => return self.generator_start(base),
+            Op::Yield => {
+                let v = self.pop();
+                self.yield_raw = false;
+                return self.suspend(v, base, false);
+            }
+            Op::Resume(t) => match std::mem::take(&mut self.top().resume) {
+                Resume::Next => {}
+                Resume::Throw => return Err(self.pop()),
+                Resume::Return => self.jump(t),
+            },
+            Op::YieldStar(done, ret) => return self.yield_star(done, ret, base),
             Op::NewPrivateName(i) => {
                 let d = to_rust(&self.top().code.strings[i as usize]);
                 self.push(Value::Symbol(value::Sym::private(&d)));
@@ -1475,7 +1511,9 @@ impl Vm {
             (None, Some(g)) => js_str(g),
             _ => js_str(""),
         };
-        let proto = self.realm.function_proto;
+        let proto =
+            if f.is_generator { self.realm.generator_function_proto } else { self.realm.function_proto };
+        let is_gen = f.is_generator && !f.is_async;
         let closure = Closure {
             tmpl,
             env,
@@ -1497,6 +1535,14 @@ impl Vm {
         if constructor {
             let p = self.new_object();
             self.heap.obj_mut(p).props.insert(PropKey::named("constructor"), Prop::method(Value::Object(fo)));
+            self.heap
+                .obj_mut(fo)
+                .props
+                .insert(PropKey::named("prototype"), Prop::data(Value::Object(p), true, false, false));
+        } else if is_gen {
+            // Generator functions get a prototype for their generators (§15.5.3), no constructor.
+            let gp = self.realm.generator_proto;
+            let p = self.new_object_with_proto(Some(gp));
             self.heap
                 .obj_mut(fo)
                 .props

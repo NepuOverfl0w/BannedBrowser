@@ -235,8 +235,8 @@ impl<'a> Compiler<'a> {
         let f = &t.ast;
         let mut c = Compiler::new(t.source.clone(), f.strict, false);
         let is_arrow = f.kind == FuncKind::Arrow;
-        if f.is_generator || f.is_async {
-            c.unsupported(if f.is_async { "async functions" } else { "generators" });
+        if f.is_async {
+            c.unsupported("async functions");
             return c.code;
         }
         if f.kind == FuncKind::ClassConstructor {
@@ -379,6 +379,9 @@ impl<'a> Compiler<'a> {
             let ni = c.name(&n);
             c.emit(Op::SetVarEnv(ni));
         }
+        if f.is_generator {
+            c.emit(Op::GeneratorStart);
+        }
         for s in &f.body {
             c.stmt(s);
         }
@@ -492,14 +495,7 @@ impl<'a> Compiler<'a> {
                         self.emit(Op::Undef);
                     }
                 }
-                let needs_cleanup =
-                    self.ctl.iter().any(|c| matches!(c, Ctl::Finally(_) | Ctl::Iter | Ctl::Pop));
-                if needs_cleanup {
-                    self.emit(Op::SetRet);
-                    self.cleanup_to(0);
-                    self.emit(Op::GetRet);
-                }
-                self.emit(Op::Ret);
+                self.return_top();
             }
             Stmt::Break(label) => self.jump_out(label.as_deref(), false),
             Stmt::Continue(label) => self.jump_out(label.as_deref(), true),
@@ -554,6 +550,45 @@ impl<'a> Compiler<'a> {
             | Stmt::ExportDecl(_)
             | Stmt::ExportDefault(_)
             | Stmt::ExportDefaultExpr(_) => self.unsupported("modules"),
+        }
+    }
+
+    /// Return the value on top of the stack, running the `finally` blocks and iterator
+    /// closes between here and the function body.
+    fn return_top(&mut self) {
+        let needs_cleanup = self.ctl.iter().any(|c| matches!(c, Ctl::Finally(_) | Ctl::Iter | Ctl::Pop));
+        if needs_cleanup {
+            self.emit(Op::SetRet);
+            self.cleanup_to(0);
+            self.emit(Op::GetRet);
+        }
+        self.emit(Op::Ret);
+    }
+
+    /// `yield v` / `yield* v` (§15.5.5).
+    fn yield_expr(&mut self, arg: Option<&'a Expr>, delegate: bool) {
+        match arg {
+            Some(a) => self.expr(a),
+            None => {
+                self.emit(Op::Undef);
+            }
+        }
+        if delegate {
+            self.emit(Op::GetIter);
+            self.emit(Op::Undef);
+            let ys = self.emit(Op::YieldStar(0, 0));
+            let ret = self.here();
+            self.return_top();
+            let done = self.here();
+            self.code.ops[ys] = Op::YieldStar(done, ret);
+        } else {
+            self.emit(Op::Yield);
+            let r = self.emit(Op::Resume(0));
+            let cont = self.emit(Op::Jump(0));
+            let ret = self.here();
+            self.return_top();
+            self.patch(cont);
+            self.code.ops[r] = Op::Resume(ret);
         }
     }
 
@@ -1517,7 +1552,7 @@ impl<'a> Compiler<'a> {
                 }
             }
             Expr::Spread(x) => self.expr(x),
-            Expr::Yield { .. } => self.unsupported("yield"),
+            Expr::Yield { arg, delegate } => self.yield_expr(arg.as_deref(), *delegate),
             Expr::Await(_) => self.unsupported("await"),
             Expr::NewTarget => {
                 self.emit(Op::NewTarget);

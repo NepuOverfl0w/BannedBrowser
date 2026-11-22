@@ -27,6 +27,8 @@ pub(super) fn install(vm: &mut Vm) {
     install_boolean(vm);
     install_symbol(vm);
     install_iterators(vm);
+    super::generator::install(vm);
+    object::install_dynamic_kinds(vm);
     install_reflect(vm);
     install_regexp(vm);
     install_global(vm);

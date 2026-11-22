@@ -5,7 +5,7 @@
 //! strict unless restricted). A test passes when every variant completes, or throws the
 //! error its `negative` metadata names in the named phase.
 //!
-//! Not supported yet, and failing for it: modules, generators, async functions,
+//! Not supported yet, and failing for it: modules, async functions and generators,
 //! Promise, BigInt, Proxy, typed arrays, RegExp matching, and more built-ins (see PROGRESS.md).
 //! `FLOOR` only ever goes up; the goal is all of it.
 //!
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 24_151;
+const FLOOR: usize = 27_103;
 
 /// Instructions per test variant before it counts as hung.
 const FUEL: u64 = 20_000_000;

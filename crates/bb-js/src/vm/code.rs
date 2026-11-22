@@ -191,6 +191,18 @@ pub enum Op {
     IterCloseThrow,
     /// `[v] → []` completion value of script/eval code.
     SetCompletion,
+    // Generators (§27.5).
+    /// Park the frame in a new generator object and return that (after the parameters).
+    GeneratorStart,
+    /// `[v] →` suspend, yielding `v`.
+    Yield,
+    /// After a yield: the resumed value is on the stack; a `throw()` throws it and a
+    /// `return()` jumps to the return path at the target.
+    Resume(u32),
+    /// `[rec received] →` one step of `yield*` (§14.4.14): suspends (re-running this
+    /// instruction on resumption) or leaves the result and jumps to the first target (inner
+    /// iterator done) or the second (return completion).
+    YieldStar(u32, u32),
     // Classes (§15.7).
     /// A new Private Name described by `strings[i]`.
     NewPrivateName(u32),
