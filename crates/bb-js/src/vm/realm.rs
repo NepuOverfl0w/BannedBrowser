@@ -133,6 +133,25 @@ impl Realm {
     pub fn error_proto(&self, k: ErrorKind) -> ObjRef {
         self.error_protos[k as usize]
     }
+    /// Well-known symbols are shared by all realms (§6.1.5.1).
+    pub fn share_symbols(&mut self, from: &Realm) {
+        self.sym_iterator = from.sym_iterator.clone();
+        self.sym_async_iterator = from.sym_async_iterator.clone();
+        self.sym_has_instance = from.sym_has_instance.clone();
+        self.sym_to_primitive = from.sym_to_primitive.clone();
+        self.sym_to_string_tag = from.sym_to_string_tag.clone();
+        self.sym_species = from.sym_species.clone();
+        self.sym_unscopables = from.sym_unscopables.clone();
+        self.sym_is_concat_spreadable = from.sym_is_concat_spreadable.clone();
+        self.sym_match = from.sym_match.clone();
+        self.sym_match_all = from.sym_match_all.clone();
+        self.sym_replace = from.sym_replace.clone();
+        self.sym_search = from.sym_search.clone();
+        self.sym_split = from.sym_split.clone();
+        self.sym_dispose = from.sym_dispose.clone();
+        self.sym_async_dispose = from.sym_async_dispose.clone();
+    }
+
     pub fn well_known(&self) -> Vec<(&'static str, Sym)> {
         vec![
             ("asyncDispose", self.sym_async_dispose.clone()),
@@ -161,7 +180,12 @@ pub fn init(vm: &mut Vm) {
     vm.realm.object_proto = object_proto;
     let function_proto = vm.heap.alloc(Object::new(
         Some(object_proto),
-        Kind::Native(Box::new(Native { f: builtins::empty_fn, constructor: false, slots: Vec::new() })),
+        Kind::Native(Box::new(Native {
+            f: builtins::empty_fn,
+            constructor: false,
+            slots: Vec::new(),
+            realm: vm.cur_realm,
+        })),
     ));
     vm.realm.function_proto = function_proto;
     let global = vm.new_object();
@@ -221,7 +245,10 @@ pub fn native_with(
     slots: Vec<Value>,
 ) -> ObjRef {
     let fp = vm.realm.function_proto;
-    let o = vm.heap.alloc(Object::new(Some(fp), Kind::Native(Box::new(Native { f, constructor, slots }))));
+    let o = vm.heap.alloc(Object::new(
+        Some(fp),
+        Kind::Native(Box::new(Native { f, constructor, slots, realm: vm.cur_realm })),
+    ));
     let obj = vm.heap.obj_mut(o);
     obj.props.insert(PropKey::lit("length"), Prop::data(Value::Number(length as f64), false, false, true));
     obj.props.insert(PropKey::lit("name"), Prop::data(Value::str(name), false, false, true));

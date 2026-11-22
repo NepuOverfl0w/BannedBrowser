@@ -30,6 +30,15 @@ fn species_create(vm: &mut Vm, original: ObjRef, len: f64) -> JsResult<ObjRef> {
         return array_create(vm, len, None);
     }
     let mut c = vm.get(original, &PropKey::lit("constructor"))?;
+    // Another realm's %Array% counts as no species (step 4.c).
+    if let Value::Object(co) = c {
+        if vm.is_constructor(&c) {
+            let rid = vm.function_realm(co)?;
+            if rid != vm.cur_realm && vm.realm_by_id(rid).array_ctor == co {
+                c = Value::Undefined;
+            }
+        }
+    }
     if let Value::Object(co) = c {
         let sk = PropKey::Sym(vm.realm.sym_species.clone());
         c = vm.get(co, &sk)?;

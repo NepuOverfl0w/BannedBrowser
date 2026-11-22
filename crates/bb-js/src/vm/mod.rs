@@ -73,6 +73,8 @@ pub struct Frame {
     pub resume: Resume,
     /// Evaluating parameter initializers.
     pub in_params: bool,
+    /// The realm the frame's code runs in.
+    pub realm: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -146,6 +148,10 @@ pub struct Vm {
     pub(crate) module_evals: Vec<Option<module::PendingEval>>,
     /// Values hosts keep alive across calls.
     pub roots: Vec<Value>,
+    /// Every realm by id; the current one is moved out into `realm` (its slot is `None`).
+    realms: Vec<Option<Realm>>,
+    /// The id of the current realm.
+    pub cur_realm: u32,
     /// Text written by `print` (test harnesses).
     pub output: Vec<String>,
     /// Instructions left before the script is terminated (`None`: unlimited).
@@ -172,6 +178,8 @@ impl Vm {
             registry: HashMap::default(),
             templates: HashMap::default(),
             roots: Vec::new(),
+            realms: vec![None],
+            cur_realm: 0,
             yield_raw: false,
             jobs: Default::default(),
             modules: Vec::new(),
@@ -206,6 +214,66 @@ impl Vm {
         let genv = self.realm.global_env;
         let frame = self.frame(code, genv, genv);
         self.execute(frame)
+    }
+
+    // ---- realms (§9.3) ----
+
+    /// Make realm `id` the current one.
+    pub(crate) fn switch_realm(&mut self, id: u32) {
+        if id == self.cur_realm {
+            return;
+        }
+        let Some(r) = self.realms.get_mut(id as usize).and_then(Option::take) else { return };
+        let old = std::mem::replace(&mut self.realm, r);
+        self.realms[self.cur_realm as usize] = Some(old);
+        self.cur_realm = id;
+    }
+
+    /// InitializeHostDefinedRealm for a new realm (`$262.createRealm`): its id.
+    pub fn create_realm(&mut self) -> u32 {
+        let id = self.realms.len() as u32;
+        let mut r = Realm::placeholder(&mut self.heap);
+        r.share_symbols(&self.realm);
+        self.realms.push(Some(r));
+        let saved = self.cur_realm;
+        self.switch_realm(id);
+        realm::init(self);
+        self.switch_realm(saved);
+        id
+    }
+
+    /// Run `f` with realm `id` current.
+    pub fn in_realm<T>(&mut self, id: u32, f: impl FnOnce(&mut Vm) -> T) -> T {
+        let saved = self.cur_realm;
+        self.switch_realm(id);
+        let r = f(self);
+        self.switch_realm(saved);
+        r
+    }
+
+    /// GetFunctionRealm (§7.3.24).
+    pub fn function_realm(&mut self, f: ObjRef) -> JsResult<u32> {
+        let mut f = f;
+        loop {
+            match &self.heap.obj(f).kind {
+                Kind::Function(c) => return Ok(c.realm),
+                Kind::Native(n) => return Ok(n.realm),
+                Kind::Bound(b) => f = b.target,
+                Kind::Proxy(p) => match (p.handler, p.target) {
+                    (Some(_), Some(t)) => f = t,
+                    _ => return self.type_error("Cannot perform operation on a revoked proxy"),
+                },
+                _ => return Ok(self.cur_realm),
+            }
+        }
+    }
+
+    /// The realm with id `id` (current or not).
+    pub(crate) fn realm_by_id(&self, id: u32) -> &Realm {
+        if id == self.cur_realm {
+            return &self.realm;
+        }
+        self.realms.get(id as usize).and_then(Option::as_ref).unwrap_or(&self.realm)
     }
 
     /// Run compiled script code in the global environment.
@@ -247,6 +315,7 @@ impl Vm {
             generator: None,
             resume: Resume::Next,
             in_params: false,
+            realm: self.cur_realm,
         }
     }
 
@@ -268,6 +337,9 @@ impl Vm {
     pub fn collect_garbage(&mut self) {
         let mut roots = Roots::default();
         self.realm.trace(&mut roots);
+        for r in self.realms.iter().flatten() {
+            r.trace(&mut roots);
+        }
         for f in &self.frames {
             f.trace(&mut roots.objects, &mut roots.envs);
         }
@@ -390,7 +462,14 @@ impl Vm {
                     return self.range_error("Maximum call stack size exceeded");
                 }
                 self.nested += 1;
+                let saved = self.cur_realm;
+                let nr = match &self.heap.obj(f).kind {
+                    Kind::Native(n) => n.realm,
+                    _ => saved,
+                };
+                self.switch_realm(nr);
                 let r = nf(self, NativeCall { callee: f, this, args, new_target });
+                self.switch_realm(saved);
                 self.nested -= 1;
                 r.map(Some)
             }
@@ -425,10 +504,38 @@ impl Vm {
         if self.frames.len() >= MAX_FRAMES {
             return self.range_error("Maximum call stack size exceeded");
         }
-        let (tmpl, scope, this_mode, constructor, derived, class_ctor) = match &self.heap.obj(f).kind {
-            Kind::Function(c) => (c.tmpl.clone(), c.env, c.this_mode, c.constructor, c.derived, c.class_ctor),
+        let (tmpl, scope, this_mode, constructor, derived, class_ctor, realm) = match &self.heap.obj(f).kind {
+            Kind::Function(c) => {
+                (c.tmpl.clone(), c.env, c.this_mode, c.constructor, c.derived, c.class_ctor, c.realm)
+            }
             _ => unreachable!("closure"),
         };
+        // PrepareForOrdinaryCall: the callee's realm is current from here on.
+        let saved = self.cur_realm;
+        self.switch_realm(realm);
+        let r = self.enter_closure_in_realm(
+            f,
+            this,
+            args,
+            new_target,
+            (tmpl, scope, this_mode, constructor, derived, class_ctor),
+        );
+        if r.is_err() {
+            self.switch_realm(saved);
+        }
+        r
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn enter_closure_in_realm(
+        &mut self,
+        f: ObjRef,
+        this: Value,
+        args: Vec<Value>,
+        new_target: Option<ObjRef>,
+        parts: (Rc<FuncTemplate>, EnvRef, ThisMode, bool, bool, bool),
+    ) -> JsResult<()> {
+        let (tmpl, scope, this_mode, constructor, derived, class_ctor) = parts;
         if class_ctor && new_target.is_none() {
             return self.type_error("Class constructor cannot be invoked without 'new'");
         }
@@ -489,11 +596,18 @@ impl Vm {
     }
 
     /// GetPrototypeFromConstructor (§10.1.14).
-    pub fn prototype_from_ctor(&mut self, ctor: ObjRef, default: fn(&Realm) -> ObjRef) -> JsResult<ObjRef> {
+    pub fn prototype_from_ctor(
+        &mut self,
+        ctor: ObjRef,
+        default: impl Fn(&Realm) -> ObjRef,
+    ) -> JsResult<ObjRef> {
         let p = self.get(ctor, &PropKey::lit("prototype"))?;
         Ok(match p {
             Value::Object(o) => o,
-            _ => default(&self.realm),
+            _ => {
+                let id = self.function_realm(ctor)?;
+                default(self.realm_by_id(id))
+            }
         })
     }
 
@@ -506,8 +620,11 @@ impl Vm {
         }
         self.nested += 1;
         let base = self.frames.len();
+        let saved = self.cur_realm;
+        self.switch_realm(frame.realm);
         self.frames.push(frame);
         let r = self.run(base);
+        self.switch_realm(saved);
         self.nested -= 1;
         r
     }
@@ -534,6 +651,8 @@ impl Vm {
                             f.env = h.env;
                             f.pc = h.pc as usize;
                             f.stack.push(e);
+                            let r = f.realm;
+                            self.switch_realm(r);
                             break;
                         }
                         if let Some(g) = self.frames.pop().and_then(|f| f.generator) {
@@ -592,6 +711,10 @@ impl Vm {
         let f = self.frames.pop().expect("frame");
         if let Some(g) = f.generator {
             self.generator_completed(g);
+        }
+        // Back in the caller's realm (an outer run's caller: `execute` restores it).
+        if let Some(r) = self.frames.get(base..).and_then(|fs| fs.last()).map(|t| t.realm) {
+            self.switch_realm(r);
         }
         let v = match f.construct {
             None => v,
@@ -1728,6 +1851,7 @@ impl Vm {
         };
         let closure = Closure {
             tmpl,
+            realm: self.cur_realm,
             env,
             home,
             this_mode,

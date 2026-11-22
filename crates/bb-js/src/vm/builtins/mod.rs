@@ -214,11 +214,7 @@ fn error_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     };
     let nt = c.new_target.unwrap_or(c.callee);
     let ek = ERROR_NAMES[kind].1;
-    let proto = vm.get(nt, &PropKey::lit("prototype"))?;
-    let proto = match proto {
-        Value::Object(p) => p,
-        _ => vm.realm.error_proto(ek),
-    };
+    let proto = vm.prototype_from_ctor(nt, move |r| r.error_proto(ek))?;
     let o = vm.heap.alloc(Object::new(Some(proto), Kind::Error));
     let msg = c.arg(0);
     if !msg.is_undefined() {

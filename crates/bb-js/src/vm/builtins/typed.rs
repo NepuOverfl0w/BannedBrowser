@@ -525,14 +525,13 @@ fn ta_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let Some(kind) = ta_kind_of_ctor(vm, c.callee) else {
         return vm.type_error("not a typed array constructor");
     };
-    let default_proto = vm.realm.ta_protos[kind.index()];
     let first = c.arg(0);
     let Value::Object(fo) = first else {
         let len = vm.to_index(&first)?;
-        let proto = proto_from(vm, nt, default_proto)?;
+        let proto = proto_from(vm, nt, kind)?;
         return Ok(Value::Object(alloc_ta(vm, kind, proto, len)?));
     };
-    let proto = proto_from(vm, nt, default_proto)?;
+    let proto = proto_from(vm, nt, kind)?;
     if let Some((src_kind, _, _, _)) = vm.ta(fo) {
         // From a typed array (§23.2.5.1.2).
         if src_kind.is_bigint() != kind.is_bigint() {
@@ -624,11 +623,8 @@ fn ta_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     Ok(Value::Object(o))
 }
 
-fn proto_from(vm: &mut Vm, nt: ObjRef, default: ObjRef) -> JsResult<ObjRef> {
-    match vm.get(nt, &PropKey::lit("prototype"))? {
-        Value::Object(p) => Ok(p),
-        _ => Ok(default),
-    }
+fn proto_from(vm: &mut Vm, nt: ObjRef, kind: TaKind) -> JsResult<ObjRef> {
+    vm.prototype_from_ctor(nt, move |r| r.ta_protos[kind.index()])
 }
 
 /// TypedArrayCreateFromConstructor (§23.2.4.2).

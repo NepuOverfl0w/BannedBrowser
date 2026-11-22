@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 42_286;
+const FLOOR: usize = 42_467;
 
 /// Instructions per test variant before it counts as hung.
 const FUEL: u64 = 20_000_000;
@@ -119,8 +119,13 @@ fn install_262(vm: &mut Vm) {
         vm.run_script(&String::from_utf16_lossy(&s))
     });
     realm::method(vm, o, "gc", 0, |_: &mut Vm, _: NativeCall| Ok(Value::Undefined));
-    realm::method(vm, o, "createRealm", 0, |vm: &mut Vm, _: NativeCall| {
-        vm.type_error("$262.createRealm is not supported yet")
+    realm::method(vm, o, "createRealm", 0, |vm: &mut Vm, _: NativeCall| -> JsResult<Value> {
+        let id = vm.create_realm();
+        vm.in_realm(id, |vm| {
+            install_262(vm);
+            let g = vm.realm.global;
+            vm.get(g, &bb_js::vm::PropKey::named("$262"))
+        })
     });
     realm::method(vm, o, "detachArrayBuffer", 1, |vm: &mut Vm, c: NativeCall| -> JsResult<Value> {
         match c.arg(0) {

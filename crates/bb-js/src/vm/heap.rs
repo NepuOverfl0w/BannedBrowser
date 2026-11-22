@@ -151,6 +151,8 @@ pub enum ThisMode {
 
 pub struct Closure {
     pub tmpl: Rc<FuncTemplate>,
+    /// [[Realm]] (an index into the VM's realms).
+    pub realm: u32,
     pub env: EnvRef,
     /// [[HomeObject]] for `super` (§10.2).
     pub home: Option<ObjRef>,
@@ -200,6 +202,8 @@ pub struct Native {
     pub f: NativeFn,
     pub constructor: bool,
     pub slots: Vec<Value>,
+    /// [[Realm]].
+    pub realm: u32,
 }
 
 pub struct Bound {
