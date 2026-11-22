@@ -148,7 +148,9 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 |---|---|
 | URL Standard | ✅ 100 % WPT urltestdata |
 | HTTP/1.1, HTTPS, gzip/deflate/br, chunked, redirects, proxies | ✅ |
-| Cookies, cache | 📋 M8 |
+| Cookies (RFC 6265bis, Public Suffix List, SameSite) | ✅ |
+| Forms: typing, checkboxes, radios, drop-downs, buttons, GET/POST submission, Tab navigation | ✅ |
+| HTTP cache, saved cookies | 📋 M8 |
 | HTML parsing | ✅ 100 % html5lib tokenizer, 100 % WPT tree construction |
 | Legacy presentational attributes, quirks mode | ✅ |
 | CSS selectors, cascade, custom properties, `calc()`, media queries | ✅ |
@@ -338,7 +340,7 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 - [ ] M5 Paint (mostly done; 50 reftests)
 - [ ] M6 GUI shell core (started)
 - [ ] M7 Layout II (grid, transforms, `@font-face`, …)
-- [ ] M8 Forms, cookies, cache, profile storage
+- [ ] M8 Forms ✅, cookies ✅, cache, profile storage
 - [ ] M9 Bookmarks, history, downloads, settings, Reader View, passwords
 - [ ] M10 JavaScript engine
 - [ ] M11 DevTools, performance, accessibility, packaging

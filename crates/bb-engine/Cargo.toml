@@ -26,4 +26,6 @@ log.workspace = true
 encoding_rs.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
+bb-dom.workspace = true
 bb-image.workspace = true

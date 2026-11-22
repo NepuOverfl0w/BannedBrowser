@@ -5,10 +5,14 @@
 //! and by each tab's worker thread). Panics inside the pipeline are caught and
 //! turned into the "BannedBrowser hit a snag" page.
 
+pub mod forms;
 mod frames;
+pub mod interact;
 mod internal;
 
+pub use forms::{FormSubmission, NavRequest, PostBody};
 pub use frames::{ChildFrame, LinkDisposition, LinkHit, MAX_FRAMES, MAX_FRAME_DEPTH};
+pub use interact::{FocusKind, KeyMods, Outcome, PageKey, PopupItem, SelectPopup};
 pub use internal::{about_handler, cert_error_page_html, error_page_html, snag_page_html};
 
 use bb_css::{MediaContext, MediaQueryList, Rule, Stylesheet};
@@ -92,6 +96,10 @@ pub struct Page {
     pub find_query: String,
     pub find_matches: Vec<Vec<bb_paint::Rect>>,
     pub find_active: Option<usize>,
+    /// The document's character encoding (form submissions use it).
+    pub encoding: &'static encoding_rs::Encoding,
+    /// Keyboard focus in this document (see `interact.rs`).
+    pub focus: interact::FocusState,
 }
 
 struct PageResources<'a> {
@@ -114,6 +122,7 @@ struct Fetched {
     status: u16,
     secure: bool,
     html: String,
+    encoding: &'static encoding_rs::Encoding,
     error: Option<NetError>,
 }
 
@@ -162,8 +171,11 @@ pub(crate) fn subresource_context(page_url: &Url) -> bb_net::cookies::CookieCont
 
 /// Fetch a document. `frame_top`: for a frame's document, the top-level document's URL (its
 /// site for cookies); `None` for a top-level navigation.
-fn fetch_document(client: &Client, url: &Url, frame_top: Option<&Url>) -> Fetched {
-    let mut req = Request::get(url.clone());
+fn fetch_document(client: &Client, url: &Url, frame_top: Option<&Url>, post: Option<&PostBody>) -> Fetched {
+    let mut req = match post {
+        Some(p) => Request::post(url.clone(), &p.content_type, p.body.clone()),
+        None => Request::get(url.clone()),
+    };
     req.timeout = Duration::from_secs(45);
     if let Some(top) = frame_top {
         req.cookie_context = bb_net::cookies::CookieContext {
@@ -180,8 +192,11 @@ fn fetch_document(client: &Client, url: &Url, frame_top: Option<&Url>) -> Fetche
                 .map(|c| c.essence.clone())
                 .unwrap_or_else(|| bb_net::mime::sniff(&resp.body).to_string());
             let charset = ct.as_ref().and_then(|c| c.charset.clone());
+            let mut encoding = encoding_rs::UTF_8;
             let html = if essence == "text/html" || essence == "application/xhtml+xml" || essence.is_empty() {
-                bb_net::encoding::decode_html(&resp.body, charset.as_deref()).0
+                let (html, enc) = bb_net::encoding::decode_html(&resp.body, charset.as_deref());
+                encoding = enc;
+                html
             } else if essence.starts_with("image/") {
                 format!(
                     "<!DOCTYPE html><html><head><title>{t}</title><style>html{{background:#222}}body{{margin:0;display:flex}}img{{margin:auto}}</style></head><body><img src=\"{u}\"></body></html>",
@@ -205,7 +220,7 @@ fn fetch_document(client: &Client, url: &Url, frame_top: Option<&Url>) -> Fetche
                     "",
                 )
             };
-            Fetched { url: resp.url, status: resp.status, secure: resp.secure, html, error: None }
+            Fetched { url: resp.url, status: resp.status, secure: resp.secure, html, encoding, error: None }
         }
         Err(e) => {
             let (title, msg) = match e.kind {
@@ -245,7 +260,14 @@ fn fetch_document(client: &Client, url: &Url, frame_top: Option<&Url>) -> Fetche
                 Some(problem) => internal::cert_error_page_html(problem),
                 None => error_page_html(title, msg, &url.href(), &e.message),
             };
-            Fetched { url: url.clone(), status: 0, secure: false, html, error: Some(e) }
+            Fetched {
+                url: url.clone(),
+                status: 0,
+                secure: false,
+                html,
+                encoding: encoding_rs::UTF_8,
+                error: Some(e),
+            }
         }
     }
 }
@@ -473,13 +495,24 @@ fn image_urls(doc: &Document, styles: &StyleMap, base: &Url) -> Vec<Url> {
 impl Page {
     /// Load and render `url` completely (blocking).
     pub fn load(client: &Client, url: &Url, config: PageConfig) -> Page {
-        Self::load_in(client, url, config, None)
+        Self::load_in(client, url, config, None, None)
+    }
+
+    /// Load a navigation request (a URL, or a form POST) completely (blocking).
+    pub fn load_request(client: &Client, req: &NavRequest, config: PageConfig) -> Page {
+        Self::load_in(client, &req.url, config, None, req.post.as_ref())
     }
 
     /// Load `url`; `frame_top` is the top-level document's URL when this page is a frame.
-    pub(crate) fn load_in(client: &Client, url: &Url, config: PageConfig, frame_top: Option<&Url>) -> Page {
+    pub(crate) fn load_in(
+        client: &Client,
+        url: &Url,
+        config: PageConfig,
+        frame_top: Option<&Url>,
+        post: Option<&PostBody>,
+    ) -> Page {
         let started = Instant::now();
-        let fetched = fetch_document(client, url, frame_top);
+        let fetched = fetch_document(client, url, frame_top, post);
         let fetch_ms = started.elapsed().as_millis();
         let mut page = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             Page::from_html(client, &fetched.html, &fetched.url, config, fetched.status, fetched.secure)
@@ -497,6 +530,7 @@ impl Page {
             }
         };
         page.error = fetched.error;
+        page.encoding = fetched.encoding;
         page.stats.fetch_ms = fetch_ms;
         page
     }
@@ -603,6 +637,8 @@ impl Page {
             find_query: String::new(),
             find_matches: Vec::new(),
             find_active: None,
+            encoding: encoding_rs::UTF_8,
+            focus: interact::FocusState { window_focus: true, ..Default::default() },
         };
         page.relayout_styles_ready();
         page.load_frames(client);
@@ -636,11 +672,8 @@ impl Page {
         let res = PageResources { base: &self.base_url, images: &self.images };
         let mut tree = bb_layout::build_tree(&self.doc, &self.styles, &res, self.config.viewport);
         bb_layout::layout(&mut tree);
-        self.display_list = match self.frameset {
-            Some(fs) => frames::layout_frameset(&self.doc, fs, self.config.viewport),
-            None => bb_layout::paint::build_display_list(&tree),
-        };
         self.layout = tree;
+        self.rebuild_display();
         self.sync_frames();
         if !self.find_query.is_empty() {
             self.find_matches = bb_layout::find::find_text(&self.layout, &self.find_query);
@@ -651,6 +684,25 @@ impl Page {
         }
         self.stats.layout_ms = tl.elapsed().as_millis();
         self.doc.clear_dirty();
+    }
+
+    /// Rebuild the display list from the current layout, with the focused text control's caret
+    /// and selection and the focus ring (no restyle or relayout: typing only repaints).
+    pub(crate) fn rebuild_display(&mut self) {
+        if let Some((n, view)) = self.edit_view() {
+            bb_layout::tree::refresh_control(&mut self.layout, &self.doc, n, Some(view));
+        }
+        self.display_list = match self.frameset {
+            Some(fs) => frames::layout_frameset(&self.doc, fs, self.config.viewport),
+            None => bb_layout::paint::build_display_list(&self.layout),
+        };
+        for r in self.focus_ring() {
+            let ring = bb_paint::Rect::new(r.x - 2.0, r.y - 2.0, r.w + 4.0, r.h + 4.0);
+            self.display_list.items.push(bb_paint::display::Item::Path {
+                path: bb_paint::Path::rounded_rect(ring, bb_paint::Radii::uniform(3.0)).stroke(2.0),
+                paint: bb_paint::Paint::Solid(bb_paint::Color::rgba(0x7c, 0x5c, 0xff, 0xd0)),
+            });
+        }
     }
 
     /// Change the viewport; restyles (media queries, vw/vh) and relayouts.
@@ -806,42 +858,30 @@ impl Page {
             let Some(id) = self.doc.attr(n, "id") else { continue };
             if let Some(&b) = self.layout.node_box.get(&n) {
                 let b = &self.layout.boxes[b];
-                out.push((id.to_string(), [b.x + b.rel_offset.0, b.y + b.rel_offset.1, b.w, b.h]));
+                if b.w > 0.0 && b.h > 0.0 {
+                    out.push((id.to_string(), [b.x + b.rel_offset.0, b.y + b.rel_offset.1, b.w, b.h]));
+                    continue;
+                }
+            }
+            // Inline elements (links, labels): the union of their line fragments.
+            if let Some(r) =
+                bb_layout::node_rects(&self.layout, &self.doc, n).into_iter().reduce(|a, b| a.union(&b))
+            {
+                out.push((id.to_string(), [r.x, r.y, r.w, r.h]));
             }
         }
         out
     }
 
-    /// Activation behaviour of a click at a page point that isn't on a link. Today: a
-    /// `summary` that is its `details` element's summary toggles the `open` attribute
-    /// (HTML §4.11.2). Returns whether the page changed and needs a new render.
+    /// A click at a page point that isn't on a link (see [`Page::click`]). Returns whether the
+    /// page changed and needs a new render.
     pub fn activate_at(&mut self, x: f32, y: f32) -> bool {
-        if let Some((i, lx, ly)) = self.frame_at(x, y) {
-            return self.frames[i].page.activate_at(lx, ly);
-        }
-        let hit = bb_layout::hit_test(&self.layout, x, y);
-        let mut cur = hit.node;
-        while let Some(n) = cur {
-            if self.doc.is_html(n, "summary") {
-                if let Some(details) = self.details_for_summary(n) {
-                    if self.doc.attr(details, "open").is_some() {
-                        self.doc.remove_attr(details, "open");
-                    } else {
-                        self.doc.set_attr(details, "open", "");
-                    }
-                    // `details[open]` selectors and the hidden contents change.
-                    self.restyle();
-                    return true;
-                }
-            }
-            cur = self.doc.parent(n);
-        }
-        false
+        self.click(x, y).repaint
     }
 
     /// HTML §4.11.2: the `details` element a `summary` is "the summary for", i.e. the parent
     /// `details` whose first `summary` child it is.
-    fn details_for_summary(&self, summary: NodeId) -> Option<NodeId> {
+    pub(crate) fn details_for_summary(&self, summary: NodeId) -> Option<NodeId> {
         let parent = self.doc.parent(summary)?;
         if !self.doc.is_html(parent, "details") {
             return None;

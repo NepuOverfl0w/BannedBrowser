@@ -39,15 +39,17 @@ pub struct LinkHit {
     pub target: String,
     /// Indices into `frames` from the top page down to the document holding the link.
     pub frame_path: Vec<usize>,
+    /// A form POST's body (form submissions navigate like links).
+    pub post: Option<crate::PostBody>,
 }
 
 /// What following a link did.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LinkDisposition {
     /// Navigate the whole tab.
-    Top(Url),
+    Top(crate::NavRequest),
     /// Open in a new tab (`_blank` or an unknown name).
-    NewTab(Url),
+    NewTab(crate::NavRequest),
     /// A frame inside the page was navigated; re-render.
     Frame,
 }
@@ -287,7 +289,7 @@ impl Page {
         let fetched: Vec<Option<crate::Fetched>> = std::thread::scope(|sc| {
             let handles: Vec<_> = urls
                 .iter()
-                .map(|u| u.as_ref().map(|u| sc.spawn(move || fetch_document(client, u, Some(top_ref)))))
+                .map(|u| u.as_ref().map(|u| sc.spawn(move || fetch_document(client, u, Some(top_ref), None))))
                 .collect();
             handles.into_iter().map(|h| h.and_then(|h| h.join().ok())).collect()
         });
@@ -311,6 +313,7 @@ impl Page {
                     match r {
                         Ok(mut p) => {
                             p.error = f.error;
+                            p.encoding = f.encoding;
                             p
                         }
                         Err(_) => Page::from_html(
@@ -393,7 +396,7 @@ impl Page {
             .unwrap_or("")
             .trim()
             .to_string();
-        Some(LinkHit { url, target, frame_path: Vec::new() })
+        Some(LinkHit { url, target, frame_path: Vec::new(), post: None })
     }
 
     fn find_frame_named(&self, name: &str, path: &mut Vec<usize>) -> bool {
@@ -410,6 +413,7 @@ impl Page {
     /// Follow a link hit: HTML §7.3.1.7 "the rules for choosing a navigable".
     pub fn follow_link(&mut self, client: &Client, hit: LinkHit) -> LinkDisposition {
         let t = hit.target.to_ascii_lowercase();
+        let req = crate::NavRequest { url: hit.url.clone(), post: hit.post.clone() };
         let path = match t.as_str() {
             "" | "_self" => hit.frame_path,
             "_parent" => {
@@ -418,19 +422,19 @@ impl Page {
                 p
             }
             "_top" => Vec::new(),
-            "_blank" => return LinkDisposition::NewTab(hit.url),
+            "_blank" => return LinkDisposition::NewTab(req),
             _ => {
                 let mut p = Vec::new();
                 if !self.find_frame_named(&hit.target, &mut p) {
-                    return LinkDisposition::NewTab(hit.url);
+                    return LinkDisposition::NewTab(req);
                 }
                 p
             }
         };
         if path.is_empty() {
-            return LinkDisposition::Top(hit.url);
+            return LinkDisposition::Top(req);
         }
-        self.navigate_frame(client, &path, &hit.url);
+        self.navigate_frame_request(client, &path, &req);
         LinkDisposition::Frame
     }
 
@@ -476,19 +480,36 @@ impl Page {
 
     /// Load `url` into the frame at `path`.
     pub fn navigate_frame(&mut self, client: &Client, path: &[usize], url: &Url) -> bool {
-        let top = crate::top_site(&self.url);
-        crate::with_top_site(&top.clone(), || self.navigate_frame_in(client, path, url, &top))
+        self.navigate_frame_request(client, path, &crate::NavRequest::get(url.clone()))
     }
 
-    fn navigate_frame_in(&mut self, client: &Client, path: &[usize], url: &Url, top: &Url) -> bool {
+    /// Load a request (a URL or a form POST) into the frame at `path`.
+    pub fn navigate_frame_request(
+        &mut self,
+        client: &Client,
+        path: &[usize],
+        req: &crate::NavRequest,
+    ) -> bool {
+        let top = crate::top_site(&self.url);
+        crate::with_top_site(&top.clone(), || self.navigate_frame_in(client, path, req, &top))
+    }
+
+    fn navigate_frame_in(
+        &mut self,
+        client: &Client,
+        path: &[usize],
+        req: &crate::NavRequest,
+        top: &Url,
+    ) -> bool {
         let Some((&first, rest)) = path.split_first() else { return false };
         let Some(f) = self.frames.get_mut(first) else { return false };
         if !rest.is_empty() {
-            return f.page.navigate_frame_in(client, rest, url, top);
+            return f.page.navigate_frame_in(client, rest, req, top);
         }
         let cfg = f.page.config;
+        let url = &req.url;
         let page = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Page::load_in(client, url, cfg, Some(top))
+            Page::load_in(client, url, cfg, Some(top), req.post.as_ref())
         }))
         .unwrap_or_else(|_| {
             Page::from_html(client, &crate::snag_page_html(&url.href(), "frame"), url, cfg, 0, false)

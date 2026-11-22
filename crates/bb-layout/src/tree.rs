@@ -32,11 +32,141 @@ pub trait Resources {
 /// A form control's rendering data.
 #[derive(Debug, Clone)]
 pub enum Control {
-    TextField { value: String, placeholder: bool, password: bool },
-    Button { label: String },
-    Checkbox { checked: bool, radio: bool },
-    Select { label: String },
-    TextArea { value: String },
+    /// `value` is the placeholder when `placeholder` is set (the value is empty). `size` is the
+    /// visible width in characters (HTML §4.10.5.3.2, default 20).
+    TextField {
+        value: String,
+        placeholder: bool,
+        password: bool,
+        size: u32,
+        edit: Option<EditView>,
+    },
+    Button {
+        label: String,
+    },
+    Checkbox {
+        checked: bool,
+        radio: bool,
+    },
+    /// The selected option's label, and every option's label (the box fits the widest).
+    Select {
+        label: String,
+        options: Vec<String>,
+    },
+    /// `cols` × `rows` characters (HTML §4.10.11, defaults 20 × 2).
+    TextArea {
+        value: String,
+        placeholder: bool,
+        cols: u32,
+        rows: u32,
+        edit: Option<EditView>,
+    },
+}
+
+/// The caret and selection of the focused text control (byte offsets into its value).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EditView {
+    /// The text being edited, shown instead of the DOM value (which may be sanitized, e.g. an
+    /// invalid number reads as "" but still shows what was typed).
+    pub text: String,
+    pub caret: usize,
+    pub selection: Option<(usize, usize)>,
+    /// The page has keyboard focus (the caret is hidden while e.g. the URL bar has it).
+    pub caret_visible: bool,
+}
+
+/// HTML §2.3.4.1 rules for parsing non-negative integers; `None` for zero or junk.
+fn positive_attr(doc: &Document, node: NodeId, name: &str) -> Option<u32> {
+    let v = doc.attr(node, name)?.trim_start_matches([' ', '\t', '\n', '\x0c', '\r']);
+    let v = v.strip_prefix('+').unwrap_or(v);
+    let digits = &v[..v.bytes().take_while(u8::is_ascii_digit).count()];
+    digits.parse::<u32>().ok().filter(|&n| n > 0)
+}
+
+/// The rendering data of a form control from its DOM state (`None` for hidden inputs, image
+/// inputs, which are images, and other elements).
+pub fn control_data(doc: &Document, node: NodeId) -> Option<Control> {
+    use bb_dom::InputType as T;
+    let attr = |n: &str| doc.attr(node, n).map(str::to_string);
+    let name = doc.element(node)?.name.as_str();
+    let c = match name {
+        "input" => match doc.input_type(node) {
+            T::Hidden | T::Image => return None,
+            T::Submit => Control::Button { label: attr("value").unwrap_or_else(|| "Submit".into()) },
+            T::Reset => Control::Button { label: attr("value").unwrap_or_else(|| "Reset".into()) },
+            T::Button => Control::Button { label: attr("value").unwrap_or_default() },
+            T::File => Control::Button { label: "Browse…".into() },
+            T::Checkbox => Control::Checkbox { checked: doc.checkedness(node), radio: false },
+            T::Radio => Control::Checkbox { checked: doc.checkedness(node), radio: true },
+            ty => {
+                let size = positive_attr(doc, node, "size").unwrap_or(20).min(1000);
+                let value = doc.control_value(node);
+                if value.is_empty() {
+                    let ph = attr("placeholder").unwrap_or_default().replace(['\n', '\r'], "");
+                    Control::TextField { value: ph, placeholder: true, password: false, size, edit: None }
+                } else {
+                    Control::TextField {
+                        value,
+                        placeholder: false,
+                        password: ty == T::Password,
+                        size,
+                        edit: None,
+                    }
+                }
+            }
+        },
+        "button" => {
+            let label = doc.text_content(node).split_whitespace().collect::<Vec<_>>().join(" ");
+            Control::Button { label }
+        }
+        "select" => {
+            // The drop-down shows the first option in the list of options whose selectedness
+            // is true (HTML §4.10.7; the DOM keeps selectedness up to date).
+            let label_of = |o: NodeId| match doc.attr(o, "label").filter(|l| !l.is_empty()) {
+                Some(l) => l.to_string(),
+                None => doc.text_content(o).split_whitespace().collect::<Vec<_>>().join(" "),
+            };
+            let opts = doc.list_of_options(node);
+            let label =
+                opts.iter().copied().find(|&o| doc.option_selectedness(o)).map(label_of).unwrap_or_default();
+            Control::Select { label, options: opts.into_iter().map(label_of).collect() }
+        }
+        "textarea" => {
+            let cols = positive_attr(doc, node, "cols").unwrap_or(20).min(1000);
+            let rows = positive_attr(doc, node, "rows").unwrap_or(2).min(1000);
+            let value = doc.control_value(node);
+            if value.is_empty() {
+                let ph = attr("placeholder").unwrap_or_default();
+                Control::TextArea { value: ph, placeholder: true, cols, rows, edit: None }
+            } else {
+                Control::TextArea { value, placeholder: false, cols, rows, edit: None }
+            }
+        }
+        _ => return None,
+    };
+    Some(c)
+}
+
+/// Re-read a control's DOM state into its box (after the user typed, checked or picked
+/// something) and set its caret; the box keeps its size. Returns whether `node` has a
+/// control box.
+pub fn refresh_control(tree: &mut LayoutTree, doc: &Document, node: NodeId, edit: Option<EditView>) -> bool {
+    let Some(&b) = tree.node_box.get(&node) else { return false };
+    let BoxKind::Replaced(Replaced::Control(c)) = &mut tree.boxes[b].kind else { return false };
+    let Some(mut new) = control_data(doc, node) else { return false };
+    match &mut new {
+        Control::TextField { value, placeholder, edit: e, .. }
+        | Control::TextArea { value, placeholder, edit: e, .. } => {
+            if let Some(ed) = edit.as_ref().filter(|ed| !ed.text.is_empty()) {
+                *value = ed.text.clone();
+                *placeholder = false;
+            }
+            *e = edit;
+        }
+        _ => {}
+    }
+    *c = new;
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -465,57 +595,11 @@ fn anon_style(parent: &ComputedStyle, display: Display) -> Rc<ComputedStyle> {
 impl<'a> Builder<'a> {
     fn control_for(&self, node: NodeId, name: &str) -> Option<Replaced> {
         let doc = self.doc;
-        let attr = |n: &str| doc.attr(node, n).map(str::to_string);
-        let c = match name {
-            "input" => {
-                let ty = attr("type").unwrap_or_default().to_ascii_lowercase();
-                match ty.as_str() {
-                    "hidden" => return None,
-                    "submit" => Control::Button { label: attr("value").unwrap_or_else(|| "Submit".into()) },
-                    "reset" => Control::Button { label: attr("value").unwrap_or_else(|| "Reset".into()) },
-                    "button" => Control::Button { label: attr("value").unwrap_or_default() },
-                    "file" => Control::Button { label: "Browse…".into() },
-                    "checkbox" => {
-                        Control::Checkbox { checked: doc.attr(node, "checked").is_some(), radio: false }
-                    }
-                    "radio" => {
-                        Control::Checkbox { checked: doc.attr(node, "checked").is_some(), radio: true }
-                    }
-                    "image" => {
-                        let src = attr("src").unwrap_or_default();
-                        return Some(self.image_replaced(node, &src));
-                    }
-                    _ => {
-                        let value = attr("value").unwrap_or_default();
-                        if value.is_empty() {
-                            Control::TextField {
-                                value: attr("placeholder").unwrap_or_default(),
-                                placeholder: true,
-                                password: false,
-                            }
-                        } else {
-                            Control::TextField { value, placeholder: false, password: ty == "password" }
-                        }
-                    }
-                }
-            }
-            "button" => {
-                let label = doc.text_content(node).split_whitespace().collect::<Vec<_>>().join(" ");
-                Control::Button { label }
-            }
-            "select" => {
-                // The drop-down shows the first option in the list of options whose selectedness
-                // is true (HTML §4.10.7; the DOM keeps selectedness up to date).
-                let sel = doc.list_of_options(node).into_iter().find(|&o| doc.option_selectedness(o));
-                let label = sel
-                    .map(|o| doc.text_content(o).split_whitespace().collect::<Vec<_>>().join(" "))
-                    .unwrap_or_default();
-                Control::Select { label }
-            }
-            "textarea" => Control::TextArea { value: doc.text_content(node) },
-            _ => return None,
-        };
-        Some(Replaced::Control(c))
+        if name == "input" && doc.input_type(node) == bb_dom::InputType::Image {
+            let src = doc.attr(node, "src").unwrap_or_default().to_string();
+            return Some(self.image_replaced(node, &src));
+        }
+        control_data(doc, node).map(Replaced::Control)
     }
 
     fn image_replaced(&self, node: NodeId, src: &str) -> Replaced {

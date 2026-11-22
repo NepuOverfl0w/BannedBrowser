@@ -219,6 +219,7 @@ dependencies = [
  "bb-url",
  "encoding_rs",
  "log",
+ "proptest",
 ]
 
 [[package]]

@@ -166,17 +166,23 @@ pub fn replaced_size(l: &mut Layout, id: BoxId, used_w: Option<f32>, cb_w: f32) 
             let (asc, desc, normal, _) = crate::inline::metrics(&style);
             let line = style.line_height_px(normal).max(asc + desc);
             match c {
-                Control::TextField { .. } => {
+                Control::TextField { size, .. } => {
                     let ch = text_width("0", &style);
-                    (Some(ch * 20.0), Some(line), None)
+                    (Some(ch * *size as f32), Some(line), None)
                 }
-                Control::TextArea { .. } => {
+                Control::TextArea { cols, rows, .. } => {
                     let ch = text_width("0", &style);
-                    (Some(ch * 20.0), Some(line * 2.0), None)
+                    (Some(ch * *cols as f32), Some(line * *rows as f32), None)
                 }
                 Control::Button { label } => (Some(text_width(label, &style)), Some(line), None),
                 Control::Checkbox { .. } => (Some(13.0), Some(13.0), Some(1.0)),
-                Control::Select { label } => (Some(text_width(label, &style) + 18.0), Some(line), None),
+                Control::Select { label, options } => {
+                    let widest = options
+                        .iter()
+                        .map(|o| text_width(o, &style))
+                        .fold(text_width(label, &style), f32::max);
+                    (Some(widest + 18.0), Some(line), None)
+                }
             }
         }
         Replaced::Placeholder { default, .. } | Replaced::Svg { default } | Replaced::Frame { default } => {

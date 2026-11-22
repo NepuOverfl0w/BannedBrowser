@@ -8,8 +8,19 @@
 //! style/layout stages can later do incremental work.
 
 mod dump;
+mod forms;
 mod select;
 pub use dump::{dump_html5lib, serialize_html};
+pub use forms::{sanitize_value, InputType, FORM_ASSOCIATED, LISTED};
+
+/// CR LF and lone CR become LF (HTML's newline normalization).
+pub fn normalize_newlines(s: &str) -> String {
+    if s.contains('\r') {
+        s.replace("\r\n", "\n").replace('\r', "\n")
+    } else {
+        s.to_string()
+    }
+}
 
 use bitflags::bitflags;
 
@@ -202,6 +213,8 @@ pub struct Document {
     pub generation: u64,
     /// Option selectedness and `<selectedcontent>` state (see `select.rs`).
     select_state: select::SelectState,
+    /// Form control values, checkedness and parser-set form owners (see `forms.rs`).
+    form_state: forms::FormState,
 }
 
 impl Default for Document {
@@ -221,6 +234,7 @@ impl Document {
             url: "about:blank".to_string(),
             generation: 0,
             select_state: Default::default(),
+            form_state: Default::default(),
         }
     }
 

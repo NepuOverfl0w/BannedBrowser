@@ -67,7 +67,8 @@ impl Document {
         self.select_state.selected.contains(&option)
     }
 
-    fn is_connected(&self, id: NodeId) -> bool {
+    /// Whether `id` is connected to the document tree.
+    pub fn is_connected(&self, id: NodeId) -> bool {
         id == Document::ROOT || self.ancestors(id).last() == Some(Document::ROOT)
     }
 
@@ -127,7 +128,7 @@ impl Document {
 
     /// §4.10.10: an option is disabled if it has a `disabled` attribute or is a child of an
     /// `optgroup` that has one.
-    fn option_disabled(&self, option: NodeId) -> bool {
+    pub fn option_disabled(&self, option: NodeId) -> bool {
         self.attr(option, "disabled").is_some()
             || self
                 .parent(option)
@@ -204,6 +205,52 @@ impl Document {
             return;
         }
         self.select_state.pending.insert(select);
+    }
+
+    /// The user picked `option` in `select` (§4.10.7): in a single select it becomes the only
+    /// selected option; in a `multiple` select its selectedness toggles. Its dirtiness becomes
+    /// true and selectedcontent elements are updated. Returns whether anything changed.
+    pub fn user_select_option(&mut self, select: NodeId, option: NodeId) -> bool {
+        let options = self.list_of_options(select);
+        if !options.contains(&option) || self.option_disabled(option) {
+            return false;
+        }
+        let before: Vec<bool> = options.iter().map(|&o| self.option_selectedness(o)).collect();
+        if self.attr(select, "multiple").is_some() {
+            if !self.select_state.selected.remove(&option) {
+                self.select_state.selected.insert(option);
+            }
+        } else {
+            for &o in &options {
+                self.select_state.selected.remove(&o);
+            }
+            self.select_state.selected.insert(option);
+        }
+        self.select_state.dirty.insert(option);
+        let after: Vec<bool> = options.iter().map(|&o| self.option_selectedness(o)).collect();
+        if before == after {
+            return false;
+        }
+        self.generation += 1;
+        self.queue_selectedcontent_update(select);
+        self.run_select_microtasks();
+        true
+    }
+
+    /// §4.10.7 the select's reset algorithm: dirtiness false, selectedness = has `selected`,
+    /// then the selectedness setting algorithm.
+    pub(crate) fn reset_select(&mut self, select: NodeId) {
+        for o in self.list_of_options(select) {
+            self.select_state.dirty.remove(&o);
+            if self.attr(o, "selected").is_some() {
+                self.select_state.selected.insert(o);
+            } else {
+                self.select_state.selected.remove(&o);
+            }
+        }
+        self.selectedness_setting(select);
+        self.queue_selectedcontent_update(select);
+        self.run_select_microtasks();
     }
 
     /// Run the queued selectedcontent updates (the microtasks).

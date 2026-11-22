@@ -9,6 +9,20 @@ Everything on `main` after the 0.1.0 release commit counts toward v0.2.
 The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 
 ### Added
+- **Forms work:** click or Tab into text fields and type (selection, word moves, undo, copy,
+  cut, paste, IME, `maxlength`, `readonly`, `placeholder`, `size`); textareas (`rows`/`cols`,
+  Enter, Up/Down); checkboxes and radio groups (mouse, Space, arrow keys); `<select>` drop-downs
+  (with `<optgroup>`, disabled options, arrow keys on the closed select); buttons; `<label>`;
+  `fieldset disabled`. Forms submit with GET or POST (`application/x-www-form-urlencoded`,
+  `multipart/form-data`, `text/plain`) in the page's encoding, with `formaction`/`formmethod`/
+  `formtarget`, image buttons, `_charset_`, `dirname`, Enter in a text field (implicit
+  submission), reset buttons, and the `required` check (the empty field gets focus). The parser
+  associates controls with their form across tables, as old sites need. Submissions follow
+  `target` into frames and new tabs; Back/Forward/Reload re-send a POST.
+- **Keyboard focus in pages:** Tab/Shift+Tab move through links, controls and `<summary>`
+  (positive `tabindex` first, across frames), with a focus ring; Enter follows a focused link;
+  Space/Enter toggle a focused `<details>`. Tab from the address bar enters the page, and Tab
+  past the last element returns to the address bar.
 - **≡ app menu:** New Tab, New Window, New Private Window, Find in Page…, About BannedBrowser, Exit/Quit.
 - **Context menus:**
   - Page: Back, Forward, Reload, Find in Page….

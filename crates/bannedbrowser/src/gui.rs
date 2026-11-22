@@ -4,6 +4,7 @@
 use crate::cli::{fixup_url, Args};
 use crate::menu::{primary_label, Action, Entry, Menu};
 use crate::tab::{self, Frame, HistoryEntry, LinkOpen, TabCmd, TabEvent};
+use bb_engine::{FocusKind, KeyMods, NavRequest, PageKey, SelectPopup};
 use bb_paint::{Canvas, Color, DisplayList, ImageData, Item, Rect, SoftwareCanvas};
 use bb_ui::icons::Icon;
 use bb_ui::textfield::TextField;
@@ -58,6 +59,10 @@ struct Tab {
     /// Frames received from the worker (test hook for frame scrolling/navigation).
     frame_renders: u64,
     frame_titles: Vec<String>,
+    /// What has keyboard focus inside the page (decides which keys go to the page).
+    focus: Option<FocusKind>,
+    /// The page-has-keyboard-focus state last sent to the worker.
+    window_focus_sent: Option<bool>,
 }
 
 /// Height of the find bar at the bottom of the window (logical px).
@@ -114,7 +119,9 @@ struct BrowserWindow {
     /// The open popup menu (≡ app menu or a context menu).
     menu: Option<Menu>,
     /// Tabs requested by link clicks: (url, open in foreground).
-    pending_background: Vec<(Url, bool)>,
+    pending_background: Vec<(NavRequest, bool)>,
+    /// The `<select>` whose drop-down is open (the menu of kind "select").
+    select_popup: Option<SelectPopup>,
     /// When the page was last scrolled (scrollbar visibility).
     last_scroll: Instant,
     /// Dragging the scrollbar thumb: grab offset within the thumb (logical px).
@@ -364,6 +371,7 @@ impl App {
             canvas: SoftwareCanvas::new(size.width.max(1), size.height.max(1)),
             dirty: true,
             pending_background: Vec::new(),
+            select_popup: None,
             find: None,
             menu: None,
             last_scroll: Instant::now() - Duration::from_secs(10),
@@ -385,6 +393,10 @@ impl App {
     }
 
     fn new_tab(&mut self, bw: &mut BrowserWindow, url: Option<Url>) -> Tab {
+        self.new_tab_request(bw, url.map(NavRequest::get))
+    }
+
+    fn new_tab_request(&mut self, bw: &mut BrowserWindow, req: Option<NavRequest>) -> Tab {
         let id = self.next_tab;
         self.next_tab += 1;
         let proxy = self.proxy.clone();
@@ -415,6 +427,8 @@ impl App {
             pointer: false,
             frame_renders: 0,
             frame_titles: Vec::new(),
+            focus: None,
+            window_focus_sent: None,
         };
         let (vw, vh) = bw.viewport();
         let _ = t.tx.send(TabCmd::Render {
@@ -423,12 +437,12 @@ impl App {
             scroll_y: 0.0,
             dark: bw.page_dark(),
         });
-        if let Some(u) = url {
-            t.history.push(HistoryEntry::new(u.clone()));
+        if let Some(req) = req {
+            t.history.push(HistoryEntry { url: req.url.clone(), frames: Vec::new(), post: req.post.clone() });
             t.index = 0;
-            t.url = Some(u.clone());
+            t.url = Some(req.url.clone());
             t.loading = true;
-            let _ = t.tx.send(TabCmd::Navigate(u));
+            let _ = t.tx.send(TabCmd::Navigate(Box::new(req)));
         }
         t
     }
@@ -465,6 +479,7 @@ impl App {
                     None => serde_json::Value::Null,
                 };
                 v["hover_image"] = serde_json::json!(t.hover_image);
+                v["page_focus"] = serde_json::json!(t.focus.map(FocusKind::name));
                 v["find_open"] = serde_json::json!(w.find.is_some());
                 v["find_total"] = serde_json::json!(w.find.as_ref().map_or(0, |f| f.total));
                 v["find_active"] = serde_json::json!(w.find.as_ref().and_then(|f| f.active));
@@ -557,10 +572,17 @@ impl BrowserWindow {
     }
 
     fn navigate(&mut self, url: Url) {
+        self.navigate_request(NavRequest::get(url));
+    }
+
+    /// Navigate the active tab: a new session history entry (a form POST keeps its body).
+    fn navigate_request(&mut self, req: NavRequest) {
+        let url = req.url.clone();
         if let Some(t) = self.tab_mut() {
             t.history.truncate(t.index + 1);
-            if t.history.last().map(|e| &e.url) != Some(&url) || t.history.is_empty() {
-                t.history.push(HistoryEntry::new(url.clone()));
+            let entry = HistoryEntry { url: url.clone(), frames: Vec::new(), post: req.post.clone() };
+            if req.post.is_some() || t.history.last().map(|e| &e.url) != Some(&url) || t.history.is_empty() {
+                t.history.push(entry);
             }
             t.index = t.history.len() - 1;
             t.url = Some(url.clone());
@@ -568,7 +590,8 @@ impl BrowserWindow {
             t.load_started = Instant::now();
             t.scroll_y = 0.0;
             t.favicon = None;
-            let _ = t.tx.send(TabCmd::Navigate(url));
+            t.focus = None;
+            let _ = t.tx.send(TabCmd::Navigate(Box::new(req)));
         }
         self.url_focused = false;
         self.sync_url_field();
@@ -591,7 +614,7 @@ impl BrowserWindow {
             t.load_started = Instant::now();
             if !same_document {
                 t.scroll_y = 0.0;
-                let _ = t.tx.send(TabCmd::Navigate(entry.url));
+                let _ = t.tx.send(TabCmd::Navigate(Box::new(entry.request())));
             }
             if !entry.frames.is_empty() {
                 let _ = t.tx.send(TabCmd::RestoreFrames(entry.frames));
@@ -605,10 +628,10 @@ impl BrowserWindow {
 
     fn reload(&mut self) {
         if let Some(t) = self.tab_mut() {
-            if let Some(u) = t.url.clone() {
+            if let Some(h) = t.history.get(t.index).cloned() {
                 t.loading = true;
                 t.load_started = Instant::now();
-                let _ = t.tx.send(TabCmd::Navigate(u));
+                let _ = t.tx.send(TabCmd::Navigate(Box::new(h.request())));
             }
         }
         self.dirty = true;
@@ -733,6 +756,65 @@ impl BrowserWindow {
         self.drag_thumb.is_some()
             || matches!(self.hover, Target::Scrollbar)
             || self.last_scroll.elapsed() < Duration::from_millis(1200)
+    }
+
+    /// Show a `<select>`'s options as a menu under the select (window coordinates).
+    fn open_select_popup(&mut self, popup: SelectPopup) {
+        let sy = self.tab().map(|t| t.scroll_y).unwrap_or(0.0);
+        let at = (popup.rect.x, popup.rect.bottom() - sy + CHROME_H);
+        let mut entries = Vec::new();
+        let mut current = None;
+        for it in &popup.items {
+            if it.group {
+                entries.push(Entry::item(&it.label, None, Action::ChooseOption(usize::MAX), false));
+                continue;
+            }
+            let Some(i) = it.option else { continue };
+            if it.selected && current.is_none() {
+                current = Some(entries.len());
+            }
+            let indent = if popup.items.iter().any(|g| g.group) { "    " } else { "" };
+            let mark = if it.selected { "✓ " } else { "   " };
+            entries.push(Entry::item(
+                &format!("{mark}{indent}{}", it.label),
+                None,
+                Action::ChooseOption(i),
+                it.enabled,
+            ));
+        }
+        if entries.is_empty() {
+            return;
+        }
+        let win = self.logical_size();
+        let mut m = Menu::new("select", entries, at, win);
+        m.rect.w = m.rect.w.max(popup.rect.w);
+        // Below the select if it fits, else above it, else as high as the window allows.
+        let top = popup.rect.y - sy + CHROME_H;
+        m.rect.y = if at.1 + m.rect.h <= win.1 - 4.0 {
+            at.1
+        } else if top - m.rect.h >= CHROME_H {
+            top - m.rect.h
+        } else {
+            (win.1 - m.rect.h - 4.0).max(4.0)
+        };
+        m.hover = current;
+        self.menu = Some(m);
+        self.select_popup = Some(popup);
+        self.dirty = true;
+    }
+
+    /// Tell the active tab whether the page has keyboard focus (caret and focus ring).
+    fn sync_window_focus(&mut self) {
+        let on = !self.url_focused
+            && !self.find.as_ref().is_some_and(|f| f.focused)
+            && self.menu.is_none()
+            && self.window.has_focus();
+        if let Some(t) = self.tab_mut() {
+            if t.window_focus_sent != Some(on) {
+                t.window_focus_sent = Some(on);
+                let _ = t.tx.send(TabCmd::WindowFocus(on));
+            }
+        }
     }
 
     fn content_rect(&self) -> Rect {
@@ -1270,7 +1352,7 @@ impl ApplicationHandler<UserEvent> for App {
                     let t = &mut bw.tabs[ti];
                     if let Some(url) = t.url.clone() {
                         t.history.truncate(t.index + 1);
-                        t.history.push(HistoryEntry { url, frames });
+                        t.history.push(HistoryEntry { url, frames, post: None });
                         t.index = t.history.len() - 1;
                         state_changed = true;
                     }
@@ -1282,7 +1364,8 @@ impl ApplicationHandler<UserEvent> for App {
                     t.title = title;
                     t.content_height = content_height;
                     t.secure = secure;
-                    // Redirects: replace the current history entry.
+                    // Redirects: replace the current history entry (a POST answered with a
+                    // redirect is now a GET of the new URL).
                     if t.url.as_ref() != Some(&url) {
                         if let Some(h) = t.history.get_mut(t.index) {
                             *h = HistoryEntry::new(url.clone());
@@ -1329,12 +1412,46 @@ impl ApplicationHandler<UserEvent> for App {
                     if let Some(u) = link {
                         if is_active {
                             match open {
-                                LinkOpen::Current => bw.navigate(u),
+                                LinkOpen::Current => bw.navigate_request(u),
                                 LinkOpen::BackgroundTab => bw.pending_background.push((u, false)),
                                 LinkOpen::ForegroundTab => bw.pending_background.push((u, true)),
                             }
                             state_changed = true;
                         }
+                    }
+                }
+                TabEvent::Focus { kind, rect } => {
+                    let t = &mut bw.tabs[ti];
+                    t.focus = kind;
+                    // Keep the focused element in view (Tab, or a failed `required` check).
+                    if let (Some(r), true) = (rect, is_active) {
+                        let vh = bw.viewport().1;
+                        let sy = bw.tabs[ti].scroll_y;
+                        if r.y < sy || r.bottom() > sy + vh {
+                            bw.scroll_to((r.y - vh / 3.0).max(0.0));
+                        }
+                    }
+                    state_changed = true;
+                }
+                TabEvent::Popup(popup) => {
+                    if is_active {
+                        bw.open_select_popup(popup);
+                        state_changed = true;
+                    }
+                }
+                TabEvent::Copy(text) => {
+                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                        let _ = cb.set_text(text);
+                    }
+                }
+                TabEvent::FocusExit => {
+                    // Tab past the page's last element: on to the address bar (like Firefox's
+                    // toolbar), which then hands focus back on the next Tab.
+                    if is_active {
+                        bw.tabs[ti].focus = None;
+                        bw.url_focused = true;
+                        bw.url.select_all();
+                        state_changed = true;
                     }
                 }
                 TabEvent::FindResult { total, active, rect } => {
@@ -1373,7 +1490,7 @@ impl ApplicationHandler<UserEvent> for App {
                 .unwrap_or_default();
             for (u, foreground) in pending {
                 if let Some(mut bw) = self.windows.remove(&id) {
-                    let t = self.new_tab(&mut bw, Some(u));
+                    let t = self.new_tab_request(&mut bw, Some(u));
                     bw.tabs.insert(bw.active + 1, t);
                     if foreground {
                         bw.active += 1;
@@ -1600,6 +1717,17 @@ impl ApplicationHandler<UserEvent> for App {
                 bw.scroll_content(dy, true);
                 state_changed = true;
             }
+            WindowEvent::Ime(Ime::Commit(s))
+                if !bw.url_focused
+                    && !bw.find.as_ref().is_some_and(|f| f.focused)
+                    && bw
+                        .tab()
+                        .is_some_and(|t| matches!(t.focus, Some(FocusKind::Text | FocusKind::TextArea))) =>
+            {
+                if let Some(t) = bw.tab() {
+                    let _ = t.tx.send(TabCmd::Text(s));
+                }
+            }
             WindowEvent::Ime(ime) => {
                 if bw.url_focused {
                     match ime {
@@ -1622,6 +1750,10 @@ impl ApplicationHandler<UserEvent> for App {
             _ => {}
         }
         if keep && !bw.tabs.is_empty() {
+            if bw.menu.is_none() {
+                bw.select_popup = None;
+            }
+            bw.sync_window_focus();
             if bw.dirty {
                 bw.window.request_redraw();
             }
@@ -1864,6 +1996,12 @@ impl App {
     fn run_action(&mut self, bw: &mut BrowserWindow, el: &ActiveEventLoop, action: Action) {
         let home = || Url::parse(HOME).ok();
         match action {
+            Action::ChooseOption(index) => {
+                if let (Some(p), Some(t)) = (bw.select_popup.take(), bw.tab()) {
+                    let _ =
+                        t.tx.send(TabCmd::ChooseOption { frame_path: p.frame_path, select: p.select, index });
+                }
+            }
             Action::NewTab => self.open_tab(bw, home()),
             Action::NewWindow => {
                 self.open_window(el, home().into_iter().collect(), false);
@@ -1895,10 +2033,10 @@ impl App {
             }
             Action::TabReload(i) => {
                 if let Some(t) = bw.tabs.get_mut(i) {
-                    if let Some(u) = t.url.clone() {
+                    if let Some(h) = t.history.get(t.index).cloned() {
                         t.loading = true;
                         t.load_started = Instant::now();
-                        let _ = t.tx.send(TabCmd::Navigate(u));
+                        let _ = t.tx.send(TabCmd::Navigate(Box::new(h.request())));
                     }
                 }
             }
@@ -2148,6 +2286,10 @@ impl App {
             bw.close_find();
             return true;
         }
+        // Keys for the focused element in the page.
+        if self.page_key(bw, key, text) {
+            return true;
+        }
         // Page scrolling.
         let vh = bw.viewport().1;
         match key {
@@ -2168,6 +2310,95 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// Route a key to the page when its focused element uses it (text editing, Space on a
+    /// checkbox, arrows in a select, ...). Tab always goes to the page (focus navigation).
+    /// Returns whether the key was sent.
+    fn page_key(&mut self, bw: &mut BrowserWindow, key: &Key, text: Option<&str>) -> bool {
+        let m = bw.modifiers;
+        let p = primary(m);
+        let mac = cfg!(target_os = "macos");
+        let mods = KeyMods {
+            shift: m.shift_key(),
+            word: if mac { m.alt_key() } else { m.control_key() },
+            primary: p,
+        };
+        let Some(t) = bw.tab() else { return false };
+        let send = |cmd: TabCmd| {
+            let _ = t.tx.send(cmd);
+            true
+        };
+        if matches!(key, Key::Named(NamedKey::Tab)) && !p {
+            return send(TabCmd::Key { key: PageKey::Tab, mods });
+        }
+        let Some(kind) = t.focus else { return false };
+        let ch = |s: &str| matches!(key, Key::Character(c) if c.eq_ignore_ascii_case(s));
+        let editing = matches!(kind, FocusKind::Text | FocusKind::TextArea);
+        let pk = match key {
+            Key::Named(NamedKey::Enter) => Some(PageKey::Enter),
+            Key::Named(NamedKey::Space) => Some(PageKey::Space),
+            Key::Named(NamedKey::Backspace) => Some(PageKey::Backspace),
+            Key::Named(NamedKey::Delete) => Some(PageKey::Delete),
+            Key::Named(NamedKey::ArrowLeft) => Some(PageKey::Left),
+            Key::Named(NamedKey::ArrowRight) => Some(PageKey::Right),
+            Key::Named(NamedKey::ArrowUp) => Some(PageKey::Up),
+            Key::Named(NamedKey::ArrowDown) if m.alt_key() => Some(PageKey::Open),
+            Key::Named(NamedKey::ArrowDown) => Some(PageKey::Down),
+            Key::Named(NamedKey::Home) => Some(PageKey::Home),
+            Key::Named(NamedKey::End) => Some(PageKey::End),
+            _ if p && ch("a") => Some(PageKey::SelectAll),
+            _ if p && ch("z") && m.shift_key() => Some(PageKey::Redo),
+            _ if p && (ch("z")) => Some(PageKey::Undo),
+            _ if p && ch("y") && !mac => Some(PageKey::Redo),
+            _ if p && ch("c") => Some(PageKey::Copy),
+            _ if p && ch("x") => Some(PageKey::Cut),
+            _ => None,
+        };
+        if editing {
+            if p && ch("v") {
+                let clip = arboard::Clipboard::new().ok().and_then(|mut cb| cb.get_text().ok());
+                return match clip {
+                    Some(c) => send(TabCmd::Text(c)),
+                    None => true,
+                };
+            }
+            // Printable text (incl. Space) is inserted; Enter etc. are keys.
+            let printable = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
+            if let (Some(t), false) = (printable, p || (m.control_key() && !mac)) {
+                return send(TabCmd::Text(t.to_string()));
+            }
+            let wanted = match pk {
+                Some(PageKey::Up | PageKey::Down) => kind == FocusKind::TextArea,
+                Some(PageKey::Space | PageKey::Open) => false,
+                Some(_) => true,
+                None => false,
+            };
+            return wanted && send(TabCmd::Key { key: pk.unwrap_or(PageKey::Escape), mods });
+        }
+        let wanted = match (kind, pk) {
+            (_, None) => false,
+            (FocusKind::Select, Some(k)) => matches!(
+                k,
+                PageKey::Space
+                    | PageKey::Enter
+                    | PageKey::Open
+                    | PageKey::Up
+                    | PageKey::Down
+                    | PageKey::Left
+                    | PageKey::Right
+                    | PageKey::Home
+                    | PageKey::End
+            ),
+            (FocusKind::Radio, Some(k)) => {
+                matches!(k, PageKey::Space | PageKey::Up | PageKey::Down | PageKey::Left | PageKey::Right)
+            }
+            (FocusKind::Checkbox, Some(k)) => k == PageKey::Space,
+            (FocusKind::Button | FocusKind::Summary, Some(k)) => matches!(k, PageKey::Space | PageKey::Enter),
+            (FocusKind::Link, Some(k)) => k == PageKey::Enter,
+            _ => false,
+        };
+        wanted && pk.is_some_and(|k| send(TabCmd::Key { key: k, mods }))
     }
 
     fn find_key(&mut self, bw: &mut BrowserWindow, key: &Key, text: Option<&str>) -> bool {
@@ -2198,6 +2429,16 @@ impl App {
             Key::Named(NamedKey::Escape) => {
                 bw.url_focused = false;
                 bw.sync_url_field();
+                return true;
+            }
+            // Tab from the address bar moves into the page (its first focusable element).
+            Key::Named(NamedKey::Tab) if !m.shift_key() && !primary(m) => {
+                bw.url_focused = false;
+                bw.sync_url_field();
+                if let Some(t) = bw.tab() {
+                    let mods = KeyMods::default();
+                    let _ = t.tx.send(TabCmd::Key { key: PageKey::Tab, mods });
+                }
                 return true;
             }
             _ => {

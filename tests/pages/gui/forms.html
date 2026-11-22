@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>forms</title>
+<style>body { font: 16px sans-serif; margin: 40px; } form { margin-bottom: 30px; } input, select, button, textarea { margin: 6px; }</style>
+</head><body>
+<form action="/form-title" id="f1">
+  <input id="q" name="q" size="30" placeholder="Search">
+  <input type="checkbox" id="c" name="c" value="yes"><label for="c">Safe</label>
+  <select id="s" name="s"><option>one<option>two<option>three</select>
+  <input type="submit" id="go" value="Search">
+</form>
+<form action="/form-title" method="post" id="f2">
+  <textarea id="t" name="t" rows="3" cols="30"></textarea>
+  <button id="send">Send</button>
+</form>
+</body></html>

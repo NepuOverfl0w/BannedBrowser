@@ -212,3 +212,55 @@ pub fn dump(tree: &LayoutTree) -> String {
     }
     out
 }
+
+/// Page rects (CSS px) covering a DOM element: its boxes' border boxes, or for an inline
+/// element (e.g. a link) its fragments on each line. Used for focus rings.
+pub fn node_rects(tree: &LayoutTree, doc: &bb_dom::Document, node: bb_dom::NodeId) -> Vec<bb_paint::Rect> {
+    use bb_paint::Rect;
+    let mut out = Vec::new();
+    let mut text = Vec::new();
+    let within = |n: bb_dom::NodeId| n == node || doc.ancestors(n).any(|a| a == node);
+    let mut stack: Vec<(BoxId, (f32, f32))> = vec![(tree.root, (0.0, 0.0))];
+    while let Some((id, off)) = stack.pop() {
+        let b = &tree.boxes[id];
+        let o = (off.0 + b.rel_offset.0, off.1 + b.rel_offset.1);
+        if b.node == Some(node)
+            && !matches!(b.kind, BoxKind::Inline | BoxKind::Text(_))
+            && b.w > 0.0
+            && b.h > 0.0
+        {
+            out.push(Rect::new(b.x + o.0, b.y + o.1, b.w, b.h));
+        }
+        for line in &b.lines {
+            for it in &line.items {
+                match it {
+                    LineItem::Span { id: sid, x0, x1, top, bottom, .. }
+                        if tree.boxes[*sid].node == Some(node) =>
+                    {
+                        out.push(Rect::new(x0 + o.0, top + o.1, x1 - x0, bottom - top));
+                    }
+                    LineItem::Text { x, width, baseline, ascent, descent, node: Some(n), .. }
+                        if within(*n) =>
+                    {
+                        text.push(Rect::new(x + o.0, baseline - ascent + o.1, *width, ascent + descent));
+                    }
+                    LineItem::Atomic { id: aid } => {
+                        let a = &tree.boxes[*aid];
+                        if a.node.is_some_and(|n| n != node && within(n)) {
+                            text.push(Rect::new(a.x + o.0, a.y + o.1, a.w, a.h));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for &c in b.children.iter().rev() {
+            stack.push((c, o));
+        }
+    }
+    if out.is_empty() {
+        out = text;
+    }
+    out.retain(|r| r.w > 0.0 && r.h > 0.0);
+    out
+}

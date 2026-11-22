@@ -34,6 +34,8 @@ pub enum Action {
     UrlPasteAndGo,
     UrlDelete,
     UrlSelectAll,
+    /// Pick option `index` (in the list of options) of the open `<select>` drop-down.
+    ChooseOption(usize),
 }
 
 // Menus hold about ten short-lived entries; boxing the action buys nothing.

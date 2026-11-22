@@ -3,7 +3,7 @@
 //! sorted by z-index; opacity creates a layer).
 
 use crate::inline::first_baseline;
-use crate::tree::{BoxId, BoxKind, Control, LayoutTree, LineItem, Replaced};
+use crate::tree::{BoxId, BoxKind, Control, EditView, LayoutTree, LineItem, Replaced};
 use bb_css::Rgba;
 use bb_paint::display::linear_gradient_for;
 use bb_paint::{
@@ -645,18 +645,59 @@ impl<'a> Painter<'a> {
         let (a, d) = crate::inline::inline_extents(s);
         let line_top = r.y + ((r.h - (a + d)) / 2.0).max(0.0);
         match c {
-            Control::TextField { value, placeholder, password } => {
-                let text = if *password { "•".repeat(value.chars().count()) } else { value.clone() };
+            Control::TextField { value, placeholder, password, edit, .. } => {
                 let col = if *placeholder { Rgba::rgb(0x75, 0x75, 0x75) } else { s.color };
+                let g = FieldGeometry::single(value, *placeholder, *password, edit.as_ref(), r, s);
                 self.dl.push(Item::PushClip { rect: r, radii: None });
-                self.text_at(&text, s, r.x, line_top, col);
+                if let Some(e) = edit.as_ref().filter(|_| !*placeholder) {
+                    if let Some((sa, sb)) = e.selection {
+                        let (x0, x1) = (g.x_of(0, sa), g.x_of(0, sb));
+                        self.dl.push(Item::Rect {
+                            rect: Rect::new(x0, line_top, x1 - x0, a + d),
+                            color: SELECTION,
+                        });
+                    }
+                }
+                self.text_at(&g.shown_line(0), s, r.x - g.scroll_x, line_top, col);
+                if let Some(e) = edit.as_ref().filter(|e| e.caret_visible) {
+                    let cx = if *placeholder { r.x } else { g.x_of(0, e.caret) };
+                    self.dl.push(Item::Rect {
+                        rect: Rect::new(cx, line_top, 1.0, a + d),
+                        color: color(s.color),
+                    });
+                }
                 self.dl.push(Item::PopClip);
             }
-            Control::TextArea { value } => {
+            Control::TextArea { value, placeholder, edit, .. } => {
+                let col = if *placeholder { Rgba::rgb(0x75, 0x75, 0x75) } else { s.color };
+                let g = FieldGeometry::multi(value, *placeholder, edit.as_ref(), r, s);
                 self.dl.push(Item::PushClip { rect: r, radii: None });
-                let lh = a + d;
-                for (i, line) in value.trim_start_matches('\n').lines().enumerate() {
-                    self.text_at(line, s, r.x, r.y + i as f32 * lh, s.color);
+                for (i, (start, line)) in g.lines().enumerate() {
+                    let top = r.y + i as f32 * g.line_h - g.scroll_y;
+                    if top + g.line_h < r.y || top > r.bottom() {
+                        continue;
+                    }
+                    if let Some((sa, sb)) = edit.as_ref().filter(|_| !*placeholder).and_then(|e| e.selection)
+                    {
+                        let (la, lb) = (sa.max(start), sb.min(start + line.len()));
+                        // A selected line break shows as a little extra highlight.
+                        let nl = sb > start + line.len() && sa <= start + line.len();
+                        if la < lb || nl {
+                            let x0 = g.x_of(i, la.min(start + line.len()));
+                            let x1 = g.x_of(i, lb.max(la)) + if nl { 4.0 } else { 0.0 };
+                            self.dl.push(Item::Rect {
+                                rect: Rect::new(x0, top, x1 - x0, g.line_h),
+                                color: SELECTION,
+                            });
+                        }
+                    }
+                    self.text_at(line, s, r.x - g.scroll_x, top, col);
+                }
+                if let Some(e) = edit.as_ref().filter(|e| e.caret_visible) {
+                    let (li, cx) = if *placeholder { (0, r.x) } else { g.caret_xy(e.caret) };
+                    let top = r.y + li as f32 * g.line_h - g.scroll_y;
+                    self.dl
+                        .push(Item::Rect { rect: Rect::new(cx, top, 1.0, g.line_h), color: color(s.color) });
                 }
                 self.dl.push(Item::PopClip);
             }
@@ -690,7 +731,7 @@ impl<'a> Painter<'a> {
                     }
                 }
             }
-            Control::Select { label } => {
+            Control::Select { label, .. } => {
                 self.dl.push(Item::PushClip { rect: r, radii: None });
                 self.text_at(label, s, r.x, line_top, s.color);
                 self.dl.push(Item::PopClip);
@@ -701,6 +742,178 @@ impl<'a> Painter<'a> {
                 self.dl.push(Item::Path { path: p.stroke(1.5), paint: Paint::Solid(color(s.color)) });
             }
         }
+    }
+}
+
+/// `i` clamped to `s` and moved back to a character boundary (offsets come from an editor whose
+/// text can differ from what is drawn; slicing must never panic).
+fn boundary(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Selection highlight in page form controls.
+const SELECTION: Color = Color::rgba(0x7c, 0x5c, 0xff, 0x55);
+
+/// Where the text of a text control is drawn: line geometry and the scroll that keeps the
+/// caret visible. Painting and click-to-caret hit testing share it, so a click lands where the
+/// text was drawn.
+pub struct FieldGeometry<'a> {
+    value: &'a str,
+    password: bool,
+    style: &'a ComputedStyle,
+    origin_x: f32,
+    pub line_h: f32,
+    pub scroll_x: f32,
+    pub scroll_y: f32,
+}
+
+impl<'a> FieldGeometry<'a> {
+    fn new(value: &'a str, password: bool, r: Rect, s: &'a ComputedStyle) -> Self {
+        let (a, d) = crate::inline::inline_extents(s);
+        FieldGeometry {
+            value,
+            password,
+            style: s,
+            origin_x: r.x,
+            line_h: a + d,
+            scroll_x: 0.0,
+            scroll_y: 0.0,
+        }
+    }
+
+    /// A single-line field (`<input>`).
+    pub fn single(
+        value: &'a str,
+        placeholder: bool,
+        password: bool,
+        edit: Option<&EditView>,
+        r: Rect,
+        s: &'a ComputedStyle,
+    ) -> Self {
+        let mut g = Self::new(value, password && !placeholder, r, s);
+        if let Some(e) = edit.filter(|_| !placeholder) {
+            let cx = g.width_of(value, e.caret);
+            g.scroll_x = (cx - r.w + 2.0).max(0.0);
+        }
+        g
+    }
+
+    /// A multi-line field (`<textarea>`; lines are not wrapped).
+    pub fn multi(
+        value: &'a str,
+        placeholder: bool,
+        edit: Option<&EditView>,
+        r: Rect,
+        s: &'a ComputedStyle,
+    ) -> Self {
+        let mut g = Self::new(value, false, r, s);
+        if let Some(e) = edit.filter(|_| !placeholder) {
+            let (li, start) = g.line_of(e.caret);
+            let line = g.line(li, start);
+            let cx = g.width_of(line, e.caret - start);
+            g.scroll_x = (cx - r.w + 2.0).max(0.0);
+            g.scroll_y = ((li + 1) as f32 * g.line_h - r.h).max(0.0);
+        }
+        g
+    }
+
+    fn width_of(&self, text: &str, byte: usize) -> f32 {
+        let prefix = &text[..boundary(text, byte)];
+        let shown = if self.password { "•".repeat(prefix.chars().count()) } else { prefix.to_string() };
+        crate::inline::shape(&shown, self.style).width
+    }
+
+    /// (line index, start byte) of the line holding byte `i`.
+    fn line_of(&self, i: usize) -> (usize, usize) {
+        let i = boundary(self.value, i);
+        let start = self.value[..i].rfind('\n').map_or(0, |p| p + 1);
+        (self.value[..start].matches('\n').count(), start)
+    }
+
+    fn line(&self, _index: usize, start: usize) -> &'a str {
+        let end = self.value[start..].find('\n').map_or(self.value.len(), |p| start + p);
+        &self.value[start..end]
+    }
+
+    /// Lines with their start offsets.
+    pub fn lines(&self) -> impl Iterator<Item = (usize, &'a str)> + 'a {
+        let v = self.value;
+        let mut start = 0;
+        v.split('\n').map(move |l| {
+            let s = start;
+            start += l.len() + 1;
+            (s, l)
+        })
+    }
+
+    /// The text of line `i` as drawn (bullets for passwords).
+    pub fn shown_line(&self, i: usize) -> String {
+        let line = self.lines().nth(i).map_or("", |(_, l)| l);
+        if self.password {
+            "•".repeat(line.chars().count())
+        } else {
+            line.to_string()
+        }
+    }
+
+    /// Page x of byte `i` (an offset into the whole value) on line `line_index`.
+    pub fn x_of(&self, line_index: usize, i: usize) -> f32 {
+        let start = self.lines().nth(line_index).map_or(0, |(s, _)| s);
+        let line = self.line(line_index, start);
+        self.origin_x - self.scroll_x + self.width_of(line, boundary(self.value, i).saturating_sub(start))
+    }
+
+    /// (line index, page x) of the caret at byte `i`.
+    pub fn caret_xy(&self, i: usize) -> (usize, f32) {
+        let (li, _) = self.line_of(i);
+        (li, self.x_of(li, i))
+    }
+
+    /// The byte offset nearest to page x on line `line_index` (clamped to the lines).
+    pub fn offset_at(&self, line_index: usize, x: f32) -> usize {
+        let count = self.lines().count();
+        let li = line_index.min(count.saturating_sub(1));
+        let (start, line) = self.lines().nth(li).unwrap_or((0, ""));
+        let mut best = (start, f32::MAX);
+        for (j, _) in line.char_indices().chain(std::iter::once((line.len(), ' '))) {
+            let d = (self.x_of(li, start + j) - x).abs();
+            if d < best.1 {
+                best = (start + j, d);
+            }
+        }
+        best.0
+    }
+}
+
+/// The caret offset a click at page point (x, y) puts in the text control `node` (its value's
+/// byte offset), using the geometry its box was painted with.
+pub fn text_control_offset_at(tree: &LayoutTree, node: bb_dom::NodeId, x: f32, y: f32) -> Option<usize> {
+    let &b = tree.node_box.get(&node)?;
+    let lb = &tree.boxes[b];
+    let BoxKind::Replaced(Replaced::Control(c)) = &lb.kind else { return None };
+    let (cx, cy, cw, ch) = lb.content_rect();
+    let content = Rect::new(cx + lb.rel_offset.0, cy + lb.rel_offset.1, cw, ch);
+    match c {
+        Control::TextField { value, placeholder, password, edit, .. } => {
+            if *placeholder {
+                return Some(0);
+            }
+            let g = FieldGeometry::single(value, false, *password, edit.as_ref(), content, &lb.style);
+            Some(g.offset_at(0, x))
+        }
+        Control::TextArea { value, placeholder, edit, .. } => {
+            if *placeholder {
+                return Some(0);
+            }
+            let g = FieldGeometry::multi(value, false, edit.as_ref(), content, &lb.style);
+            let li = ((y - content.y + g.scroll_y) / g.line_h.max(1.0)).floor().max(0.0) as usize;
+            Some(g.offset_at(li, x))
+        }
+        _ => None,
     }
 }
 

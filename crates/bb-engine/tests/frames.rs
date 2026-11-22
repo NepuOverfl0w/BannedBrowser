@@ -76,13 +76,14 @@ fn targeted_links_navigate_frames() {
         .find_map(|y| p.link_hit_at(nav.x + 50.0, nav.y + y as f32).filter(|h| h.target == "_top"))
         .unwrap();
     assert!(
-        matches!(p.follow_link(&client, hit), LinkDisposition::Top(u) if u.href().ends_with("welcome.html"))
+        matches!(p.follow_link(&client, hit), LinkDisposition::Top(u) if u.url.href().ends_with("welcome.html"))
     );
     // Unknown names and _blank open a new tab.
     let mut h = p.link_hit_at(nav.x + 60.0, nav.y + 40.0).unwrap_or(bb_engine::LinkHit {
         url: page_url("links.html"),
         target: String::new(),
         frame_path: vec![1],
+        post: None,
     });
     h.target = "_blank".into();
     assert!(matches!(p.follow_link(&client, h.clone()), LinkDisposition::NewTab(_)));

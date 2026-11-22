@@ -111,7 +111,7 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
 | `crates/bb-text` | fonts, fallback, shaping, line breaking and bidi helpers |
 | `crates/bb-image`, `bb-paint` | image decoding; rasterizer, display list, glyph cache |
 | `crates/bb-layout` | box tree, layout, paint (display-list building), hit testing, find-in-page |
-| `crates/bb-engine` | the `Page` pipeline, frames (`frames.rs`), internal pages |
+| `crates/bb-engine` | the `Page` pipeline, frames (`frames.rs`), focus/keyboard/form controls (`interact.rs`), form submission (`forms.rs`), internal pages |
 | `crates/bb-js` | placeholder for our own JS engine (M10) |
 | `crates/bb-ui` | chrome widget toolkit, themes, original icons, text field |
 | `crates/bannedbrowser` | the binary: CLI, headless mode, GUI (`gui.rs`), tab workers (`tab.rs`) |

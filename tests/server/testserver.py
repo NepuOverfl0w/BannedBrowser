@@ -109,6 +109,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             esc = c.replace("&", "&amp;").replace("<", "&lt;")
             body = f"<!DOCTYPE html><title>{esc}</title><p>{esc}</p>".encode()
             return self.send_body(body, "text/html; charset=utf-8")
+        if path == "/form-title":
+            # A page whose title is the request method and its query (GET) or body (POST).
+            data = self.req_body.decode("utf-8", "replace") if self.command == "POST" else query
+            t = f"{self.command} {data}".replace("&", "&amp;").replace("<", "&lt;")
+            body = f"<!DOCTYPE html><title>{t}</title><p>{t}</p>".encode()
+            return self.send_body(body, "text/html; charset=utf-8")
         if path == "/echo":
             body = self.req_body
             out = {"method": self.command, "path": self.path,

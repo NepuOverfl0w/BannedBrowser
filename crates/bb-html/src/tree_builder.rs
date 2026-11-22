@@ -666,7 +666,21 @@ impl TreeBuilder {
         } else {
             attrs
         };
-        self.doc.create_element(ns, &name, attrs)
+        let el = self.doc.create_element(ns, &name, attrs);
+        // §13.2.6.1 step 12: associate form-associated elements with the form element pointer
+        // (unless a template is open, or a listed element has its own `form` attribute). Our
+        // form owner lookup also requires the form to be in the element's tree.
+        if ns == Namespace::Html && bb_dom::FORM_ASSOCIATED.contains(&name.as_str()) {
+            if let Some(form) = self.form {
+                let listed_with_form_attr =
+                    bb_dom::LISTED.contains(&name.as_str()) && tag.attrs.iter().any(|(k, _)| k == "form");
+                let template_open = self.open.iter().any(|&n| self.doc.is_html(n, "template"));
+                if !listed_with_form_attr && !template_open {
+                    self.doc.set_parser_form_owner(el, form);
+                }
+            }
+        }
+        el
     }
 
     fn insert_element(&mut self, tag: &Tag, ns: Namespace) -> NodeId {
