@@ -3,7 +3,6 @@
 //! The [`Canvas`] trait is the single paint path for web content *and* the
 //! browser chrome. [`SoftwareCanvas`] (CPU, premultiplied RGBA8) is the
 //! reference implementation used by every test.
-#![forbid(unsafe_code)]
 
 pub mod canvas;
 pub mod display;

@@ -1,6 +1,5 @@
 //! `bb-css` — CSS Syntax Level 3 tokenizer and parser, Selectors Level 4
 //! (subset), Media Queries, and value parsing (lengths, colors, `calc()`).
-#![forbid(unsafe_code)]
 
 pub mod calc;
 pub mod media;

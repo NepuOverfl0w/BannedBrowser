@@ -9,7 +9,6 @@
 //! let u = base.join("../x?y").unwrap();
 //! assert_eq!(u.href(), "https://example.com/x?y");
 //! ```
-#![forbid(unsafe_code)]
 
 mod host;
 pub mod idna;

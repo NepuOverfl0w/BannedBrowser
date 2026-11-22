@@ -82,7 +82,7 @@ _Last updated: 2026-11-22 (session 2)._
 * **Network:** no cache yet (M8); no HTTP/2; `HTTP_PROXY` absolute-form only for plain http.
 * **Frames:** frame navigations are in session history (each history entry stores its frames' URLs; Back/Forward reload only the frames that differ), but frame scroll positions aren't restored; no frame resizing by dragging borders (`noresize` is the only behaviour); iframes are opaque (child canvas background is always painted); `<object data=…html>` isn't a nested document; keyboard focus doesn't move into frames (keys scroll the largest frame of a frameset).
 * **Find:** top-level document only (not inside frames); RTL runs highlight approximately; the counter is per tab but isn't refreshed when switching tabs with the bar open.
-* **GUI:** menus are drawn inside the window (can't extend past its edges); the About window is opened from the ≡ menu only: macOS's app menu "About" item still shows the system's standard panel (replacing it needs AppKit calls, i.e. `unsafe`), and "About BannedBrowser" sits directly in the ≡ menu because menus have no submenus (no Help submenu) yet; no bookmarks; no session restore; private windows share the network client (no cookies exist yet, so nothing leaks); screenshots of overlapping windows in GUI tests can be stale.
+* **GUI:** menus are drawn inside the window (can't extend past its edges); the About window is opened from the ≡ menu only: macOS's app menu "About" item still shows the system's standard panel (replacing it needs AppKit calls; possible now that `unsafe` is allowed, planned), and "About BannedBrowser" sits directly in the ≡ menu because menus have no submenus (no Help submenu) yet; no bookmarks; no session restore; private windows share the network client (no cookies exist yet, so nothing leaks); screenshots of overlapping windows in GUI tests can be stale.
 * **macOS cross-check:** `ring`'s build script needs the macOS SDK headers to compile its C/asm, which the Linux VM doesn't have; the macOS CI job covers it. Two attempts (clang + generic headers) failed; not retried further.
 * **Packages:** not code-signed or notarized (macOS Gatekeeper / Windows SmartScreen will warn); no Windows icon resource embedded in the `.exe` yet.
 * **Environment:** `web.archive.org` blocked by the dev sandbox's egress policy (archived-site checks run on GitHub runners); theoldnet.com serves "Hello World" to non-browser user agents (our UA is fine).
@@ -180,9 +180,12 @@ v0.2 = M3–M11 in full, verified against https://www.whatismybrowser.com, plus:
   - The accept action needs a per-session secret token, so web pages can't link their way past a certificate error.
   - This needs either `:target`/`<details>` support or M10 JS for the Advanced toggle.
 
-**GPU decisions (maintainer, 2026-11-22, session 2):**
-* `unsafe` is allowed in platform crates only (AGENTS.md hard rule 3); engine crates stay
-  `unsafe`-free. The new platform crate `bb-gpu` holds the GPU code.
+**GPU and `unsafe` decisions (maintainer, 2026-11-22, session 2):**
+* `unsafe` is allowed in every crate (AGENTS.md hard rule 3; it replaced a short-lived
+  "platform crates only" rule the same day). Each `unsafe` block carries a `// SAFETY:`
+  comment, enforced by clippy. Features that were blocked only by the old rule are now in
+  scope: the macOS app-menu "About BannedBrowser" item opening our About window (AppKit),
+  GPU access (`bb-gpu`), the JIT (`bb-js-jit`), OS hardware video decoding (`bb-media-os`).
 * v0.2 includes **full WebGPU** (on wgpu) and **full WebGL 1 and 2** for web content (our own
   WebGL implementation on top of `bb-gpu`; GLSL ES shaders translated with wgpu's `naga`).
   Which conformance suites gate them (WebGPU CTS, Khronos WebGL conformance) and how is

@@ -8,7 +8,6 @@
 //! * `file:`, `data:` and `about:` schemes.
 //! * Encoding detection for HTML (BOM → Content-Type → `<meta>` prescan →
 //!   fallback), see [`encoding`].
-#![forbid(unsafe_code)]
 
 pub mod cookies;
 pub mod data_url;

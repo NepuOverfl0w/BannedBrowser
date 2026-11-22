@@ -1,6 +1,5 @@
 //! `bb-style` — the CSS cascade, inheritance, computed values, the UA
 //! stylesheet and HTML presentational hints.
-#![forbid(unsafe_code)]
 
 mod cascade;
 pub mod computed;

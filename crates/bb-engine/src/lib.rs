@@ -4,7 +4,6 @@
 //! [`Page::load`] runs the whole pipeline synchronously (used by headless mode
 //! and by each tab's worker thread). Panics inside the pipeline are caught and
 //! turned into the "BannedBrowser hit a snag" page.
-#![forbid(unsafe_code)]
 
 mod frames;
 mod internal;

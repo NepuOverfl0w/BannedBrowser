@@ -1,5 +1,4 @@
 //! BannedBrowser — entry point.
-#![forbid(unsafe_code)]
 
 mod about;
 mod cli;

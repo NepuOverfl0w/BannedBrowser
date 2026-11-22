@@ -9,7 +9,6 @@
 //! assert_eq!(doc.title(), "");
 //! assert_eq!(doc.text_content(doc.body().unwrap()), "Hello world");
 //! ```
-#![forbid(unsafe_code)]
 
 mod entities;
 mod foreign;

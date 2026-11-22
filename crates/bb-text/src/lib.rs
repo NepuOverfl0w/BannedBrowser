@@ -4,7 +4,6 @@
 //!
 //! Font files are loaded once and kept for the life of the process (a font
 //! cache that never shrinks), which lets shaped faces borrow `'static` data.
-#![forbid(unsafe_code)]
 
 use rustc_hash::FxHashMap;
 use rustybuzz::ttf_parser;

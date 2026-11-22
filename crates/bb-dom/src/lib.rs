@@ -6,7 +6,6 @@
 //!
 //! Every mutation bumps [`Document::generation`] and marks dirty flags so the
 //! style/layout stages can later do incremental work.
-#![forbid(unsafe_code)]
 
 mod dump;
 mod select;

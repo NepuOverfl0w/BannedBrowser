@@ -3,7 +3,6 @@
 //! Wraps the allowed codecs (`png`, `zune-jpeg`, `gif`, `image-webp`) and
 //! implements BMP and ICO decoding itself. All decoders are limited in size
 //! and never panic on malformed input.
-#![forbid(unsafe_code)]
 
 use std::io::Cursor;
 use std::sync::Arc;

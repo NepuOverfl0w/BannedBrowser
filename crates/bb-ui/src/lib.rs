@@ -3,7 +3,6 @@
 //! Everything paints through `bb-paint` display lists (the same path as web
 //! content), in logical pixels; the shell renders them at the window's scale
 //! factor. Icons are original vector path data in a Proton-like line style.
-#![forbid(unsafe_code)]
 
 pub mod icons;
 pub mod text;

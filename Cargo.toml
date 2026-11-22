@@ -90,10 +90,14 @@ inherits = "release"
 debug = false
 strip = true
 
+# `unsafe` is allowed in every crate (maintainer decision, 2026-11-22), but each `unsafe` block
+# must carry a `// SAFETY:` comment explaining why it is sound.
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
 too_many_arguments = "allow"
 type_complexity = "allow"
 new_without_default = "allow"

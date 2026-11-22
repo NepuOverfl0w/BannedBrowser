@@ -2,7 +2,6 @@
 //! collapsing, inline formatting with UAX #14 line breaking, floats, HTML
 //! tables, basic flexbox, positioned boxes, list markers and replaced
 //! elements; plus display-list generation and hit testing.
-#![forbid(unsafe_code)]
 
 pub mod block;
 pub mod find;
