@@ -532,12 +532,10 @@ impl P<'_> {
                 self.i -= 1;
                 let start = self.i;
                 let n = self.number();
-                if self.annex_b() {
-                    // Decided after parsing: a backreference if that many groups exist, else
-                    // legacy octal / identity escapes.
-                    self.max_backref = self.max_backref.max(0);
-                    let _ = (n, start);
-                } else {
+                // Annex B: a number above the group count is a legacy octal / identity escape,
+                // so only the u/v modes check it (after parsing, against the group count).
+                let _ = start;
+                if !self.annex_b() {
                     self.max_backref = self.max_backref.max(u32::try_from(n).unwrap_or(u32::MAX));
                 }
                 ClassAtom::Set
@@ -627,9 +625,10 @@ impl P<'_> {
             _ => {
                 // IdentityEscape.
                 if self.u || self.v {
-                    if is_syntax(c) || (c == '-' && in_class) {
-                        c as u32
-                    } else if self.v && in_class && "&-!#%,:;<=>@`~".contains(c) {
+                    let allowed = is_syntax(c)
+                        || (c == '-' && in_class)
+                        || (self.v && in_class && "&-!#%,:;<=>@`~".contains(c));
+                    if allowed {
                         c as u32
                     } else {
                         return Err(format!("invalid escape \\{c}"));
