@@ -268,3 +268,69 @@ fn user_agent_default_and_override() {
     assert!(body.contains("Mozilla/5.0 (test override)"), "{body}");
     assert!(!body.contains("BannedBrowser/"), "{body}");
 }
+
+fn echo_cookie(c: &Client, ctx: Option<bb_net::cookies::CookieContext>) -> Option<String> {
+    let mut req = Request::get(url("/echo"));
+    if let Some(ctx) = ctx {
+        req.cookie_context = ctx;
+    }
+    let r = c.fetch(req).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+    v["headers"]["cookie"].as_str().map(str::to_string)
+}
+
+fn set_cookie_url(cookies: &[&str], to: Option<&str>) -> Url {
+    let enc = |s: &str| {
+        let mut o = String::new();
+        bb_url::percent::form_encode_into(s, &mut o);
+        o
+    };
+    let mut q: Vec<String> = cookies.iter().map(|c| format!("c={}", enc(c))).collect();
+    if let Some(t) = to {
+        q.push(format!("to={}", enc(t)));
+    }
+    url(&format!("/set-cookie?{}", q.join("&")))
+}
+
+#[test]
+fn cookies_round_trip_through_a_real_server() {
+    let c = client();
+    assert_eq!(echo_cookie(&c, None), None);
+    // Set by a response, sent back on the next request.
+    c.fetch(Request::get(set_cookie_url(&["a=1; Path=/", "b=2; Path=/; HttpOnly"], None))).unwrap();
+    assert_eq!(echo_cookie(&c, None).as_deref(), Some("a=1; b=2"));
+    // A redirect's Set-Cookie applies, and the redirected request already carries it.
+    let r = c.fetch(Request::get(set_cookie_url(&["r=3; Path=/"], Some("/echo")))).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+    assert_eq!(v["headers"]["cookie"].as_str(), Some("a=1; b=2; r=3"));
+    // Deleting with Max-Age=0.
+    c.fetch(Request::get(set_cookie_url(&["a=; Path=/; Max-Age=0"], None))).unwrap();
+    assert_eq!(echo_cookie(&c, None).as_deref(), Some("b=2; r=3"));
+    // A request without credentials sends none.
+    let mut req = Request::get(url("/echo"));
+    req.credentials = false;
+    let v: serde_json::Value = serde_json::from_slice(&c.fetch(req).unwrap().body).unwrap();
+    assert!(v["headers"]["cookie"].is_null());
+    // Another client (a private window) has its own jar.
+    assert_eq!(echo_cookie(&client(), None), None);
+}
+
+#[test]
+fn same_site_cookies_on_cross_site_subresources() {
+    let c = client();
+    c.fetch(Request::get(set_cookie_url(&["lax=1; Path=/; SameSite=Lax"], None))).unwrap();
+    // An image on another site's page: cross-site subresource, Lax cookies stay home.
+    let sub = bb_net::cookies::CookieContext {
+        site_for_cookies: Some(Url::parse("https://elsewhere.example/").unwrap()),
+        top_level_navigation: false,
+        ..Default::default()
+    };
+    assert_eq!(echo_cookie(&c, Some(sub)), None);
+    // The same request from our own page sends it.
+    let own = bb_net::cookies::CookieContext {
+        site_for_cookies: Some(url("/page.html")),
+        top_level_navigation: false,
+        ..Default::default()
+    };
+    assert_eq!(echo_cookie(&c, Some(own)).as_deref(), Some("lax=1"));
+}

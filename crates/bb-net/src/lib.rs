@@ -10,6 +10,7 @@
 //!   fallback), see [`encoding`].
 #![forbid(unsafe_code)]
 
+pub mod cookies;
 pub mod data_url;
 pub mod encoding;
 mod file;
@@ -17,6 +18,7 @@ pub mod headers;
 mod http;
 pub mod mime;
 mod proxy;
+pub mod psl;
 mod tls;
 
 pub use headers::Headers;
@@ -111,6 +113,10 @@ pub struct Request {
     pub timeout: Duration,
     pub cancel: CancelToken,
     pub progress: Option<ProgressFn>,
+    /// Send and store cookies (`false` for requests that must not carry them).
+    pub credentials: bool,
+    /// Who asked for this request, for SameSite cookie rules.
+    pub cookie_context: cookies::CookieContext,
 }
 
 impl std::fmt::Debug for Request {
@@ -130,6 +136,8 @@ impl Request {
             timeout: Duration::from_secs(60),
             cancel: CancelToken::new(),
             progress: None,
+            credentials: true,
+            cookie_context: cookies::CookieContext::default(),
         }
     }
 
@@ -218,6 +226,8 @@ pub struct Client {
     tls: tls::TlsContext,
     proxies: proxy::ProxyConfig,
     pool: Mutex<http::Pool>,
+    /// This client's cookies (one client per browsing profile; private windows have their own).
+    cookies: cookies::CookieJar,
 }
 
 impl Client {
@@ -230,13 +240,24 @@ impl Client {
         let tls = tls::TlsContext::new(&ca_files);
         let proxies =
             if config.no_proxy_env { proxy::ProxyConfig::default() } else { proxy::ProxyConfig::from_env() };
-        Client { config, tls, proxies, pool: Mutex::new(http::Pool::default()) }
+        Client {
+            config,
+            tls,
+            proxies,
+            pool: Mutex::new(http::Pool::default()),
+            cookies: cookies::CookieJar::new(),
+        }
     }
 
     /// Trust a certificate that failed verification, for its host only and only that exact
     /// certificate, for the rest of the session (the "Accept the Risk and Continue" button).
     pub fn add_certificate_exception(&self, problem: &CertificateProblem) {
         self.tls.add_exception(&problem.host, &problem.der);
+    }
+
+    /// This client's cookie jar.
+    pub fn cookies(&self) -> &cookies::CookieJar {
+        &self.cookies
     }
 
     /// Perform a fetch, following redirects if requested.
@@ -248,7 +269,23 @@ impl Client {
             if req.cancel.is_cancelled() {
                 return Err(NetError::new(NetErrorKind::Cancelled, "cancelled"));
             }
+            let http = matches!(req.url.scheme(), "http" | "https");
+            let mut ctx = req.cookie_context.clone();
+            ctx.method = req.method.clone();
+            if http && req.credentials {
+                // RFC 6265bis §5.8.3: the Cookie header for this hop.
+                match self.cookies.cookie_header(&req.url, &ctx) {
+                    Some(c) => req.headers.set("Cookie", &c),
+                    None => req.headers.remove("cookie"),
+                }
+            }
             let mut resp = self.fetch_one(&req, deadline)?;
+            if http && req.credentials {
+                // Every response in a redirect chain may set cookies (§5.7).
+                for h in resp.headers.get_all("set-cookie") {
+                    self.cookies.store(&req.url, h, &ctx);
+                }
+            }
             let is_redirect = matches!(resp.status, 301 | 302 | 303 | 307 | 308);
             if !(req.follow_redirects && is_redirect) {
                 resp.url_list = url_list;

@@ -49,3 +49,9 @@ it is first used.
 | Area | Decision | Boundaries |
 |---|---|---|
 | GPU, WebGPU, WebGL | The new platform crate **`bb-gpu`** may use `unsafe` (AGENTS.md hard rule 3). It hosts the `wgpu` device and surfaces, GPU compositing, and the GPU side of WebGPU and WebGL 1/2. | Every `unsafe` block has a `// SAFETY:` comment; the crate exposes a safe API. WebGL's API, state machine and validation are ours; shaders are translated with `naga`. Crates it needs beyond `wgpu` are justified here when added. |
+
+## Data files
+
+| File | Source and licence | Used by |
+|---|---|---|
+| `resources/psl/public_suffix_list.dat` | Public Suffix List, <https://publicsuffix.org/list/>, MPL-2.0, unmodified (`scripts/update-psl.sh`) | `bb-net` cookies (`psl.rs`) |

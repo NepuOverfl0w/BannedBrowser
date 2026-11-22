@@ -115,6 +115,8 @@ pub fn check_for_updates(client: &bb_net::Client) -> UpdateStatus {
     let Ok(url) = Url::parse(&latest_release_api()) else { return UpdateStatus::Failed };
     let mut req = bb_net::Request::get(url);
     req.headers.set("Accept", "application/vnd.github+json");
+    // The update check is not a visit: no cookies.
+    req.credentials = false;
     let Ok(resp) = client.fetch(req) else { return UpdateStatus::Failed };
     if resp.status != 200 {
         return UpdateStatus::Failed;

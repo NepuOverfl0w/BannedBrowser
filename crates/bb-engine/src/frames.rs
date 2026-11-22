@@ -281,10 +281,13 @@ impl Page {
         // (pages hold `Rc`s and are not `Send`).
         let urls: Vec<Option<Url>> =
             todo.iter().map(|(_, _, s)| if let Src::Url(u) = s { Some(u.clone()) } else { None }).collect();
+        // Frames' requests are made in the top-level document's site (cookies).
+        let top = crate::top_site(&self.url);
+        let top_ref = &top;
         let fetched: Vec<Option<crate::Fetched>> = std::thread::scope(|sc| {
             let handles: Vec<_> = urls
                 .iter()
-                .map(|u| u.as_ref().map(|u| sc.spawn(move || fetch_document(client, u))))
+                .map(|u| u.as_ref().map(|u| sc.spawn(move || fetch_document(client, u, Some(top_ref)))))
                 .collect();
             handles.into_iter().map(|h| h.and_then(|h| h.join().ok())).collect()
         });
@@ -301,7 +304,9 @@ impl Page {
             let page = match (&src, f) {
                 (Src::Url(_), Some(f)) => {
                     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        Page::from_html(client, &f.html, &f.url, cfg, f.status, f.secure)
+                        crate::with_top_site(&top, || {
+                            Page::from_html(client, &f.html, &f.url, cfg, f.status, f.secure)
+                        })
                     }));
                     match r {
                         Ok(mut p) => {
@@ -471,16 +476,23 @@ impl Page {
 
     /// Load `url` into the frame at `path`.
     pub fn navigate_frame(&mut self, client: &Client, path: &[usize], url: &Url) -> bool {
+        let top = crate::top_site(&self.url);
+        crate::with_top_site(&top.clone(), || self.navigate_frame_in(client, path, url, &top))
+    }
+
+    fn navigate_frame_in(&mut self, client: &Client, path: &[usize], url: &Url, top: &Url) -> bool {
         let Some((&first, rest)) = path.split_first() else { return false };
         let Some(f) = self.frames.get_mut(first) else { return false };
         if !rest.is_empty() {
-            return f.page.navigate_frame(client, rest, url);
+            return f.page.navigate_frame_in(client, rest, url, top);
         }
         let cfg = f.page.config;
-        let page = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Page::load(client, url, cfg)))
-            .unwrap_or_else(|_| {
-                Page::from_html(client, &crate::snag_page_html(&url.href(), "frame"), url, cfg, 0, false)
-            });
+        let page = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Page::load_in(client, url, cfg, Some(top))
+        }))
+        .unwrap_or_else(|_| {
+            Page::from_html(client, &crate::snag_page_html(&url.href(), "frame"), url, cfg, 0, false)
+        });
         *f.page = page;
         f.scroll_y = 0.0;
         true

@@ -129,6 +129,8 @@ struct ClosedTab {
 pub struct App {
     proxy: EventLoopProxy<UserEvent>,
     client: Arc<bb_net::Client>,
+    /// Private windows' network client: its own cookie jar (and later cache), never saved.
+    private_client: Arc<bb_net::Client>,
     windows: HashMap<WindowId, BrowserWindow>,
     next_tab: u64,
     initial: Vec<Url>,
@@ -157,6 +159,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let client = Arc::new(bb_engine::new_client_with(args.extra_ca.clone(), args.user_agent.clone()));
+    let private_client = Arc::new(bb_engine::new_client_with(args.extra_ca.clone(), args.user_agent.clone()));
     let mut initial: Vec<Url> =
         args.urls.iter().chain(args.new_tab.iter()).filter_map(|u| fixup_url(u)).collect();
     if initial.is_empty() {
@@ -165,6 +168,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     let mut app = App {
         proxy: event_loop.create_proxy(),
         client,
+        private_client,
         windows: HashMap::new(),
         next_tab: 1,
         initial,
@@ -365,9 +369,10 @@ impl App {
         let id = self.next_tab;
         self.next_tab += 1;
         let proxy = self.proxy.clone();
+        let client = if bw.private { self.private_client.clone() } else { self.client.clone() };
         let tx = tab::spawn(
             id,
-            self.client.clone(),
+            client,
             Box::new(move |tab, ev| {
                 let _ = proxy.send_event(UserEvent::Tab { tab, ev: Box::new(ev) });
             }),
@@ -1605,6 +1610,10 @@ impl ApplicationHandler<UserEvent> for App {
         } else {
             for t in &bw.tabs {
                 let _ = t.tx.send(TabCmd::Shutdown);
+            }
+            // The private session ends with the last private window: forget its cookies.
+            if bw.private && !self.windows.values().any(|w| w.private) {
+                self.private_client.cookies().clear();
             }
             if self.windows.is_empty() {
                 el.exit();

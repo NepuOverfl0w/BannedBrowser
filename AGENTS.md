@@ -70,6 +70,10 @@ Windows, macOS and Linux. Every web-platform component is ours.
      behind `#[cfg(target_os = ...)]`.
    - Use Cmd on macOS and Ctrl elsewhere. Get HiDPI from `scale_factor()`.
 7. **Original branding only:**
+   - Data files maintained by others are fine when their licence allows it and they ship
+     unmodified with their notice, e.g. the Public Suffix List (`resources/psl/`, MPL-2.0, run by
+     Mozilla; maintainer decision 2026-11-22). The "no Mozilla code" rule is about code and
+     branding.
    - No Firefox/Mozilla names, logos, icons or code.
    - No Honkai: Star Rail art, logos or fonts.
    - The name is a fan nod to Silver Wolf's handle `@Banned_Player`. Keep the disclaimers in

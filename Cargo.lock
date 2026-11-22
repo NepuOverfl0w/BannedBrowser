@@ -270,7 +270,9 @@ dependencies = [
  "encoding_rs",
  "flate2",
  "log",
+ "proptest",
  "rustls",
+ "serde_json",
  "thiserror 2.0.21",
  "webpki-roots",
 ]

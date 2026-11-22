@@ -32,6 +32,11 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   (without scripts, frames, embeds or objects). The drop-down shows the option the DOM says is
   selected.
 
+- **Cookies** (RFC 6265bis): `Set-Cookie` parsing (all date formats, Max-Age, Domain, Path,
+  Secure, HttpOnly, SameSite), the Public Suffix List (a site can't set cookies for `co.uk` or
+  `github.io`), SameSite rules for subresources and frames (unset means Lax), `__Secure-` and
+  `__Host-` prefixes, eviction limits. Private windows have their own cookies, forgotten when
+  the last private window closes. Cookies last for the session until profile storage arrives.
 - **Certificate error page:** "Go Back (Recommended)" (home when there's no history) and
   "Advanced…", which shows a readable reason (e.g. "the certificate expired on 2026-07-01"), an
   error code and **Accept the Risk and Continue**. Accepting trusts only that exact certificate

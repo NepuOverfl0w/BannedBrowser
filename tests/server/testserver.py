@@ -89,6 +89,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(b"until close " * 10)
             self.close_connection = True
             return
+        if path == "/set-cookie":
+            # Each c=<header value> becomes a Set-Cookie field; to=<path> makes it a redirect.
+            from urllib.parse import parse_qs
+            q = parse_qs(query, keep_blank_values=True)
+            cookies = [("Set-Cookie", v) for v in q.get("c", [])]
+            if "to" in q:
+                self.send_response(302)
+                for k, v in cookies:
+                    self.send_header(k, v)
+                self.send_header("Location", q["to"][0])
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            return self.send_body(b"cookies set", headers=cookies)
+        if path == "/cookie-title":
+            # A page whose title is the Cookie header it received ("none" without cookies).
+            c = self.headers.get("Cookie") or "none"
+            esc = c.replace("&", "&amp;").replace("<", "&lt;")
+            body = f"<!DOCTYPE html><title>{esc}</title><p>{esc}</p>".encode()
+            return self.send_body(body, "text/html; charset=utf-8")
         if path == "/echo":
             body = self.req_body
             out = {"method": self.command, "path": self.path,

@@ -261,9 +261,10 @@ fn handle(
             }
             *last_render = Some((vw, vh, scale, 0.0, dark));
             let fav = p.favicon_url.clone();
+            let page_url = p.url.clone();
             *page = Some(p);
             if let Some(fu) = fav {
-                if let Some(img) = fetch_favicon(client, &fu) {
+                if let Some(img) = fetch_favicon(client, &fu, &page_url) {
                     notify(id, TabEvent::Favicon(img));
                 }
             }
@@ -398,9 +399,15 @@ fn handle(
     }
 }
 
-fn fetch_favicon(client: &Client, url: &Url) -> Option<bb_paint::ImageData> {
+fn fetch_favicon(client: &Client, url: &Url, page: &Url) -> Option<bb_paint::ImageData> {
     let mut req = bb_net::Request::get(url.clone());
     req.timeout = std::time::Duration::from_secs(8);
+    // A subresource of the page (cookies follow the page's site).
+    req.cookie_context = bb_net::cookies::CookieContext {
+        site_for_cookies: Some(page.clone()),
+        top_level_navigation: false,
+        ..Default::default()
+    };
     let resp = client.fetch(req).ok().filter(|r| r.ok())?;
     let img = bb_image::decode(&resp.body).ok()?;
     Some(bb_paint::ImageData { width: img.width, height: img.height, pixels: img.frames[0].pixels.clone() })

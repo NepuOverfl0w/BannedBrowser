@@ -122,9 +122,57 @@ fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-fn fetch_document(client: &Client, url: &Url) -> Fetched {
+thread_local! {
+    /// The top-level document's URL while a frame's page is being built or navigated on this
+    /// thread (`None` for the top-level page itself). It is the "site for cookies" of every
+    /// request below it (RFC 6265bis §5.2).
+    static TOP_SITE: std::cell::RefCell<Option<Url>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with `top` as the top-level site, unless an outer frame already set one.
+pub(crate) fn with_top_site<R>(top: &Url, f: impl FnOnce() -> R) -> R {
+    let set = TOP_SITE.with(|t| {
+        let mut t = t.borrow_mut();
+        if t.is_none() {
+            *t = Some(top.clone());
+            true
+        } else {
+            false
+        }
+    });
+    let r = f();
+    if set {
+        TOP_SITE.with(|t| *t.borrow_mut() = None);
+    }
+    r
+}
+
+/// The top-level site for requests made while building `page_url`'s document.
+pub(crate) fn top_site(page_url: &Url) -> Url {
+    TOP_SITE.with(|t| t.borrow().clone()).unwrap_or_else(|| page_url.clone())
+}
+
+/// Cookie context of a request made by a document (a subresource), or of a frame's document.
+pub(crate) fn subresource_context(page_url: &Url) -> bb_net::cookies::CookieContext {
+    bb_net::cookies::CookieContext {
+        site_for_cookies: Some(top_site(page_url)),
+        top_level_navigation: false,
+        ..Default::default()
+    }
+}
+
+/// Fetch a document. `frame_top`: for a frame's document, the top-level document's URL (its
+/// site for cookies); `None` for a top-level navigation.
+fn fetch_document(client: &Client, url: &Url, frame_top: Option<&Url>) -> Fetched {
     let mut req = Request::get(url.clone());
     req.timeout = Duration::from_secs(45);
+    if let Some(top) = frame_top {
+        req.cookie_context = bb_net::cookies::CookieContext {
+            site_for_cookies: Some(top.clone()),
+            top_level_navigation: false,
+            ..Default::default()
+        };
+    }
     match client.fetch(req) {
         Ok(resp) => {
             let ct = resp.content_type();
@@ -242,7 +290,7 @@ fn collect_stylesheets(
         .iter()
         .filter_map(|s| if let Src::External(u, _) = s { Some(u.clone()) } else { None })
         .collect();
-    let fetched = fetch_texts(client, &urls, deadline);
+    let fetched = fetch_texts(client, &urls, deadline, base);
     let mut out = Vec::new();
     for s in srcs {
         match s {
@@ -283,7 +331,7 @@ fn resolve_imports(
         .collect();
     if depth < 4 && !imports.is_empty() && media.evaluate(ctx) {
         let urls: Vec<Url> = imports.iter().map(|(u, _)| u.clone()).collect();
-        let texts = fetch_texts(client, &urls, deadline);
+        let texts = fetch_texts(client, &urls, deadline, base);
         for (u, m) in imports {
             if !m.evaluate(ctx) {
                 continue;
@@ -296,7 +344,14 @@ fn resolve_imports(
     out.push(Sheet { origin: Origin::Author, stylesheet: Rc::new(ss), media });
 }
 
-fn fetch_bytes(client: &Client, urls: &[Url], deadline: Instant) -> HashMap<String, Result<Vec<u8>, String>> {
+/// Fetch subresources of the document at `page_url` in parallel.
+fn fetch_bytes(
+    client: &Client,
+    urls: &[Url],
+    deadline: Instant,
+    page_url: &Url,
+) -> HashMap<String, Result<Vec<u8>, String>> {
+    let ctx = subresource_context(page_url);
     let mut out = HashMap::new();
     if urls.is_empty() {
         return out;
@@ -321,6 +376,7 @@ fn fetch_bytes(client: &Client, urls: &[Url], deadline: Instant) -> HashMap<Stri
                 } else {
                     let mut req = Request::get(u.clone());
                     req.timeout = remaining.min(Duration::from_secs(20));
+                    req.cookie_context = ctx.clone();
                     match client.fetch(req) {
                         Ok(resp) if resp.ok() || resp.status == 0 => Ok(resp.body),
                         Ok(resp) => Err(format!("HTTP {}", resp.status)),
@@ -339,8 +395,13 @@ fn fetch_bytes(client: &Client, urls: &[Url], deadline: Instant) -> HashMap<Stri
     out
 }
 
-fn fetch_texts(client: &Client, urls: &[Url], deadline: Instant) -> HashMap<String, Option<String>> {
-    fetch_bytes(client, urls, deadline)
+fn fetch_texts(
+    client: &Client,
+    urls: &[Url],
+    deadline: Instant,
+    page_url: &Url,
+) -> HashMap<String, Option<String>> {
+    fetch_bytes(client, urls, deadline, page_url)
         .into_iter()
         .map(|(k, v)| (k, v.ok().map(|b| bb_net::encoding::decode_html(&b, Some("utf-8")).0)))
         .collect()
@@ -413,8 +474,13 @@ fn image_urls(doc: &Document, styles: &StyleMap, base: &Url) -> Vec<Url> {
 impl Page {
     /// Load and render `url` completely (blocking).
     pub fn load(client: &Client, url: &Url, config: PageConfig) -> Page {
+        Self::load_in(client, url, config, None)
+    }
+
+    /// Load `url`; `frame_top` is the top-level document's URL when this page is a frame.
+    pub(crate) fn load_in(client: &Client, url: &Url, config: PageConfig, frame_top: Option<&Url>) -> Page {
         let started = Instant::now();
-        let fetched = fetch_document(client, url);
+        let fetched = fetch_document(client, url, frame_top);
         let fetch_ms = started.elapsed().as_millis();
         let mut page = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             Page::from_html(client, &fetched.html, &fetched.url, config, fetched.status, fetched.secure)
@@ -485,7 +551,7 @@ impl Page {
         let mut images = HashMap::new();
         if config.load_images {
             let urls = image_urls(&doc, &styles, &base);
-            let fetched = fetch_bytes(client, &urls, deadline);
+            let fetched = fetch_bytes(client, &urls, deadline, url);
             for (k, v) in fetched {
                 let st = match v {
                     Ok(bytes) => match bb_image::decode(&bytes) {
