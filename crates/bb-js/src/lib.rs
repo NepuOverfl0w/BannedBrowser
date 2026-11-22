@@ -9,5 +9,6 @@ pub mod ast;
 pub mod lexer;
 pub mod parser;
 pub mod regexp;
+mod regexp_props;
 
 pub use parser::{parse_module, parse_script, ParseError};

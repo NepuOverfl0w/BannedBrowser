@@ -143,6 +143,9 @@ pub struct Parser {
     array_spread_trailing_comma: HashSet<usize>,
     /// The last directive prologue contained "use strict".
     saw_use_strict: bool,
+    /// Decorators parsed before the class being parsed, and its members' decorators.
+    pending_decorators: Vec<Expr>,
+    pending_member_decorators: Vec<(usize, Vec<Expr>)>,
 }
 
 fn kw(t: &Token, name: &str) -> bool {
@@ -219,6 +222,8 @@ impl Parser {
             in_params: false,
             array_spread_trailing_comma: HashSet::new(),
             saw_use_strict: false,
+            pending_decorators: Vec::new(),
+            pending_member_decorators: Vec::new(),
         })
     }
 
@@ -404,6 +409,12 @@ impl Parser {
     }
 
     fn declare_function(&mut self, name: &str, pos: usize) -> R<()> {
+        self.declare_function_kind(name, pos, true)
+    }
+
+    /// `plain`: a plain `function` (not async, not a generator); only those may repeat in a
+    /// sloppy-mode block.
+    fn declare_function_kind(&mut self, name: &str, pos: usize, plain: bool) -> R<()> {
         let top = self.scopes.last().expect("scope").function;
         if top {
             // Var-scoped at the top of a function or script (module: lexical).
@@ -418,12 +429,14 @@ impl Parser {
             Ok(())
         } else {
             let sloppy_dup =
-                !self.strict && self.scopes.last().expect("scope").block_functions.contains(name);
+                plain && !self.strict && self.scopes.last().expect("scope").block_functions.contains(name);
             if sloppy_dup {
                 return Ok(());
             }
             self.declare_lexical(name, pos)?;
-            self.scopes.last_mut().expect("scope").block_functions.insert(name.to_string());
+            if plain {
+                self.scopes.last_mut().expect("scope").block_functions.insert(name.to_string());
+            }
             Ok(())
         }
     }
@@ -524,6 +537,17 @@ impl Parser {
                 return self.function_declaration(true, pos);
             }
         }
+        if self.is("@") {
+            let d = self.decorators()?;
+            if self.is_kw("export") && self.module && self.scopes.len() == 1 {
+                self.pending_decorators = d;
+                return self.export_declaration();
+            }
+            if !self.is_kw("class") {
+                return self.err("decorators must come before a class");
+            }
+            self.pending_decorators = d;
+        }
         if self.is_kw("class") {
             let c = self.class(true)?;
             return Ok(Stmt::Class(c));
@@ -532,6 +556,7 @@ impl Parser {
             let kind = if self.is_kw("const") { VarKind::Const } else { VarKind::Let };
             self.next()?;
             let decls = self.var_declarations(kind, false)?;
+            self.require_initializers(kind, &decls, pos)?;
             self.semicolon()?;
             return Ok(Stmt::Var(kind, decls));
         }
@@ -590,9 +615,11 @@ impl Parser {
         if self.scopes.len() == 1 && !self.module {
             return self.err("'using' declarations aren't allowed at the top of a script");
         }
+        let pos = self.tok.start;
         let kind = if self.eat_kw("await")? { VarKind::AwaitUsing } else { VarKind::Using };
         self.next()?; // using
         let decls = self.var_declarations(kind, false)?;
+        self.require_initializers(kind, &decls, pos)?;
         self.semicolon()?;
         Ok(Stmt::Var(kind, decls))
     }
@@ -611,7 +638,7 @@ impl Parser {
             }
             _ => return self.err("expected a function name"),
         };
-        self.declare_function(&name, pos)?;
+        self.declare_function_kind(&name, pos, !is_async && !is_generator)?;
         let f = self.function_rest(Some(name), is_async, is_generator, FuncKind::Normal, start)?;
         Ok(Stmt::Function(f))
     }
@@ -638,6 +665,7 @@ impl Parser {
                     "var" => {
                         self.next()?;
                         let d = self.var_declarations(VarKind::Var, false)?;
+                        self.require_initializers(VarKind::Var, &d, pos)?;
                         self.semicolon()?;
                         Ok(Stmt::Var(VarKind::Var, d))
                     }
@@ -817,7 +845,9 @@ impl Parser {
         if let TokKind::Ident { name, .. } = self.tok.kind.clone() {
             let n = self.peek()?;
             if matches!(n.kind, TokKind::Punct(":")) {
-                self.check_ident(&name, false, start)?;
+                if name != "arguments" {
+                    self.check_ident(&name, false, start)?;
+                }
                 self.next()?;
                 self.next()?;
                 if self.f().labels.iter().any(|(l, _)| *l == name) {
@@ -1009,7 +1039,10 @@ impl Parser {
                 let starts_async = self.is_kw("async") && !matches!(self.peek()?.kind, TokKind::Punct("=>"));
                 let before = self.cover_errs.len();
                 let start = self.tok.start;
-                let e = self.lhs_or_expression(true)?;
+                self.cover_defer += 1;
+                let e = self.lhs_or_expression(true);
+                self.cover_defer -= 1;
+                let e = e?;
                 if self.is_kw("of") || self.is_kw("in") {
                     let of = self.is_kw("of");
                     if of && starts_let {
@@ -1404,8 +1437,19 @@ impl Parser {
             self.semicolon()?;
             return Ok(Stmt::ExportNamed { specs, source, star: false });
         }
+        if self.is("@") {
+            let d = self.decorators()?;
+            if !self.is_kw("class") && !self.is_kw("default") {
+                return self.err("decorators must come before a class");
+            }
+            self.pending_decorators.extend(d);
+        }
         if self.eat_kw("default")? {
             self.add_export(utf16("default"), start)?;
+            if self.is("@") {
+                let d = self.decorators()?;
+                self.pending_decorators.extend(d);
+            }
             let pos = self.tok.start;
             if self.is_kw("function")
                 || (self.is_kw("async") && kw(&self.peek()?, "function") && !self.peek()?.nl_before)
@@ -1727,9 +1771,46 @@ impl Parser {
         self.next()?; // class
         let outer_strict = self.strict;
         self.strict = true;
+        let decorators = std::mem::take(&mut self.pending_decorators);
+        let outer_members = std::mem::take(&mut self.pending_member_decorators);
+        self.pending_decorators = decorators;
         let r = self.class_rest(declaration, start);
+        self.pending_member_decorators = outer_members;
         self.strict = outer_strict;
         r
+    }
+
+    /// Stage 3 decorators: `@a.b`, `@a.b(args)`, `@(expr)`.
+    fn decorators(&mut self) -> R<Vec<Expr>> {
+        let mut out = Vec::new();
+        while self.eat("@")? {
+            let saved_strict = self.strict;
+            let e = if self.eat("(")? {
+                let e = self.expression(false)?;
+                self.expect(")")?;
+                e
+            } else {
+                let pos = self.tok.start;
+                let name = match &self.tok.kind {
+                    TokKind::Ident { name, .. } => name.clone(),
+                    _ => return self.err("expected a decorator"),
+                };
+                self.check_ident(&name, false, pos)?;
+                self.next()?;
+                let mut e = Expr::Ident(name);
+                while self.eat(".")? {
+                    e = self.member_dot(e, false)?;
+                }
+                if self.eat("(")? {
+                    let args = self.arguments()?;
+                    e = Expr::Call { callee: Box::new(e), args, optional: false };
+                }
+                e
+            };
+            self.strict = saved_strict;
+            out.push(e);
+        }
+        Ok(out)
     }
 
     fn class_rest(&mut self, declaration: bool, start: usize) -> R<Rc<Class>> {
@@ -1761,7 +1842,15 @@ impl Parser {
             }
         }
         self.expect("}")?;
-        Ok(Rc::new(Class { name, extends, constructor, members, span: (start, self.prev_end) }))
+        Ok(Rc::new(Class {
+            name,
+            extends,
+            constructor,
+            members,
+            decorators: std::mem::take(&mut self.pending_decorators),
+            member_decorators: std::mem::take(&mut self.pending_member_decorators),
+            span: (start, self.prev_end),
+        }))
     }
 
     fn class_body(&mut self, derived: bool) -> R<(Option<Rc<Function>>, Vec<ClassMember>)> {
@@ -1770,6 +1859,10 @@ impl Parser {
         while !self.is("}") {
             if self.eat(";")? {
                 continue;
+            }
+            let member_decorators = self.decorators()?;
+            if !member_decorators.is_empty() {
+                self.pending_member_decorators.push((members.len(), member_decorators));
             }
             let start = self.tok.start;
             let mut is_static = false;
@@ -2651,7 +2744,15 @@ impl Parser {
             if matches!(n.kind, TokKind::Punct("(")) {
                 return self.err("new import(...) isn't allowed");
             }
-            self.import_expression()?
+            let pos = self.tok.start;
+            let e = self.import_expression()?;
+            if matches!(e, Expr::ImportPhase(..)) {
+                return Err(ParseError {
+                    pos,
+                    msg: "new import.source()/import.defer() isn't allowed".into(),
+                });
+            }
+            e
         } else {
             self.primary()?
         };
@@ -2857,6 +2958,14 @@ impl Parser {
                 Ok(Expr::Ident(name))
             }
             TokKind::Private(_) => self.err("unexpected private name"),
+            TokKind::Punct("@") => {
+                let d = self.decorators()?;
+                if !self.is_kw("class") {
+                    return self.err("decorators must come before a class");
+                }
+                self.pending_decorators = d;
+                Ok(Expr::Class(self.class(false)?))
+            }
             _ => self.err("unexpected token"),
         }
     }

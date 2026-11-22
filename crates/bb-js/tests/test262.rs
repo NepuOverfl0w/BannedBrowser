@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// Tests passing at the last count (raise it as the parser improves; never lower it).
-const FLOOR: usize = 48_114;
+const FLOOR: usize = 48_675;
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../third_party/test262")

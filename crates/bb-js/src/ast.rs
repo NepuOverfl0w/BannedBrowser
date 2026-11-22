@@ -75,6 +75,10 @@ pub struct Class {
     pub extends: Option<Box<Expr>>,
     pub constructor: Option<Rc<Function>>,
     pub members: Vec<ClassMember>,
+    /// `@dec class …` (stage 3 decorators; applied at runtime later).
+    pub decorators: Vec<Expr>,
+    /// Decorators of members: (index into `members`, decorators).
+    pub member_decorators: Vec<(usize, Vec<Expr>)>,
     pub span: (usize, usize),
 }
 
