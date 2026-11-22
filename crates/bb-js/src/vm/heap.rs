@@ -235,6 +235,67 @@ pub enum GenState {
     Completed,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PromiseState {
+    Pending,
+    Fulfilled,
+    Rejected,
+}
+
+/// A PromiseReaction Record (§27.2.1.2): `capability` is (promise, resolve, reject).
+#[derive(Clone)]
+pub struct Reaction {
+    pub capability: Option<(Value, Value, Value)>,
+    pub fulfill: bool,
+    /// `Undefined`: no handler (pass the value through).
+    pub handler: Value,
+}
+
+pub struct PromiseData {
+    pub state: PromiseState,
+    pub result: Value,
+    pub fulfill_reactions: Vec<Reaction>,
+    pub reject_reactions: Vec<Reaction>,
+    pub handled: bool,
+}
+
+pub struct AsyncFn {
+    pub state: GenState,
+    pub resolve: Value,
+    pub reject: Value,
+}
+
+/// A queued job (§9.5): promise reactions and thenable resolution.
+pub enum Job {
+    Reaction { reaction: Reaction, argument: Value },
+    Thenable { promise: ObjRef, thenable: Value, then: Value },
+}
+
+impl Job {
+    pub fn trace(&self, os: &mut Vec<ObjRef>) {
+        match self {
+            Job::Reaction { reaction, argument } => {
+                trace_reaction(reaction, os);
+                push_val(argument, os);
+            }
+            Job::Thenable { promise, thenable, then } => {
+                os.push(*promise);
+                push_val(thenable, os);
+                push_val(then, os);
+            }
+        }
+    }
+}
+
+fn trace_reaction(r: &Reaction, os: &mut Vec<ObjRef>) {
+    if let Some((p, a, b)) = &r.capability {
+        push_val(p, os);
+        push_val(a, os);
+        push_val(b, os);
+    }
+    push_val(&r.handler, os);
+}
+
 /// What kind of object this is: ordinary, exotic (§10.4) or one with internal slots.
 pub enum Kind {
     Ordinary,
@@ -249,15 +310,34 @@ pub enum Kind {
     Symbol(Sym),
     Error,
     Date(f64),
-    RegExp { source: JsString, flags: JsString },
-    ArrayIter { target: Option<ObjRef>, index: u32, kind: IterKind, typed: bool },
-    StringIter { s: JsString, pos: usize, done: bool },
+    RegExp {
+        source: JsString,
+        flags: JsString,
+    },
+    ArrayIter {
+        target: Option<ObjRef>,
+        index: u32,
+        kind: IterKind,
+        typed: bool,
+    },
+    StringIter {
+        s: JsString,
+        pos: usize,
+        done: bool,
+    },
     ForIn(Box<ForIn>),
     IterRecord(Box<IterRecord>),
     Generator(Box<GenState>),
+    Promise(Box<PromiseData>),
+    /// A running async function: its parked frame and its promise's resolving functions.
+    Async(Box<AsyncFn>),
     Map(Box<OrderedMap>),
     Set(Box<OrderedMap>),
-    MapIter { map: Option<ObjRef>, index: usize, kind: IterKind },
+    MapIter {
+        map: Option<ObjRef>,
+        index: usize,
+        kind: IterKind,
+    },
 }
 
 /// Insertion-ordered map for Map/Set (§24.1): deleted entries leave holes so live iterators
@@ -528,6 +608,19 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
         Kind::Generator(g) => {
             if let GenState::SuspendedStart(f) | GenState::SuspendedYield(f) = &**g {
                 f.trace(os, es);
+            }
+        }
+        Kind::Async(a) => {
+            if let GenState::SuspendedStart(f) | GenState::SuspendedYield(f) = &a.state {
+                f.trace(os, es);
+            }
+            push_val(&a.resolve, os);
+            push_val(&a.reject, os);
+        }
+        Kind::Promise(p) => {
+            push_val(&p.result, os);
+            for r in p.fulfill_reactions.iter().chain(&p.reject_reactions) {
+                trace_reaction(r, os);
             }
         }
         Kind::Map(m) | Kind::Set(m) => {

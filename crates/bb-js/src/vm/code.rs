@@ -191,6 +191,11 @@ pub enum Op {
     IterCloseThrow,
     /// `[v] → []` completion value of script/eval code.
     SetCompletion,
+    // Async functions (§27.7).
+    /// First instruction of an async function: run the rest as its own run, `→ [promise]`.
+    AsyncStart,
+    /// `[v] →` park until `v` (as a promise) settles; followed by `Resume`.
+    Await,
     // Generators (§27.5).
     /// Park the frame in a new generator object and return that (after the parameters).
     GeneratorStart,

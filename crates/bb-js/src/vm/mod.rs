@@ -21,6 +21,7 @@ mod generator;
 pub mod heap;
 pub mod object;
 pub mod ops;
+pub mod promise;
 pub mod realm;
 pub mod value;
 
@@ -121,6 +122,8 @@ pub struct Vm {
     templates: HashMap<(usize, u32), ObjRef>,
     /// The last suspension was `yield*` passing an inner result object through as-is.
     pub(crate) yield_raw: bool,
+    /// The job queue (§9.5): run by `run_jobs`.
+    pub(crate) jobs: std::collections::VecDeque<Job>,
     /// Values hosts keep alive across calls.
     pub roots: Vec<Value>,
     /// Text written by `print` (test harnesses).
@@ -150,6 +153,7 @@ impl Vm {
             templates: HashMap::new(),
             roots: Vec::new(),
             yield_raw: false,
+            jobs: Default::default(),
             output: Vec::new(),
             fuel: None,
             terminated: false,
@@ -231,6 +235,9 @@ impl Vm {
         }
         roots.objects.extend(self.templates.values());
         roots.values.extend(self.roots.iter().cloned());
+        for j in &self.jobs {
+            j.trace(&mut roots.objects);
+        }
         self.heap.collect(&roots);
     }
 
@@ -1300,6 +1307,8 @@ impl Vm {
                 return self.syntax_error(&s);
             }
             Op::GeneratorStart => return self.generator_start(base),
+            Op::AsyncStart => return self.async_start(base),
+            Op::Await => return self.await_value(base),
             Op::Yield => {
                 let v = self.pop();
                 self.yield_raw = false;
@@ -1511,8 +1520,13 @@ impl Vm {
             (None, Some(g)) => js_str(g),
             _ => js_str(""),
         };
-        let proto =
-            if f.is_generator { self.realm.generator_function_proto } else { self.realm.function_proto };
+        let proto = if f.is_generator {
+            self.realm.generator_function_proto
+        } else if f.is_async {
+            self.realm.async_function_proto
+        } else {
+            self.realm.function_proto
+        };
         let is_gen = f.is_generator && !f.is_async;
         let closure = Closure {
             tmpl,

@@ -235,9 +235,13 @@ impl<'a> Compiler<'a> {
         let f = &t.ast;
         let mut c = Compiler::new(t.source.clone(), f.strict, false);
         let is_arrow = f.kind == FuncKind::Arrow;
-        if f.is_async {
-            c.unsupported("async functions");
+        if f.is_async && f.is_generator {
+            c.unsupported("async generators");
             return c.code;
+        }
+        if f.is_async {
+            // Errors from here on (parameters included) reject the promise (§27.7.5.1).
+            c.emit(Op::AsyncStart);
         }
         if f.kind == FuncKind::ClassConstructor {
             // Base constructors initialize fields before the body (§10.2.2 step 6.b).
@@ -1553,7 +1557,12 @@ impl<'a> Compiler<'a> {
             }
             Expr::Spread(x) => self.expr(x),
             Expr::Yield { arg, delegate } => self.yield_expr(arg.as_deref(), *delegate),
-            Expr::Await(_) => self.unsupported("await"),
+            Expr::Await(x) => {
+                self.expr(x);
+                self.emit(Op::Await);
+                let r = self.emit(Op::Resume(0));
+                self.code.ops[r] = Op::Resume(r as u32 + 1);
+            }
             Expr::NewTarget => {
                 self.emit(Op::NewTarget);
             }

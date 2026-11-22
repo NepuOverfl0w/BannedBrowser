@@ -44,8 +44,10 @@ impl Vm {
         let Some(g) = frame.generator else {
             return self.syntax_error("yield outside a generator");
         };
-        if let Kind::Generator(st) = &mut self.heap.obj_mut(g).kind {
-            **st = GenState::SuspendedYield(Box::new(frame));
+        match &mut self.heap.obj_mut(g).kind {
+            Kind::Generator(st) => **st = GenState::SuspendedYield(Box::new(frame)),
+            Kind::Async(a) => a.state = GenState::SuspendedYield(Box::new(frame)),
+            _ => {}
         }
         if self.frames.len() <= base {
             return Ok(Some(v));
@@ -56,10 +58,10 @@ impl Vm {
     }
 
     pub(super) fn generator_completed(&mut self, g: ObjRef) {
-        if let Kind::Generator(st) = &mut self.heap.obj_mut(g).kind {
-            if matches!(**st, GenState::Executing) {
-                **st = GenState::Completed;
-            }
+        match &mut self.heap.obj_mut(g).kind {
+            Kind::Generator(st) if matches!(**st, GenState::Executing) => **st = GenState::Completed,
+            Kind::Async(a) if matches!(a.state, GenState::Executing) => a.state = GenState::Completed,
+            _ => {}
         }
     }
 
@@ -196,6 +198,9 @@ pub(super) fn install(vm: &mut Vm) {
         .props
         .insert(PropKey::named("constructor"), Prop::data(Value::Object(gfp), false, false, true));
     realm::to_string_tag(vm, gfp, "GeneratorFunction");
+    let afp = vm.new_object_with_proto(Some(fp));
+    vm.realm.async_function_proto = afp;
+    realm::to_string_tag(vm, afp, "AsyncFunction");
     realm::to_string_tag(vm, gp, "Generator");
     method(vm, gp, "next", 1, |vm, c| vm.generator_resume(&c.this, Resume::Next, c.arg(0)));
     method(vm, gp, "return", 1, |vm, c| vm.generator_resume(&c.this, Resume::Return, c.arg(0)));

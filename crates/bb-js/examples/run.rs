@@ -8,6 +8,7 @@ fn main() {
     };
     let mut vm = bb_js::Vm::new();
     let r = vm.run_script(&src);
+    vm.run_jobs();
     for line in std::mem::take(&mut vm.output) {
         println!("{line}");
     }

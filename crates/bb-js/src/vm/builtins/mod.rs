@@ -30,6 +30,8 @@ pub(super) fn install(vm: &mut Vm) {
     super::generator::install(vm);
     object::install_dynamic_kinds(vm);
     install_reflect(vm);
+    super::promise::install(vm);
+    install_aggregate_error(vm);
     install_regexp(vm);
     install_global(vm);
 }
@@ -655,4 +657,43 @@ impl Vm {
             .insert(PropKey::named("lastIndex"), Prop::data(Value::Number(0.0), true, false, false));
         Ok(o)
     }
+}
+
+/// AggregateError (§20.5.7).
+fn install_aggregate_error(vm: &mut Vm) {
+    let ep = vm.realm.error_proto(ErrorKind::Error);
+    let proto = vm.new_object_with_proto(Some(ep));
+    vm.realm.aggregate_error_proto = proto;
+    let c = realm::constructor(
+        vm,
+        "AggregateError",
+        2,
+        |vm, c| {
+            let nt = c.new_target.unwrap_or(c.callee);
+            let proto = vm.prototype_from_ctor(nt, |r| r.aggregate_error_proto)?;
+            let o = vm.heap.alloc(Object::new(Some(proto), Kind::Error));
+            let msg = c.arg(1);
+            if !msg.is_undefined() {
+                let m = vm.to_string(&msg)?;
+                vm.heap.obj_mut(o).props.insert(PropKey::named("message"), Prop::method(Value::String(m)));
+            }
+            if let Value::Object(opts) = c.arg(2) {
+                let ck = PropKey::named("cause");
+                if vm.has_property(opts, &ck)? {
+                    let cause = vm.get(opts, &ck)?;
+                    vm.heap.obj_mut(o).props.insert(ck, Prop::method(cause));
+                }
+            }
+            let errors = vm.iterate_to_vec(&c.arg(0))?;
+            let arr = vm.new_array(errors);
+            vm.heap.obj_mut(o).props.insert(PropKey::named("errors"), Prop::method(Value::Object(arr)));
+            Ok(Value::Object(o))
+        },
+        proto,
+    );
+    let g = vm.realm.global;
+    let ec = vm.get(g, &PropKey::named("Error")).ok().and_then(|v| v.as_object());
+    vm.heap.obj_mut(c).proto = ec;
+    value(vm, proto, "name", Value::str("AggregateError"));
+    value(vm, proto, "message", Value::str(""));
 }
