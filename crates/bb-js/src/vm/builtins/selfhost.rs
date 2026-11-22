@@ -75,6 +75,8 @@ pub(super) fn install(vm: &mut Vm) {
         vm.create_data_property_or_throw(o, k, c.arg(2))?;
         Ok(Value::Undefined)
     });
+    helper(vm, i, "asyncStackTake", super::super::dispose::async_stack_take);
+    helper(vm, i, "suppressedError", |vm, c| Ok(vm.suppressed_error(c.arg(0), c.arg(1))));
     helper(vm, i, "asyncFromSyncIterator", |vm, c| Ok(Value::Object(vm.async_from_sync(c.arg(0), c.arg(1)))));
     // defineMethod(target, key, fn): a writable, configurable, non-enumerable built-in.
     helper(vm, i, "defineMethod", |vm, c| {
@@ -82,7 +84,23 @@ pub(super) fn install(vm: &mut Vm) {
         let k = vm.to_property_key(&c.arg(1))?;
         let f = obj_arg(vm, &c, 2)?;
         let fp = vm.realm.function_proto;
-        vm.heap.obj_mut(f).proto = Some(fp);
+        let name = match &k {
+            PropKey::Sym(s) => {
+                format!(
+                    "[{}]",
+                    s.0.description.as_deref().map(super::super::value::to_rust).unwrap_or_default()
+                )
+            }
+            k => k.display(),
+        };
+        let fo = vm.heap.obj_mut(f);
+        fo.proto = Some(fp);
+        // An anonymous function is named after its key (SetFunctionName).
+        let anonymous = matches!(fo.props.get(&PropKey::lit("name")).map(|p| &p.slot),
+            Some(Slot::Data(Value::String(s))) if s.is_empty());
+        if anonymous {
+            fo.props.insert(PropKey::lit("name"), Prop::data(Value::str(&name), false, false, true));
+        }
         vm.heap.obj_mut(o).props.insert(k, Prop::method(Value::Object(f)));
         Ok(Value::Undefined)
     });
@@ -90,6 +108,8 @@ pub(super) fn install(vm: &mut Vm) {
     let mut vals: Vec<(&str, Value)> = vec![
         ("Array", Value::Object(vm.realm.array_ctor)),
         ("Promise", Value::Object(vm.realm.promise_ctor)),
+        ("AsyncDisposableStackPrototype", Value::Object(vm.realm.async_disposable_stack_proto)),
+        ("AsyncIteratorPrototype", Value::Object(vm.realm.async_iterator_proto)),
     ];
     for (name, k) in [("TypeError", ErrorKind::Type), ("RangeError", ErrorKind::Range)] {
         let p = vm.realm.error_proto(k);

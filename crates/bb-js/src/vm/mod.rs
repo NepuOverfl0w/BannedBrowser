@@ -18,6 +18,7 @@ pub mod builtins;
 mod class;
 pub mod code;
 pub mod compiler;
+mod dispose;
 mod env;
 pub mod fx;
 mod generator;
@@ -1439,6 +1440,31 @@ impl Vm {
                     let v = self.get(ro, &PropKey::lit("value"))?;
                     self.push(v);
                 }
+            }
+            Op::DisposeScope => {
+                let c = self.new_dispose_cap();
+                self.push(c);
+            }
+            Op::AddDisposable(is_async) => {
+                let v = self.peek(0);
+                let Value::Object(cap) = self.peek(1) else { return Ok(None) };
+                self.add_disposable(cap, v, is_async)?;
+            }
+            Op::DisposeError => {
+                let e = self.pop();
+                let Value::Object(cap) = self.peek(0) else { return Ok(None) };
+                self.dispose_fold_error(cap, e);
+            }
+            Op::DisposeStep(t) => {
+                let Value::Object(cap) = self.peek(0) else { return Ok(None) };
+                match self.dispose_step(cap)? {
+                    Some(v) => self.push(v),
+                    None => self.jump(t),
+                }
+            }
+            Op::DisposeSync => {
+                let Value::Object(cap) = self.pop() else { return Ok(None) };
+                self.dispose_sync(cap)?;
             }
             Op::AsyncIterClose(t) => {
                 let Value::Object(r) = self.pop() else { return Ok(None) };

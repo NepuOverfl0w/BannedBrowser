@@ -370,6 +370,9 @@ pub enum Kind {
     WeakRef(Value),
     /// (cleanup callback, registered (target, held, token) cells); callbacks never run.
     FinalizationRegistry(Value, Vec<(Value, Value, Value)>),
+    /// A `using` scope's DisposeCapability (on the operand stack).
+    DisposeCap(Box<super::dispose::DisposeCap>),
+    DisposableStack(Box<super::dispose::StackData>),
     MapIter {
         map: Option<ObjRef>,
         index: usize,
@@ -723,6 +726,8 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
             }
         }
         Kind::WeakRef(v) => push_val(v, os),
+        Kind::DisposeCap(c) => c.trace(os),
+        Kind::DisposableStack(s) => s.cap.trace(os),
         Kind::TypedArray(t) => os.push(t.buffer),
         Kind::IterHelper(h) => h.trace(os),
         Kind::RegExpStringIter(r) => os.push(r.matcher),

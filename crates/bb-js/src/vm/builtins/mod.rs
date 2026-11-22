@@ -43,6 +43,7 @@ pub(super) fn install(vm: &mut Vm) {
     super::proxy::install(vm);
     super::promise::install(vm);
     install_aggregate_error(vm);
+    super::dispose::install(vm);
     regexp::install(vm);
     collections::install(vm);
     json::install(vm);

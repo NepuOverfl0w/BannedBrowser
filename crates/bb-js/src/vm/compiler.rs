@@ -26,6 +26,8 @@ enum Ctl<'a> {
     Iter,
     /// An async iterator record (for await): close and await the result.
     AsyncIter,
+    /// A `using` scope's capability (true: it has `await using`): dispose its resources.
+    Dispose(bool),
     Break {
         kind: BreakKind,
         labels: Vec<String>,
@@ -112,6 +114,7 @@ impl<'a> Compiler<'a> {
             Op::IterNext(_) => Op::IterNext(to),
             Op::IterResultCheck(_) => Op::IterResultCheck(to),
             Op::AsyncIterClose(_) => Op::AsyncIterClose(to),
+            Op::DisposeStep(_) => Op::DisposeStep(to),
             o => o,
         };
     }
@@ -403,9 +406,7 @@ impl<'a> Compiler<'a> {
         } else {
             c.emit(Op::Nop);
         }
-        for s in body {
-            c.stmt(s);
-        }
+        c.stmts(body);
         c.emit(Op::Undef);
         c.emit(Op::Ret);
         c.code
@@ -572,9 +573,7 @@ impl<'a> Compiler<'a> {
         if f.is_generator {
             c.emit(if f.is_async { Op::AsyncGenStart } else { Op::GeneratorStart });
         }
-        for s in &f.body {
-            c.stmt(s);
-        }
+        c.stmts(&f.body);
         c.emit(Op::Undef);
         c.emit(Op::Ret);
         c.code
@@ -621,10 +620,62 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// A statement list; one with `using` declarations disposes of its resources on every
+    /// way out (§14.2.2 Block evaluation, DisposeResources §9.5.7).
     fn stmts(&mut self, body: &'a [Stmt]) {
+        let Some(is_async) = using_kind(body) else {
+            for s in body {
+                self.stmt(s);
+            }
+            return;
+        };
+        self.emit(Op::DisposeScope);
+        let at = self.begin_dispose(is_async);
         for s in body {
             self.stmt(s);
         }
+        self.end_dispose(at, is_async);
+    }
+
+    /// `[cap]`: start the protected part of a `using` scope.
+    fn begin_dispose(&mut self, is_async: bool) -> usize {
+        let at = self.emit(Op::TryStart(0));
+        self.ctl.push(Ctl::Dispose(is_async));
+        self.ctl.push(Ctl::Handler);
+        at
+    }
+
+    /// End a `using` scope: dispose on the normal path, and on the throw path with the
+    /// exception as the completion.
+    fn end_dispose(&mut self, at: usize, is_async: bool) {
+        self.ctl.pop();
+        self.emit(Op::TryEnd);
+        self.ctl.pop();
+        self.dispose_code(is_async);
+        let done = self.emit(Op::Jump(0));
+        self.patch(at);
+        self.emit(Op::DisposeError);
+        self.dispose_code(is_async);
+        self.patch(done);
+    }
+
+    /// `[cap] → []`: DisposeResources, awaiting where it says to.
+    fn dispose_code(&mut self, is_async: bool) {
+        if is_async {
+            let top = self.here();
+            let t = self.emit(Op::TryStart(0));
+            let step = self.emit(Op::DisposeStep(0));
+            self.await_top();
+            self.emit(Op::TryEnd);
+            self.emit(Op::Pop);
+            self.emit(Op::Jump(top));
+            self.patch(t);
+            self.emit(Op::DisposeError);
+            self.emit(Op::Jump(top));
+            self.patch(step);
+            self.emit(Op::TryEnd);
+        }
+        self.emit(Op::DisposeSync);
     }
 
     fn stmt(&mut self, s: &'a Stmt) {
@@ -777,8 +828,10 @@ impl<'a> Compiler<'a> {
         if self.async_gen {
             self.await_top();
         }
-        let needs_cleanup =
-            self.ctl.iter().any(|c| matches!(c, Ctl::Finally(_) | Ctl::Iter | Ctl::AsyncIter | Ctl::Pop));
+        let needs_cleanup = self
+            .ctl
+            .iter()
+            .any(|c| matches!(c, Ctl::Finally(_) | Ctl::Iter | Ctl::AsyncIter | Ctl::Pop | Ctl::Dispose(_)));
         if needs_cleanup {
             self.emit(Op::SetRet);
             self.cleanup_to(0);
@@ -855,7 +908,18 @@ impl<'a> Compiler<'a> {
     fn var_decl(&mut self, kind: VarKind, decls: &'a [(Pat, Option<Expr>)]) {
         match kind {
             VarKind::Using | VarKind::AwaitUsing => {
-                self.unsupported("using declarations");
+                // `[cap] → [cap]`: each value is added to the scope's capability as bound.
+                for (p, init) in decls {
+                    match (p, init) {
+                        (Pat::Ident(n), Some(init)) => self.named_expr(init, n),
+                        (_, Some(init)) => self.expr(init),
+                        (_, None) => {
+                            self.emit(Op::Undef);
+                        }
+                    }
+                    self.emit(Op::AddDisposable(kind == VarKind::AwaitUsing));
+                    self.bind(p, Bind::Init);
+                }
             }
             VarKind::Var => {
                 for (p, init) in decls {
@@ -908,6 +972,10 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::IterClose);
                 }
                 Ctl::AsyncIter => self.async_close(),
+                Ctl::Dispose(is_async) => {
+                    let a = *is_async;
+                    self.dispose_code(a);
+                }
                 Ctl::Finally(body) => {
                     let body: &'a [Stmt] = body;
                     // The finally block runs in the context outside its try statement.
@@ -1009,8 +1077,12 @@ impl<'a> Compiler<'a> {
             Stmt::For { init, test, update, body } => {
                 let mut scoped = false;
                 let mut per_iter = false;
+                let mut dispose = None;
                 match init {
-                    Some(ForInit::Var(k @ (VarKind::Let | VarKind::Const), decls)) => {
+                    Some(ForInit::Var(
+                        k @ (VarKind::Let | VarKind::Const | VarKind::Using | VarKind::AwaitUsing),
+                        decls,
+                    )) => {
                         self.emit(Op::PushScope);
                         self.ctl.push(Ctl::Scope);
                         scoped = true;
@@ -1027,11 +1099,17 @@ impl<'a> Compiler<'a> {
                         }
                         for n in &names {
                             let i = self.name(n);
-                            self.emit(if *k == VarKind::Const {
-                                Op::DeclareConst(i)
-                            } else {
+                            self.emit(if *k == VarKind::Let {
                                 Op::DeclareLet(i)
+                            } else {
+                                Op::DeclareConst(i)
                             });
+                        }
+                        if matches!(k, VarKind::Using | VarKind::AwaitUsing) {
+                            // The loop's resources are disposed of once, after the loop.
+                            let a = *k == VarKind::AwaitUsing;
+                            self.emit(Op::DisposeScope);
+                            dispose = Some((self.begin_dispose(a), a));
                         }
                         self.var_decl(*k, decls);
                     }
@@ -1067,6 +1145,9 @@ impl<'a> Compiler<'a> {
                     self.patch(e);
                 }
                 self.pop_loop_patch_breaks();
+                if let Some((at, a)) = dispose {
+                    self.end_dispose(at, a);
+                }
                 if scoped {
                     self.ctl.pop();
                     self.emit(Op::PopScope);
@@ -1079,9 +1160,9 @@ impl<'a> Compiler<'a> {
                 let top = self.here();
                 let next = self.emit(Op::ForInNext(0));
                 self.push_loop(labels);
-                self.for_binding(head);
+                let d = self.for_binding(head);
                 self.stmt(body);
-                self.end_for_binding(head);
+                self.end_for_binding(head, d);
                 for c in self.take_continues() {
                     self.patch_to(c, top);
                 }
@@ -1105,9 +1186,9 @@ impl<'a> Compiler<'a> {
                 self.push_loop(labels);
                 let try_at = self.emit(Op::TryStart(0));
                 self.ctl.push(Ctl::Handler);
-                self.for_binding(head);
+                let d = self.for_binding(head);
                 self.stmt(body);
-                self.end_for_binding(head);
+                self.end_for_binding(head, d);
                 self.ctl.pop();
                 self.emit(Op::TryEnd);
                 for c in self.take_continues() {
@@ -1137,9 +1218,9 @@ impl<'a> Compiler<'a> {
         self.push_loop(labels);
         let try_at = self.emit(Op::TryStart(0));
         self.ctl.push(Ctl::Handler);
-        self.for_binding(head);
+        let d = self.for_binding(head);
         self.stmt(body);
-        self.end_for_binding(head);
+        self.end_for_binding(head, d);
         self.ctl.pop();
         self.emit(Op::TryEnd);
         for c in self.take_continues() {
@@ -1156,13 +1237,15 @@ impl<'a> Compiler<'a> {
 
     /// The right-hand side of for-in/of, with the loop's let/const names in TDZ (§14.7.5.6).
     fn for_head_tdz(&mut self, head: &'a ForHead, right: &'a Expr) {
-        if let ForHead::Var(k @ (VarKind::Let | VarKind::Const), p) = head {
+        if let ForHead::Var(k @ (VarKind::Let | VarKind::Const | VarKind::Using | VarKind::AwaitUsing), p) =
+            head
+        {
             let mut names = Vec::new();
             pat_names(p, &mut names);
             self.emit(Op::PushScope);
             for n in &names {
                 let i = self.name(n);
-                self.emit(if *k == VarKind::Const { Op::DeclareConst(i) } else { Op::DeclareLet(i) });
+                self.emit(if *k == VarKind::Let { Op::DeclareLet(i) } else { Op::DeclareConst(i) });
             }
             self.expr(right);
             self.emit(Op::PopScope);
@@ -1171,8 +1254,9 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// `[.. v] → [..]`: bind the loop value, in a fresh scope for let/const.
-    fn for_binding(&mut self, head: &'a ForHead) {
+    /// `[.. v] → [..]`: bind the loop value, in a fresh scope for let/const; with `using`,
+    /// `[.. v] → [.. cap]` and the iteration's dispose scope begun (its TryStart returned).
+    fn for_binding(&mut self, head: &'a ForHead) -> Option<(usize, bool)> {
         match head {
             ForHead::Var(k @ (VarKind::Let | VarKind::Const), p) => {
                 let mut names = Vec::new();
@@ -1186,15 +1270,31 @@ impl<'a> Compiler<'a> {
                 self.bind(p, Bind::Init);
             }
             ForHead::Var(VarKind::Var, p) | ForHead::Pat(p) => self.bind(p, Bind::Assign),
-            ForHead::Var(_, _) => {
-                self.emit(Op::Pop);
-                self.unsupported("using declarations");
+            ForHead::Var(k @ (VarKind::Using | VarKind::AwaitUsing), p) => {
+                let a = *k == VarKind::AwaitUsing;
+                let mut names = Vec::new();
+                pat_names(p, &mut names);
+                self.emit(Op::PushScope);
+                self.ctl.push(Ctl::Scope);
+                for n in &names {
+                    let i = self.name(n);
+                    self.emit(Op::DeclareConst(i));
+                }
+                self.emit(Op::DisposeScope);
+                self.emit(Op::Swap);
+                self.emit(Op::AddDisposable(a));
+                self.bind(p, Bind::Init);
+                return Some((self.begin_dispose(a), a));
             }
         }
+        None
     }
 
-    fn end_for_binding(&mut self, head: &ForHead) {
-        if let ForHead::Var(VarKind::Let | VarKind::Const, _) = head {
+    fn end_for_binding(&mut self, head: &ForHead, dispose: Option<(usize, bool)>) {
+        if let Some((at, a)) = dispose {
+            self.end_dispose(at, a);
+        }
+        if let ForHead::Var(VarKind::Let | VarKind::Const | VarKind::Using | VarKind::AwaitUsing, _) = head {
             self.ctl.pop();
             self.emit(Op::PopScope);
         }
@@ -2567,6 +2667,19 @@ fn top_functions(body: &[Stmt]) -> Vec<&Rc<Function>> {
 }
 
 /// Top-level lexical declarations (let/const/class), not functions.
+/// Whether a statement list declares `using` (`Some(true)`: some `await using`).
+fn using_kind(body: &[Stmt]) -> Option<bool> {
+    let mut r = None;
+    for s in body {
+        match s {
+            Stmt::Var(VarKind::AwaitUsing, _) => return Some(true),
+            Stmt::Var(VarKind::Using, _) => r = Some(false),
+            _ => {}
+        }
+    }
+    r
+}
+
 fn top_lexical(body: &[Stmt], out: &mut Vec<(String, bool)>) {
     for s in body {
         match s {
@@ -2604,6 +2717,7 @@ fn stmt_has_await(s: &Stmt) -> bool {
         }
         Stmt::For { init, test, update, body } => {
             (match init {
+                Some(ForInit::Var(VarKind::AwaitUsing, _)) => true,
                 Some(ForInit::Var(_, ds)) => {
                     ds.iter().any(|(p, i)| pat_has_await(p) || i.as_ref().is_some_and(expr_has_await))
                 }
@@ -2615,6 +2729,7 @@ fn stmt_has_await(s: &Stmt) -> bool {
         }
         Stmt::ForIn { head, right, body } | Stmt::ForOf { head, right, body, .. } => {
             let hp = match head {
+                ForHead::Var(VarKind::AwaitUsing, _) => true,
                 ForHead::Var(_, p) | ForHead::Pat(p) => pat_has_await(p),
             };
             hp || expr_has_await(right) || stmt_has_await(body)

@@ -22,6 +22,16 @@ pub enum Op {
     /// `[a b] → [a b a b]`
     Dup2,
     Swap,
+    /// `[] → [cap]`: a `using` scope's DisposeCapability.
+    DisposeScope,
+    /// `[cap v] → [cap v]`: AddDisposableResource (true: async-dispose).
+    AddDisposable(bool),
+    /// `[cap exc] → [cap]`: fold a throw completion into the capability.
+    DisposeError,
+    /// `[cap] → [cap v]` with `v` to await, or jump when DisposeResources is done.
+    DisposeStep(u32),
+    /// `[cap] → []`: finish DisposeResources; throws the completion's error.
+    DisposeSync,
     /// Move the top value down so `n` values sit above it.
     Bury(u8),
     /// Copy the value `n` below the top onto the top (`Pick(0)` = `Dup`).

@@ -28,6 +28,8 @@ macro_rules! realm_objects {
             pub sym_replace: Sym,
             pub sym_search: Sym,
             pub sym_split: Sym,
+            pub sym_dispose: Sym,
+            pub sym_async_dispose: Sym,
         }
 
         impl Realm {
@@ -56,6 +58,8 @@ macro_rules! realm_objects {
                     sym_replace: s("Symbol.replace"),
                     sym_search: s("Symbol.search"),
                     sym_split: s("Symbol.split"),
+                    sym_dispose: s("Symbol.dispose"),
+                    sym_async_dispose: s("Symbol.asyncDispose"),
                 }
             }
 
@@ -113,6 +117,9 @@ realm_objects!(
     promise_proto,
     promise_ctor,
     aggregate_error_proto,
+    suppressed_error_proto,
+    disposable_stack_proto,
+    async_disposable_stack_proto,
     set_iterator_proto,
     eval,
     throw_type_error,
@@ -128,7 +135,9 @@ impl Realm {
     }
     pub fn well_known(&self) -> Vec<(&'static str, Sym)> {
         vec![
+            ("asyncDispose", self.sym_async_dispose.clone()),
             ("asyncIterator", self.sym_async_iterator.clone()),
+            ("dispose", self.sym_dispose.clone()),
             ("hasInstance", self.sym_has_instance.clone()),
             ("isConcatSpreadable", self.sym_is_concat_spreadable.clone()),
             ("iterator", self.sym_iterator.clone()),

@@ -81,4 +81,47 @@
     A.length = len;
     return A;
   });
+
+  // AsyncDisposableStack.prototype.disposeAsync (§27.4.3.5): DisposeResources (§9.5.7)
+  // over resources that are all async-dispose.
+  async function disposeAsync() {
+    const resources = I.asyncStackTake(this);
+    if (resources === undefined) return undefined;
+    let hasError = false;
+    let error;
+    let needsAwait = false;
+    let hasAwaited = false;
+    for (let i = 0; i < resources.length; i += 2) {
+      const value = resources[i];
+      const method = resources[i + 1];
+      if (method === undefined) {
+        needsAwait = true;
+        continue;
+      }
+      try {
+        const result = I.call(method, value);
+        hasAwaited = true;
+        await result;
+      } catch (e) {
+        if (hasError) {
+          error = I.suppressedError(e, error);
+        } else {
+          hasError = true;
+          error = e;
+        }
+      }
+    }
+    if (needsAwait && !hasAwaited) await undefined;
+    if (hasError) throw error;
+    return undefined;
+  }
+  I.defineMethod(I.AsyncDisposableStackPrototype, "disposeAsync", disposeAsync);
+  I.defineMethod(I.AsyncDisposableStackPrototype, I.asyncDispose, disposeAsync);
+
+  // %AsyncIteratorPrototype% [ @@asyncDispose ] (§27.1.3.1).
+  I.defineMethod(I.AsyncIteratorPrototype, I.asyncDispose, async function () {
+    const ret = getMethod(this, "return");
+    if (ret !== undefined) await I.call(ret, this);
+    return undefined;
+  });
 });

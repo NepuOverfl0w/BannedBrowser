@@ -293,7 +293,9 @@ impl Vm {
         let v = self.pop();
         let pc = self.realm.promise_ctor;
         let promise = self.promise_resolve(&Value::Object(pc), v)?;
-        let st = self.top().generator.expect("await outside an async function");
+        let Some(st) = self.top().generator else {
+            return self.syntax_error("await is only valid in async functions and modules");
+        };
         let on_ful = native_with(self, "", 1, await_fulfilled, false, vec![Value::Object(st)]);
         let on_rej = native_with(self, "", 1, await_rejected, false, vec![Value::Object(st)]);
         if let Value::Object(po) = promise {
