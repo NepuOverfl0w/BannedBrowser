@@ -19,7 +19,9 @@ key Return
 wait_state '.history_len == 3 and .loading == false and .title == "hits=1"'
 
 # Reload asks the server again.
-key_until F5 '.title == "hits=2" and .loading == false'
+# Ctrl/Cmd+R (F5 does the same; xdotool's F5 on CI's Xvfb arrives with Alt and kills the X
+# connection of the window, so the test uses the letter shortcut).
+key_until accel+r '.title == "hits=2" and .loading == false'
 
 # Hard reload (Ctrl+Shift+R) bypasses the cache.
 key_until accel+shift+r '.title == "hits=3" and .loading == false'
