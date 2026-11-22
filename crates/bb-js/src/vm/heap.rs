@@ -160,20 +160,40 @@ pub struct Closure {
     pub derived: bool,
     /// Class constructors throw when called (§10.2.1 step 2).
     pub class_ctor: bool,
-    /// [[Fields]] of a class constructor: (key, initializer function or none).
-    pub fields: Vec<(FieldKey, Option<ObjRef>)>,
+    /// [[Fields]] of a class constructor (§15.7.10 ClassFieldDefinition).
+    pub fields: Vec<ClassField>,
+    /// [[PrivateMethods]]: instance private methods and accessors.
+    pub private_methods: Vec<(Sym, PrivElem)>,
+    /// Static fields and blocks, run once the class is defined.
+    pub static_elems: Vec<StaticElem>,
+    /// For field initializers: the field's name (NamedEvaluation of anonymous functions).
+    pub field_name: Option<Value>,
 }
 
 #[derive(Clone, Debug)]
 pub enum FieldKey {
     Key(PropKey),
-    Private(Rc<PrivateName>),
+    Private(Sym),
 }
 
-/// A Private Name (§6.2.12): unique per class evaluation.
-#[derive(Debug)]
-pub struct PrivateName {
-    pub description: String,
+#[derive(Clone, Debug)]
+pub struct ClassField {
+    pub key: FieldKey,
+    pub init: Option<ObjRef>,
+}
+
+#[derive(Clone, Debug)]
+pub enum StaticElem {
+    Field(ClassField),
+    Block(ObjRef),
+}
+
+/// A PrivateElement (§6.2.10).
+#[derive(Clone, Debug)]
+pub enum PrivElem {
+    Field(Value),
+    Method(ObjRef),
+    Accessor(Option<ObjRef>, Option<ObjRef>),
 }
 
 pub struct Native {
@@ -283,7 +303,7 @@ pub struct Object {
     pub props: Props,
     pub kind: Kind,
     /// Private elements (§7.3.27): fields, methods and accessors.
-    pub private: Vec<(Rc<PrivateName>, Prop)>,
+    pub private: Vec<(Sym, PrivElem)>,
 }
 
 impl Object {
@@ -454,20 +474,43 @@ fn trace_prop(p: &Prop, os: &mut Vec<ObjRef>) {
     }
 }
 
+fn trace_priv(p: &PrivElem, os: &mut Vec<ObjRef>) {
+    match p {
+        PrivElem::Field(v) => push_val(v, os),
+        PrivElem::Method(m) => os.push(*m),
+        PrivElem::Accessor(g, s) => {
+            os.extend(*g);
+            os.extend(*s);
+        }
+    }
+}
+
 fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
     os.extend(o.proto);
     for p in o.props.values() {
         trace_prop(p, os);
     }
     for (_, p) in &o.private {
-        trace_prop(p, os);
+        trace_priv(p, os);
     }
     match &o.kind {
         Kind::Function(c) => {
             es.push(c.env);
             os.extend(c.home);
-            for (_, f) in &c.fields {
-                os.extend(*f);
+            for f in &c.fields {
+                os.extend(f.init);
+            }
+            for (_, p) in &c.private_methods {
+                trace_priv(p, os);
+            }
+            for e in &c.static_elems {
+                match e {
+                    StaticElem::Field(f) => os.extend(f.init),
+                    StaticElem::Block(b) => os.push(*b),
+                }
+            }
+            if let Some(v) = &c.field_name {
+                push_val(v, os);
             }
         }
         Kind::Native(n) => n.slots.iter().for_each(|v| push_val(v, os)),

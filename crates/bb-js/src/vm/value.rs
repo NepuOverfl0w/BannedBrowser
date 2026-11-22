@@ -28,11 +28,16 @@ pub struct SymbolData {
     pub description: Option<JsString>,
     /// Registered with `Symbol.for` (§20.4.2.2).
     pub registered: bool,
+    /// A Private Name (§6.2.12), never visible to scripts as a value.
+    pub private: bool,
 }
 
 impl Sym {
     pub fn new(description: Option<JsString>) -> Sym {
-        Sym(Rc::new(SymbolData { description, registered: false }))
+        Sym(Rc::new(SymbolData { description, registered: false, private: false }))
+    }
+    pub fn private(description: &str) -> Sym {
+        Sym(Rc::new(SymbolData { description: Some(js_str(description)), registered: false, private: true }))
     }
 }
 

@@ -340,6 +340,7 @@ fn install_symbol(vm: &mut Vm) {
         let s = Sym(std::rc::Rc::new(super::value::SymbolData {
             description: Some(k.clone()),
             registered: true,
+            private: false,
         }));
         vm.registry.insert(k.to_vec(), s.clone());
         Ok(Value::Symbol(s))

@@ -152,6 +152,8 @@ impl<'a> Compiler<'a> {
             length: expected_args(f),
             is_expression,
             given_name: given.map(Into::into),
+            default_ctor: false,
+            text_span: None,
         };
         self.code.funcs.push(Rc::new(t));
         self.code.funcs.len() as u32 - 1
@@ -236,6 +238,30 @@ impl<'a> Compiler<'a> {
         if f.is_generator || f.is_async {
             c.unsupported(if f.is_async { "async functions" } else { "generators" });
             return c.code;
+        }
+        if f.kind == FuncKind::ClassConstructor {
+            // Base constructors initialize fields before the body (§10.2.2 step 6.b).
+            c.emit(Op::InitInstance);
+        }
+        if t.default_ctor {
+            if f.kind == FuncKind::DerivedConstructor {
+                c.emit(Op::SuperCallForward);
+                c.emit(Op::Pop);
+            }
+            c.emit(Op::Undef);
+            c.emit(Op::Ret);
+            return c.code;
+        }
+        if f.kind == FuncKind::ClassField {
+            if let [Stmt::Return(Some(e))] = f.body.as_slice() {
+                if Self::is_anonymous_fn(e) {
+                    // NamedEvaluation with the field's name (§15.7.10 step 3).
+                    c.expr(e);
+                    c.emit(Op::SetFnNameField);
+                    c.emit(Op::Ret);
+                    return c.code;
+                }
+            }
         }
         let mut param_names = Vec::new();
         for p in &f.params {
@@ -422,7 +448,18 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::SetVarEnv(i));
                 }
             }
-            Stmt::Class(_) => self.unsupported("class"),
+            Stmt::Class(c) => {
+                self.class(c, None);
+                match &c.name {
+                    Some(n) => {
+                        let i = self.name(n);
+                        self.emit(Op::InitBinding(i));
+                    }
+                    None => {
+                        self.emit(Op::Pop);
+                    }
+                }
+            }
             Stmt::Block(b) => {
                 let had = self.block_scope(b);
                 self.stmts(b);
@@ -1092,31 +1129,97 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::SetVar(i));
                 self.emit(Op::Pop);
             }
-            Expr::Member { object, prop, computed, .. } => {
-                self.expr(object);
-                if *computed {
-                    self.expr(prop);
-                    self.emit(Op::ToKey);
-                    self.emit(Op::Roll(2));
-                    self.emit(Op::SetProp);
-                } else {
-                    let k = self.member_key(prop);
-                    self.emit(Op::Swap);
-                    self.emit(Op::SetNamed(k));
-                }
-                self.emit(Op::Pop);
-            }
             Expr::Call { .. } => {
                 self.emit(Op::Pop);
                 self.expr(e);
                 self.emit(Op::Pop);
                 self.throw_reference_error("invalid assignment target");
             }
-            _ => {
-                self.emit(Op::Pop);
-                self.unsupported("this assignment target");
+            _ => match self.push_ref(e, true) {
+                Some(r) => {
+                    self.emit(Op::Roll(r.parts()));
+                    self.ref_set(r);
+                    self.emit(Op::Pop);
+                }
+                None => {
+                    self.emit(Op::Pop);
+                    self.unsupported("this assignment target");
+                }
+            },
+        }
+    }
+
+    /// Push the parts of a member reference (`[obj]`, `[obj key]`, `[obj #name]`,
+    /// `[this key]`); `convert`: apply ToPropertyKey to computed keys now.
+    fn push_ref(&mut self, e: &'a Expr, convert: bool) -> Option<MRef> {
+        match e {
+            Expr::Paren(i) => self.push_ref(i, convert),
+            Expr::Member { object, prop, computed, .. } => {
+                self.expr(object);
+                if *computed {
+                    self.expr(prop);
+                    if convert {
+                        self.emit(Op::ToKey);
+                    }
+                    Some(MRef::Computed)
+                } else {
+                    Some(MRef::Named(self.member_key(prop)))
+                }
+            }
+            Expr::PrivateMember { object, name, .. } => {
+                self.expr(object);
+                self.private_name(name);
+                Some(MRef::Private)
+            }
+            Expr::SuperMember { prop, computed } => {
+                self.emit(Op::This);
+                self.super_key(prop, *computed);
+                Some(MRef::Super)
+            }
+            _ => None,
+        }
+    }
+
+    fn private_name(&mut self, name: &str) {
+        let i = self.name(&format!("#{name}"));
+        self.emit(Op::GetVar(i));
+    }
+
+    fn super_key(&mut self, prop: &'a Expr, computed: bool) {
+        if computed {
+            self.expr(prop);
+            self.emit(Op::ToKey);
+        } else {
+            let k = self.member_key(prop);
+            if let super::value::Value::String(st) = self.code.keys[k as usize].to_value() {
+                let i = self.string(&st);
+                self.emit(Op::Str(i));
             }
         }
+    }
+
+    fn ref_dup(&mut self, r: MRef) {
+        self.emit(if r.parts() == 1 { Op::Dup } else { Op::Dup2 });
+    }
+
+    /// `[parts] → [value]`
+    fn ref_get(&mut self, r: MRef) {
+        self.emit(match r {
+            MRef::Named(k) => Op::GetNamed(k),
+            MRef::Computed => Op::GetProp,
+            MRef::Private => Op::PrivateGet,
+            MRef::Super => Op::SuperGet,
+        });
+    }
+
+    /// `[parts v] → [v]`
+    fn ref_set(&mut self, r: MRef) {
+        self.emit(match r {
+            MRef::Named(k) => Op::SetNamed(k),
+            MRef::Computed => Op::SetProp,
+            MRef::Private => Op::PrivateSet,
+            MRef::Super => Op::SuperSet,
+        });
     }
 
     fn throw_reference_error(&mut self, msg: &str) {
@@ -1169,7 +1272,7 @@ impl<'a> Compiler<'a> {
         match inner {
             Expr::Function(f) if f.name.is_none() => self.closure(f, true, Some(name)),
             Expr::Arrow(f) => self.closure(f, false, Some(name)),
-            Expr::Class(c) if c.name.is_none() => self.unsupported("class"),
+            Expr::Class(c) if c.name.is_none() => self.class(c, Some(name)),
             _ => self.expr(e),
         }
     }
@@ -1299,7 +1402,7 @@ impl<'a> Compiler<'a> {
             Expr::Object(props) => self.object_literal(props),
             Expr::Function(f) => self.closure(f, true, None),
             Expr::Arrow(f) => self.closure(f, false, None),
-            Expr::Class(_) => self.unsupported("class"),
+            Expr::Class(c) => self.class(c, None),
             Expr::Unary(op, x) => self.unary(op, x),
             Expr::Update { op, prefix, target } => self.update(op, *prefix, target),
             Expr::Binary(op, a, b) => {
@@ -1380,8 +1483,31 @@ impl<'a> Compiler<'a> {
                     self.patch(j);
                 }
             }
-            Expr::PrivateMember { .. } | Expr::PrivateIn(..) => self.unsupported("private names"),
-            Expr::SuperMember { .. } | Expr::SuperCall(_) => self.unsupported("super"),
+            Expr::PrivateMember { object, name, optional } => {
+                self.expr(object);
+                if *optional {
+                    let j = self.emit(Op::OptCheck(0, 0));
+                    self.chain_jump(j);
+                }
+                self.private_name(name);
+                self.emit(Op::PrivateGet);
+            }
+            Expr::PrivateIn(name, obj) => {
+                self.private_name(name);
+                self.expr(obj);
+                self.emit(Op::PrivateIn);
+            }
+            Expr::SuperMember { prop, computed } => {
+                self.emit(Op::This);
+                self.super_key(prop, *computed);
+                self.emit(Op::SuperGet);
+            }
+            Expr::SuperCall(args) => {
+                match self.args(args) {
+                    Some(n) => self.emit(Op::SuperCall(n)),
+                    None => self.emit(Op::SuperCallSpread),
+                };
+            }
             Expr::Seq(xs) => {
                 for (i, x) in xs.iter().enumerate() {
                     self.expr(x);
@@ -1425,6 +1551,29 @@ impl<'a> Compiler<'a> {
                     let k = self.member_key(prop);
                     self.emit(Op::GetNamed(k));
                 }
+                self.emit(Op::Swap);
+            }
+            Expr::Paren(inner)
+                if matches!(**inner, Expr::PrivateMember { .. } | Expr::SuperMember { .. }) =>
+            {
+                self.callee(inner)
+            }
+            Expr::PrivateMember { object, name, optional } => {
+                self.expr(object);
+                if *optional {
+                    let j = self.emit(Op::OptCheck(0, 0));
+                    self.chain_jump(j);
+                }
+                self.emit(Op::Dup);
+                self.private_name(name);
+                self.emit(Op::PrivateGet);
+                self.emit(Op::Swap);
+            }
+            Expr::SuperMember { prop, computed } => {
+                self.emit(Op::This);
+                self.emit(Op::Dup);
+                self.super_key(prop, *computed);
+                self.emit(Op::SuperGet);
                 self.emit(Op::Swap);
             }
             Expr::Ident(n) => {
@@ -1487,12 +1636,6 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::DefineNamed(k));
                 }
                 Prop::Method(k, f) | Prop::Getter(k, f) | Prop::Setter(k, f) => {
-                    if f.is_generator || f.is_async {
-                        self.prop_key(k);
-                        self.emit(Op::Pop);
-                        self.unsupported(if f.is_async { "async functions" } else { "generators" });
-                        continue;
-                    }
                     self.prop_key(k);
                     let t = self.template(f, false);
                     let kind = match p {
@@ -1579,7 +1722,14 @@ impl<'a> Compiler<'a> {
                         self.emit(Op::True);
                     }
                 }
-                Expr::SuperMember { .. } => self.unsupported("super"),
+                Expr::SuperMember { prop, computed } => {
+                    // §13.5.1.2 step 5.a: evaluated, then a ReferenceError.
+                    self.emit(Op::This);
+                    self.super_key(prop, *computed);
+                    self.emit(Op::Pop);
+                    self.emit(Op::Pop);
+                    self.throw_reference_error("Unsupported reference to 'super'");
+                }
                 _ => {
                     self.expr(x);
                     self.emit(Op::Pop);
@@ -1632,40 +1782,29 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::Pop);
                 }
             }
-            Expr::Member { object, prop, computed, .. } => {
-                self.expr(object);
-                if *computed {
-                    self.expr(prop);
-                    self.emit(Op::ToKey);
-                } else {
-                    let k = self.member_key(prop);
-                    let v = self.code.keys[k as usize].to_value();
-                    if let super::value::Value::String(s) = v {
-                        let i = self.string(&s);
-                        self.emit(Op::Str(i));
-                    }
-                }
-                // [obj key]
-                self.emit(Op::Dup2);
-                self.emit(Op::GetProp);
-                self.emit(Op::ToNumeric);
-                if prefix {
-                    self.emit(step);
-                    self.emit(Op::SetProp);
-                } else {
-                    self.emit(Op::Dup);
-                    self.emit(Op::Bury(3));
-                    self.emit(step);
-                    self.emit(Op::SetProp);
-                    self.emit(Op::Pop);
-                }
-            }
             Expr::Call { .. } => {
                 self.expr(t);
                 self.emit(Op::Pop);
                 self.throw_reference_error("invalid update target");
             }
-            _ => self.unsupported("this update target"),
+            _ => match self.push_ref(t, true) {
+                Some(r) => {
+                    self.ref_dup(r);
+                    self.ref_get(r);
+                    self.emit(Op::ToNumeric);
+                    if prefix {
+                        self.emit(step);
+                        self.ref_set(r);
+                    } else {
+                        self.emit(Op::Dup);
+                        self.emit(Op::Bury(r.parts() + 1));
+                        self.emit(step);
+                        self.ref_set(r);
+                        self.emit(Op::Pop);
+                    }
+                }
+                None => self.unsupported("this update target"),
+            },
         }
     }
 
@@ -1720,39 +1859,6 @@ impl<'a> Compiler<'a> {
             t = i;
         }
         match t {
-            Expr::Member { object, prop, computed, .. } => {
-                self.expr(object);
-                if *computed {
-                    self.expr(prop);
-                    self.emit(Op::ToKey);
-                } else {
-                    let k = self.member_key(prop);
-                    let v = self.code.keys[k as usize].to_value();
-                    if let super::value::Value::String(s) = v {
-                        let i = self.string(&s);
-                        self.emit(Op::Str(i));
-                    }
-                }
-                self.emit(Op::Dup2);
-                self.emit(Op::GetProp);
-                if logical {
-                    // [obj key old]
-                    let j = self.emit(jump(op));
-                    self.expr(value);
-                    self.emit(Op::SetProp);
-                    let done = self.emit(Op::Jump(0));
-                    self.patch(j);
-                    // [obj key old] → [old]
-                    self.emit(Op::Bury(2));
-                    self.emit(Op::Pop);
-                    self.emit(Op::Pop);
-                    self.patch(done);
-                } else {
-                    self.expr(value);
-                    self.emit(bin);
-                    self.emit(Op::SetProp);
-                }
-            }
             Expr::Ident(n) => {
                 let i = self.name(n);
                 self.emit(Op::GetVar(i));
@@ -1765,7 +1871,30 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Pop);
                 self.throw_reference_error("invalid assignment target");
             }
-            _ => self.unsupported("this assignment"),
+            _ => match self.push_ref(t, true) {
+                Some(r) => {
+                    self.ref_dup(r);
+                    self.ref_get(r);
+                    if logical {
+                        let j = self.emit(jump(op));
+                        self.expr(value);
+                        self.ref_set(r);
+                        let done = self.emit(Op::Jump(0));
+                        self.patch(j);
+                        // [parts old] → [old]
+                        self.emit(Op::Bury(r.parts()));
+                        for _ in 0..r.parts() {
+                            self.emit(Op::Pop);
+                        }
+                        self.patch(done);
+                    } else {
+                        self.expr(value);
+                        self.emit(bin);
+                        self.ref_set(r);
+                    }
+                }
+                None => self.unsupported("this assignment"),
+            },
         }
     }
 
@@ -1776,18 +1905,6 @@ impl<'a> Compiler<'a> {
             t = i;
         }
         match t {
-            Expr::Member { object, prop, computed, .. } => {
-                self.expr(object);
-                if *computed {
-                    self.expr(prop);
-                    self.expr(value);
-                    self.emit(Op::SetProp);
-                } else {
-                    let k = self.member_key(prop);
-                    self.expr(value);
-                    self.emit(Op::SetNamed(k));
-                }
-            }
             Expr::Ident(n) => {
                 self.expr(value);
                 let i = self.name(n);
@@ -1798,7 +1915,135 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Pop);
                 self.throw_reference_error("invalid assignment target");
             }
-            _ => self.unsupported("this assignment target"),
+            _ => match self.push_ref(t, false) {
+                Some(r) => {
+                    self.expr(value);
+                    self.ref_set(r);
+                }
+                None => self.unsupported("this assignment target"),
+            },
+        }
+    }
+
+    // ---- classes (§15.7) ----
+
+    /// ClassDefinitionEvaluation (§15.7.14): `[] → [F]`.
+    fn class(&mut self, c: &'a Class, given: Option<&str>) {
+        if !c.decorators.is_empty() || !c.member_decorators.is_empty() {
+            self.unsupported("decorators");
+            return;
+        }
+        self.emit(Op::PushScope);
+        self.ctl.push(Ctl::Scope);
+        if let Some(n) = &c.name {
+            let i = self.name(n);
+            self.emit(Op::DeclareConst(i));
+        }
+        let mut privs: Vec<&str> = Vec::new();
+        for m in &c.members {
+            if let ClassMember::Method { key: crate::ast::PropKey::Private(n), .. }
+            | ClassMember::Field { key: crate::ast::PropKey::Private(n), .. } = m
+            {
+                if !privs.contains(&n.as_str()) {
+                    privs.push(n);
+                }
+            }
+        }
+        for n in privs {
+            let d = format!("#{n}");
+            let si = self.string(&js_str(&d));
+            self.emit(Op::NewPrivateName(si));
+            let i = self.name(&d);
+            self.emit(Op::DeclareConst(i));
+            self.emit(Op::InitBinding(i));
+        }
+        let derived = c.extends.is_some();
+        if let Some(h) = &c.extends {
+            self.expr(h);
+        }
+        let ctor: Rc<Function> = match &c.constructor {
+            Some(f) => f.clone(),
+            None => Rc::new(Function {
+                name: None,
+                params: Vec::new(),
+                rest: None,
+                body: Vec::new(),
+                expression_body: false,
+                kind: if derived { FuncKind::DerivedConstructor } else { FuncKind::ClassConstructor },
+                is_async: false,
+                is_generator: false,
+                strict: true,
+                span: c.span,
+            }),
+        };
+        let t = FuncTemplate {
+            length: expected_args(&ctor),
+            ast: ctor,
+            source: self.source.clone(),
+            code: OnceCell::new(),
+            is_expression: false,
+            given_name: Some(c.name.as_deref().or(given).unwrap_or("").into()),
+            default_ctor: c.constructor.is_none(),
+            text_span: Some(c.span),
+        };
+        self.code.funcs.push(Rc::new(t));
+        let ti = self.code.funcs.len() as u32 - 1;
+        self.emit(Op::ClassCreate(ti, derived));
+        for m in &c.members {
+            match m {
+                ClassMember::Method { key, is_static, kind, func } => {
+                    let private = matches!(key, crate::ast::PropKey::Private(_));
+                    self.class_key(key);
+                    let t = self.template(func, false);
+                    let k = match kind {
+                        FuncKind::Getter => 1,
+                        FuncKind::Setter => 2,
+                        _ => 0,
+                    };
+                    self.emit(Op::ClassMethod(t, k, *is_static as u8 | if private { 2 } else { 0 }));
+                }
+                ClassMember::Field { key, is_static, value } => {
+                    self.class_key(key);
+                    let t = value.as_ref().map(|v| self.template(v, false)).unwrap_or(u32::MAX);
+                    self.emit(Op::ClassField(t, *is_static));
+                }
+                ClassMember::StaticBlock(f) => {
+                    let t = self.template(f, false);
+                    self.emit(Op::ClassStaticBlock(t));
+                }
+            }
+        }
+        if let Some(n) = &c.name {
+            self.emit(Op::Pick(1));
+            let i = self.name(n);
+            self.emit(Op::InitBinding(i));
+        }
+        self.emit(Op::ClassFinish);
+        self.ctl.pop();
+        self.emit(Op::PopScope);
+    }
+
+    fn class_key(&mut self, k: &'a crate::ast::PropKey) {
+        match k {
+            crate::ast::PropKey::Private(n) => self.private_name(n),
+            _ => self.prop_key(k),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum MRef {
+    Named(u32),
+    Computed,
+    Private,
+    Super,
+}
+
+impl MRef {
+    fn parts(self) -> u8 {
+        match self {
+            MRef::Named(_) => 1,
+            _ => 2,
         }
     }
 }

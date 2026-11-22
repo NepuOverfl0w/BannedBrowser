@@ -191,6 +191,39 @@ pub enum Op {
     IterCloseThrow,
     /// `[v] → []` completion value of script/eval code.
     SetCompletion,
+    // Classes (§15.7).
+    /// A new Private Name described by `strings[i]`.
+    NewPrivateName(u32),
+    /// `[superclass?] → [F proto]`: the constructor from template `i`; `true`: has heritage.
+    ClassCreate(u32, bool),
+    /// `[F proto key] → [F proto]`: method/getter/setter (0/1/2) from template; flags 1 =
+    /// static, 2 = private.
+    ClassMethod(u32, u8, u8),
+    /// `[F proto key] → [F proto]`: a field with initializer template (`u32::MAX`: none).
+    ClassField(u32, bool),
+    /// `[F proto] → [F proto]`: a static block from template `i`.
+    ClassStaticBlock(u32),
+    /// `[F proto] → [F]`: static private methods, then static fields and blocks in order.
+    ClassFinish,
+    /// InitializeInstanceElements for `this` (base class constructors).
+    InitInstance,
+    /// `[fn] → [fn]`: name an anonymous function after the field being initialized.
+    SetFnNameField,
+    /// `[a1..an] → [this]`
+    SuperCall(u32),
+    SuperCallSpread,
+    /// The implicit derived constructor: `super(...arguments)` without iterating them.
+    SuperCallForward,
+    /// `[this key] → [v]`
+    SuperGet,
+    /// `[this key v] → [v]`
+    SuperSet,
+    /// `[obj name] → [v]`
+    PrivateGet,
+    /// `[obj name v] → [v]`
+    PrivateSet,
+    /// `[name obj] → [bool]`
+    PrivateIn,
     /// Throw a SyntaxError for a construct the interpreter doesn't run yet (`strings[i]`).
     Unsupported(u32),
     Nop,
@@ -232,11 +265,15 @@ pub struct FuncTemplate {
     pub is_expression: bool,
     /// The name from the function's position (NamedEvaluation) when it has none itself.
     pub given_name: Option<Rc<str>>,
+    /// A class's implicit constructor (§15.7.14 step 14.a).
+    pub default_ctor: bool,
+    /// Source text for `toString` when it isn't the function's own (class constructors).
+    pub text_span: Option<(usize, usize)>,
 }
 
 impl FuncTemplate {
     pub fn source_text(&self) -> String {
-        let (a, b) = self.ast.span;
+        let (a, b) = self.text_span.unwrap_or(self.ast.span);
         self.source.get(a..b.min(self.source.len())).map(|s| s.iter().collect()).unwrap_or_default()
     }
 }

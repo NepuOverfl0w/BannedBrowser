@@ -13,6 +13,7 @@
 //! calling back) defer it.
 
 pub mod builtins;
+mod class;
 pub mod code;
 pub mod compiler;
 mod env;
@@ -1274,6 +1275,75 @@ impl Vm {
                 }
                 return self.syntax_error(&s);
             }
+            Op::NewPrivateName(i) => {
+                let d = to_rust(&self.top().code.strings[i as usize]);
+                self.push(Value::Symbol(value::Sym::private(&d)));
+            }
+            Op::ClassCreate(t, h) => self.class_create(t, h)?,
+            Op::ClassMethod(t, k, fl) => self.class_method(t, k, fl)?,
+            Op::ClassField(t, st) => self.class_field(t, st)?,
+            Op::ClassStaticBlock(t) => self.class_static_block(t)?,
+            Op::ClassFinish => self.class_finish()?,
+            Op::InitInstance => {
+                let env = self.top().env;
+                let this = self.resolve_this(env)?;
+                if let (Value::Object(o), Some(f)) = (this, self.top().callee) {
+                    self.init_instance(o, f)?;
+                }
+            }
+            Op::SetFnNameField => {
+                if let (Value::Object(f), Some(k)) = (self.peek(0), self.current_field_name()) {
+                    self.set_function_name(f, &k, None);
+                }
+            }
+            Op::SuperCall(n) => {
+                let args = self.pop_n(n as usize);
+                let r = self.super_call(args)?;
+                self.push(r);
+            }
+            Op::SuperCallSpread => {
+                let arr = self.pop();
+                let args = self.array_values(&arr)?;
+                let r = self.super_call(args)?;
+                self.push(r);
+            }
+            Op::SuperCallForward => {
+                let args = self.top().args.clone();
+                let r = self.super_call(args)?;
+                self.push(r);
+            }
+            Op::SuperGet => {
+                let k = self.pop();
+                let this = self.pop();
+                let v = self.super_get(this, &k)?;
+                self.push(v);
+            }
+            Op::SuperSet => {
+                let v = self.pop();
+                let k = self.pop();
+                let this = self.pop();
+                self.super_set(this, &k, v.clone())?;
+                self.push(v);
+            }
+            Op::PrivateGet => {
+                let n = self.pop();
+                let o = self.pop();
+                let v = self.private_get(&o, &n)?;
+                self.push(v);
+            }
+            Op::PrivateSet => {
+                let v = self.pop();
+                let n = self.pop();
+                let o = self.pop();
+                self.private_set(&o, &n, v.clone())?;
+                self.push(v);
+            }
+            Op::PrivateIn => {
+                let o = self.pop();
+                let n = self.pop();
+                let r = self.private_in(&n, &o)?;
+                self.push(Value::Bool(r));
+            }
             Op::Nop => {}
         }
         Ok(None)
@@ -1415,6 +1485,9 @@ impl Vm {
             derived: false,
             class_ctor: false,
             fields: Vec::new(),
+            private_methods: Vec::new(),
+            static_elems: Vec::new(),
+            field_name: None,
         };
         let fo = self.heap.alloc(Object::new(Some(proto), Kind::Function(Box::new(closure))));
         let o = self.heap.obj_mut(fo);

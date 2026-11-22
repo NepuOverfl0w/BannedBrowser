@@ -11,6 +11,10 @@ use std::rc::Rc;
 impl Vm {
     /// HasBinding (§9.1.1.*.1).
     fn has_binding(&mut self, r: EnvRef, name: &Rc<str>) -> JsResult<bool> {
+        if name.starts_with('#') {
+            // Private names live only in class scopes (declarative records).
+            return Ok(self.heap.env(r).bindings.contains_key(name));
+        }
         let (obj, with) = match &self.heap.env(r).kind {
             EnvKind::Declarative | EnvKind::Function { .. } => {
                 return Ok(self.heap.env(r).bindings.contains_key(name))

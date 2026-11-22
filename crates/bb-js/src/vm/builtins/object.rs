@@ -512,6 +512,8 @@ fn function_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
         code: Default::default(),
         is_expression: false,
         given_name: None,
+        default_ctor: false,
+        text_span: None,
     });
     let genv = vm.realm.global_env;
     let fo = vm.make_function(tmpl, genv, None, true);
