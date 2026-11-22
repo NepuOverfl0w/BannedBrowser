@@ -39,7 +39,7 @@ impl Vm {
     pub(super) fn async_gen_start(&mut self, base: usize) -> JsResult<Option<Value>> {
         let mut frame = self.frames.pop().expect("async generator frame");
         let proto = match frame.callee {
-            Some(f) => match self.get(f, &PropKey::named("prototype")) {
+            Some(f) => match self.get(f, &PropKey::lit("prototype")) {
                 Ok(Value::Object(p)) => p,
                 Ok(_) => self.realm.async_generator_proto,
                 Err(e) => {
@@ -233,7 +233,7 @@ impl Vm {
         let kind = std::mem::replace(&mut self.heap.obj_mut(sync).kind, Kind::Ordinary);
         let proto = self.realm.async_from_sync_iterator_proto;
         let w = self.heap.alloc(Object::new(Some(proto), kind));
-        let next = self.get(w, &PropKey::named("next"))?;
+        let next = self.get(w, &PropKey::lit("next"))?;
         Ok(self.heap.alloc(Object::new(
             None,
             Kind::IterRecord(Box::new(IterRecord { iterator: Value::Object(w), next, done: false })),
@@ -248,16 +248,16 @@ impl Vm {
         let (it, next) = self.iter_parts(rec);
         let r = match mode {
             Resume::Next => self.call(&next, it, vec![received])?,
-            Resume::Throw => match self.get_method(&it, &PropKey::named("throw"))? {
+            Resume::Throw => match self.get_method(&it, &PropKey::lit("throw"))? {
                 Some(t) => self.call(&t, it, vec![received])?,
                 None => {
-                    if let Some(f) = self.get_method(&it, &PropKey::named("return"))? {
+                    if let Some(f) = self.get_method(&it, &PropKey::lit("return"))? {
                         self.call(&f, it, Vec::new())?;
                     }
                     return self.type_error("The iterator does not provide a 'throw' method");
                 }
             },
-            Resume::Return => match self.get_method(&it, &PropKey::named("return"))? {
+            Resume::Return => match self.get_method(&it, &PropKey::lit("return"))? {
                 None => {
                     self.pop();
                     self.push(received);
@@ -277,8 +277,8 @@ impl Vm {
         let res = self.pop();
         let mode = self.pop();
         let Value::Object(ro) = res else { return self.type_error("Iterator result is not an object") };
-        let done = self.get(ro, &PropKey::named("done"))?.truthy();
-        let v = self.get(ro, &PropKey::named("value"))?;
+        let done = self.get(ro, &PropKey::lit("done"))?.truthy();
+        let v = self.get(ro, &PropKey::lit("value"))?;
         if done {
             self.pop();
             self.push(v);
@@ -336,14 +336,14 @@ fn continuation(
     let (p, res, rej) = cap;
     let r = (|| -> JsResult<()> {
         let Value::Object(ro) = result else { return vm.type_error("Iterator result is not an object") };
-        let done = vm.get(ro, &PropKey::named("done"))?.truthy();
-        let value = vm.get(ro, &PropKey::named("value"))?;
+        let done = vm.get(ro, &PropKey::lit("done"))?.truthy();
+        let value = vm.get(ro, &PropKey::lit("value"))?;
         let pc = Value::Object(vm.realm.promise_ctor);
         let wrapper = match vm.promise_resolve(&pc, value) {
             Ok(w) => w,
             Err(e) => {
                 if !done && close {
-                    if let Ok(Some(f)) = vm.get_method(&sync_it, &PropKey::named("return")) {
+                    if let Ok(Some(f)) = vm.get_method(&sync_it, &PropKey::lit("return")) {
                         let _ = vm.call(&f, sync_it.clone(), Vec::new());
                     }
                 }
@@ -370,7 +370,7 @@ fn continuation(
                 1,
                 |vm, c| {
                     let it = slot0(vm, c.callee);
-                    if let Ok(Some(f)) = vm.get_method(&it, &PropKey::named("return")) {
+                    if let Ok(Some(f)) = vm.get_method(&it, &PropKey::lit("return")) {
                         let _ = vm.call(&f, it, Vec::new());
                     }
                     Err(c.arg(0))
@@ -405,14 +405,14 @@ fn afs_method(vm: &mut Vm, c: NativeCall, which: Resume) -> JsResult<Value> {
     let step = (|| -> JsResult<Option<(Value, bool)>> {
         match which {
             Resume::Next => Ok(Some((vm.call(&next, it.clone(), args)?, true))),
-            Resume::Return => match vm.get_method(&it, &PropKey::named("return"))? {
+            Resume::Return => match vm.get_method(&it, &PropKey::lit("return"))? {
                 None => Ok(None),
                 Some(f) => Ok(Some((vm.call(&f, it.clone(), args)?, false))),
             },
-            Resume::Throw => match vm.get_method(&it, &PropKey::named("throw"))? {
+            Resume::Throw => match vm.get_method(&it, &PropKey::lit("throw"))? {
                 None => {
                     // Close the sync iterator, then reject with a TypeError (§27.1.6.2.3 step 7).
-                    if let Some(f) = vm.get_method(&it, &PropKey::named("return"))? {
+                    if let Some(f) = vm.get_method(&it, &PropKey::lit("return"))? {
                         let r = vm.call(&f, it.clone(), Vec::new())?;
                         if !matches!(r, Value::Object(_)) {
                             return vm.type_error("Iterator result is not an object");
@@ -460,11 +460,11 @@ pub(super) fn install(vm: &mut Vm) {
     vm.heap
         .obj_mut(agfp)
         .props
-        .insert(PropKey::named("prototype"), Prop::data(Value::Object(agp), false, false, true));
+        .insert(PropKey::lit("prototype"), Prop::data(Value::Object(agp), false, false, true));
     vm.heap
         .obj_mut(agp)
         .props
-        .insert(PropKey::named("constructor"), Prop::data(Value::Object(agfp), false, false, true));
+        .insert(PropKey::lit("constructor"), Prop::data(Value::Object(agfp), false, false, true));
     realm::to_string_tag(vm, agfp, "AsyncGeneratorFunction");
     realm::to_string_tag(vm, agp, "AsyncGenerator");
     method(vm, agp, "next", 1, |vm, c| vm.ag_enqueue(&c.this, Resume::Next, c.arg(0)));

@@ -139,13 +139,7 @@ fn substitution(matched: &[u16], s: &[u16], pos: usize, repl: &[u16]) -> Vec<u16
 }
 
 fn is_regexp(vm: &mut Vm, v: &Value) -> JsResult<bool> {
-    let Value::Object(o) = v else { return Ok(false) };
-    let mk = PropKey::Sym(vm.realm.sym_match.clone());
-    let m = vm.get(*o, &mk)?;
-    if !m.is_undefined() {
-        return Ok(m.truthy());
-    }
-    Ok(matches!(vm.heap.obj(*o).kind, Kind::RegExp { .. }))
+    super::regexp::is_regexp(vm, v)
 }
 
 fn replace(vm: &mut Vm, c: NativeCall, all: bool) -> JsResult<Value> {
@@ -156,7 +150,7 @@ fn replace(vm: &mut Vm, c: NativeCall, all: bool) -> JsResult<Value> {
     let repl = c.arg(1);
     if !pat.is_nullish() {
         if all && is_regexp(vm, &pat)? {
-            let fk = PropKey::named("flags");
+            let fk = PropKey::lit("flags");
             let flags = vm.get_value_key(&pat, &fk)?;
             if flags.is_nullish() {
                 return vm.type_error("flags is null or undefined");
@@ -227,7 +221,7 @@ pub(super) fn install(vm: &mut Vm) {
             let proto = vm.prototype_from_ctor(nt, |r| r.string_proto)?;
             let o = vm.heap.alloc(Object::new(Some(proto), Kind::String(s.clone())));
             vm.heap.obj_mut(o).props.insert(
-                PropKey::named("length"),
+                PropKey::lit("length"),
                 Prop::data(Value::Number(s.len() as f64), false, false, false),
             );
             Ok(Value::Object(o))
@@ -261,7 +255,7 @@ pub(super) fn install(vm: &mut Vm) {
     });
     method(vm, ctor, "raw", 1, |vm, c| {
         let cooked = vm.to_object(&c.arg(0))?;
-        let raw = vm.get(cooked, &PropKey::named("raw"))?;
+        let raw = vm.get(cooked, &PropKey::lit("raw"))?;
         let raw = vm.to_object(&raw)?;
         let len = vm.length_of_array_like(raw)?;
         let mut out: Vec<u16> = Vec::new();
@@ -596,6 +590,7 @@ fn html_method(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     Ok(Value::String(out.into()))
 }
 
+/// String.prototype.match (0), matchAll (1), search (2) (§22.1.3.13, .14, .23).
 fn regexp_dispatch(vm: &mut Vm, c: NativeCall, which: u8) -> JsResult<Value> {
     if c.this.is_nullish() {
         return vm.type_error("String.prototype method called on null or undefined");
@@ -607,12 +602,26 @@ fn regexp_dispatch(vm: &mut Vm, c: NativeCall, which: u8) -> JsResult<Value> {
         _ => vm.realm.sym_search.clone(),
     };
     if !r.is_nullish() {
-        if let Some(f) = vm.get_method(&r, &PropKey::Sym(sym))? {
+        if which == 1 && is_regexp(vm, &r)? {
+            let flags = vm.get_value_key(&r, &PropKey::lit("flags"))?;
+            if flags.is_nullish() {
+                return vm.type_error("String.prototype.matchAll called with a RegExp without flags");
+            }
+            let f = vm.to_string(&flags)?;
+            if !f.contains(&(b'g' as u16)) {
+                return vm.type_error("String.prototype.matchAll called with a non-global RegExp argument");
+            }
+        }
+        if let Some(f) = vm.get_method(&r, &PropKey::Sym(sym.clone()))? {
             return vm.call(&f, r, vec![c.this.clone()]);
         }
     }
-    vm.to_string(&c.this)?;
-    vm.syntax_error("regular expression matching is not supported yet")
+    let s = vm.to_string(&c.this)?;
+    let p = if r.is_undefined() { js_str("") } else { vm.to_string(&r)? };
+    let flags = js_str(if which == 1 { "g" } else { "" });
+    let rx = vm.regexp_create(p, flags)?;
+    let f = vm.get(rx, &PropKey::Sym(sym))?;
+    vm.call(&f, Value::Object(rx), vec![Value::String(s)])
 }
 
 fn pad(vm: &mut Vm, c: NativeCall, at_start: bool) -> JsResult<Value> {

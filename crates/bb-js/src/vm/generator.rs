@@ -12,7 +12,7 @@ impl Vm {
     pub(super) fn generator_start(&mut self, base: usize) -> JsResult<Option<Value>> {
         let mut frame = self.frames.pop().expect("generator frame");
         let proto = match frame.callee {
-            Some(f) => match self.get(f, &PropKey::named("prototype")) {
+            Some(f) => match self.get(f, &PropKey::lit("prototype")) {
                 Ok(Value::Object(p)) => p,
                 Ok(_) => self.realm.generator_proto,
                 Err(e) => {
@@ -78,7 +78,7 @@ impl Vm {
         };
         let inner = match mode {
             Resume::Next => self.call(&next, it.clone(), vec![received])?,
-            Resume::Throw => match self.get_method(&it, &PropKey::named("throw"))? {
+            Resume::Throw => match self.get_method(&it, &PropKey::lit("throw"))? {
                 Some(t) => self.call(&t, it.clone(), vec![received])?,
                 None => {
                     // §14.4.14 step 7.b.iii: close the delegate, then a TypeError.
@@ -86,7 +86,7 @@ impl Vm {
                     return self.type_error("The iterator does not provide a 'throw' method");
                 }
             },
-            Resume::Return => match self.get_method(&it, &PropKey::named("return"))? {
+            Resume::Return => match self.get_method(&it, &PropKey::lit("return"))? {
                 None => {
                     self.pop();
                     self.push(received);
@@ -98,8 +98,8 @@ impl Vm {
                     let Value::Object(ro) = res else {
                         return self.type_error("Iterator result is not an object");
                     };
-                    if self.get(ro, &PropKey::named("done"))?.truthy() {
-                        let v = self.get(ro, &PropKey::named("value"))?;
+                    if self.get(ro, &PropKey::lit("done"))?.truthy() {
+                        let v = self.get(ro, &PropKey::lit("value"))?;
                         self.pop();
                         self.push(v);
                         self.jump(ret_at);
@@ -112,8 +112,8 @@ impl Vm {
         let Value::Object(io) = inner else {
             return self.type_error("Iterator result is not an object");
         };
-        if self.get(io, &PropKey::named("done"))?.truthy() {
-            let v = self.get(io, &PropKey::named("value"))?;
+        if self.get(io, &PropKey::lit("done"))?.truthy() {
+            let v = self.get(io, &PropKey::lit("value"))?;
             self.pop();
             self.push(v);
             self.jump(done_at);
@@ -194,11 +194,11 @@ pub(super) fn install(vm: &mut Vm) {
     vm.heap
         .obj_mut(gfp)
         .props
-        .insert(PropKey::named("prototype"), Prop::data(Value::Object(gp), false, false, true));
+        .insert(PropKey::lit("prototype"), Prop::data(Value::Object(gp), false, false, true));
     vm.heap
         .obj_mut(gp)
         .props
-        .insert(PropKey::named("constructor"), Prop::data(Value::Object(gfp), false, false, true));
+        .insert(PropKey::lit("constructor"), Prop::data(Value::Object(gfp), false, false, true));
     realm::to_string_tag(vm, gfp, "GeneratorFunction");
     let afp = vm.new_object_with_proto(Some(fp));
     vm.realm.async_function_proto = afp;

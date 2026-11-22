@@ -7,6 +7,7 @@ pub(super) mod iterator;
 mod json;
 mod number;
 mod object;
+pub(super) mod regexp;
 mod typed;
 pub(super) use object::{from_property_descriptor, to_property_descriptor};
 mod string;
@@ -40,7 +41,7 @@ pub(super) fn install(vm: &mut Vm) {
     super::proxy::install(vm);
     super::promise::install(vm);
     install_aggregate_error(vm);
-    install_regexp(vm);
+    regexp::install(vm);
     collections::install(vm);
     json::install(vm);
     date::install(vm);
@@ -69,7 +70,7 @@ fn install_global(vm: &mut Vm) {
     method(vm, g, "isFinite", 1, |vm, c| Ok(Value::Bool(vm.to_number(&c.arg(0))?.is_finite())));
     let pf = method(vm, g, "parseFloat", 1, number::parse_float);
     let pi = method(vm, g, "parseInt", 2, number::parse_int);
-    let nc = vm.get(g, &PropKey::named("Number")).ok().and_then(|v| v.as_object());
+    let nc = vm.get(g, &PropKey::lit("Number")).ok().and_then(|v| v.as_object());
     if let Some(n) = nc {
         value(vm, n, "parseFloat", Value::Object(pf));
         value(vm, n, "parseInt", Value::Object(pi));
@@ -207,7 +208,7 @@ fn error_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     };
     let nt = c.new_target.unwrap_or(c.callee);
     let ek = ERROR_NAMES[kind].1;
-    let proto = vm.get(nt, &PropKey::named("prototype"))?;
+    let proto = vm.get(nt, &PropKey::lit("prototype"))?;
     let proto = match proto {
         Value::Object(p) => p,
         _ => vm.realm.error_proto(ek),
@@ -216,11 +217,11 @@ fn error_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let msg = c.arg(0);
     if !msg.is_undefined() {
         let m = vm.to_string(&msg)?;
-        vm.heap.obj_mut(o).props.insert(PropKey::named("message"), Prop::method(Value::String(m)));
+        vm.heap.obj_mut(o).props.insert(PropKey::lit("message"), Prop::method(Value::String(m)));
     }
     // InstallErrorCause (§20.5.8.1).
     if let Value::Object(opts) = c.arg(1) {
-        let ck = PropKey::named("cause");
+        let ck = PropKey::lit("cause");
         if vm.has_property(opts, &ck)? {
             let cause = vm.get(opts, &ck)?;
             vm.heap.obj_mut(o).props.insert(ck, Prop::method(cause));
@@ -243,7 +244,7 @@ fn install_errors(vm: &mut Vm) {
         vm.heap
             .obj_mut(c)
             .props
-            .insert(PropKey::named("prototype"), Prop::data(Value::Object(proto), false, false, false));
+            .insert(PropKey::lit("prototype"), Prop::data(Value::Object(proto), false, false, false));
         value(vm, proto, "constructor", Value::Object(c));
         value(vm, proto, "name", Value::str(name));
         value(vm, proto, "message", Value::str(""));
@@ -255,9 +256,9 @@ fn install_errors(vm: &mut Vm) {
                 let Value::Object(o) = c.this else {
                     return vm.type_error("Error.prototype.toString called on non-object");
                 };
-                let n = vm.get(o, &PropKey::named("name"))?;
+                let n = vm.get(o, &PropKey::lit("name"))?;
                 let n = if n.is_undefined() { js_str("Error") } else { vm.to_string(&n)? };
-                let m = vm.get(o, &PropKey::named("message"))?;
+                let m = vm.get(o, &PropKey::lit("message"))?;
                 let m = if m.is_undefined() { js_str("") } else { vm.to_string(&m)? };
                 if n.is_empty() {
                     return Ok(Value::String(m));
@@ -378,7 +379,7 @@ fn install_symbol(vm: &mut Vm) {
     accessor(
         vm,
         sp,
-        PropKey::named("description"),
+        PropKey::lit("description"),
         Some(|vm, c| {
             let s = this_symbol(vm, &c.this)?;
             Ok(s.0.description.clone().map(Value::String).unwrap_or_default())
@@ -575,110 +576,6 @@ fn install_reflect(vm: &mut Vm) {
     });
 }
 
-// ---- RegExp objects (§22.2): construction only; matching comes with the regexp engine ----
-
-fn install_regexp(vm: &mut Vm) {
-    let op = vm.realm.object_proto;
-    let rp = vm.new_object_with_proto(Some(op));
-    vm.realm.regexp_proto = rp;
-    realm::constructor(
-        vm,
-        "RegExp",
-        2,
-        |vm, c| {
-            let p = c.arg(0);
-            let (src, flags) = match &p {
-                Value::Object(o) if matches!(vm.heap.obj(*o).kind, Kind::RegExp { .. }) => {
-                    let Kind::RegExp { source, flags } = &vm.heap.obj(*o).kind else {
-                        unreachable!("regexp")
-                    };
-                    let (source, flags) = (source.clone(), flags.clone());
-                    let f = if c.arg(1).is_undefined() { flags } else { vm.to_string(&c.arg(1))? };
-                    (source, f)
-                }
-                _ => {
-                    let s = if p.is_undefined() { js_str("(?:)") } else { vm.to_string(&p)? };
-                    let f = if c.arg(1).is_undefined() { js_str("") } else { vm.to_string(&c.arg(1))? };
-                    (s, f)
-                }
-            };
-            Ok(Value::Object(vm.regexp_create(src, flags)?))
-        },
-        rp,
-    );
-    accessor(
-        vm,
-        rp,
-        PropKey::named("source"),
-        Some(|vm, c| match &c.this {
-            Value::Object(o) => match &vm.heap.obj(*o).kind {
-                Kind::RegExp { source, .. } => Ok(Value::String(source.clone())),
-                _ if *o == vm.realm.regexp_proto => Ok(Value::str("(?:)")),
-                _ => vm.type_error("not a RegExp"),
-            },
-            _ => vm.type_error("not a RegExp"),
-        }),
-        None,
-    );
-    accessor(
-        vm,
-        rp,
-        PropKey::named("flags"),
-        Some(|vm, c| match &c.this {
-            Value::Object(o) => match &vm.heap.obj(*o).kind {
-                Kind::RegExp { flags, .. } => Ok(Value::String(flags.clone())),
-                _ => Ok(Value::str("")),
-            },
-            _ => vm.type_error("not an object"),
-        }),
-        None,
-    );
-    for m in ["exec", "test"] {
-        method(vm, rp, m, 1, |vm, _| vm.syntax_error("regular expression matching is not supported yet"));
-    }
-    method(vm, rp, "toString", 0, |vm, c| {
-        let Value::Object(o) = c.this else { return vm.type_error("not an object") };
-        let s = vm.get(o, &PropKey::named("source"))?;
-        let s = vm.to_string(&s)?;
-        let f = vm.get(o, &PropKey::named("flags"))?;
-        let f = vm.to_string(&f)?;
-        let mut v: Vec<u16> = vec![b'/' as u16];
-        v.extend_from_slice(&s);
-        v.push(b'/' as u16);
-        v.extend_from_slice(&f);
-        Ok(Value::String(v.into()))
-    });
-}
-
-impl Vm {
-    /// RegExpCreate (§22.2.3.1): checks the pattern; matching is not implemented yet.
-    pub fn regexp_create(&mut self, source: JsString, flags: JsString) -> JsResult<ObjRef> {
-        let f = to_rust(&flags);
-        let mut seen = String::new();
-        for ch in f.chars() {
-            if !"dgimsuvy".contains(ch) || seen.contains(ch) {
-                return self.syntax_error(&format!("Invalid regular expression flags '{f}'"));
-            }
-            seen.push(ch);
-        }
-        if seen.contains('u') && seen.contains('v') {
-            return self.syntax_error("Invalid regular expression flags");
-        }
-        let body = String::from_utf16_lossy(&source);
-        if let Err(e) = crate::regexp::validate(&body, seen.contains('u'), seen.contains('v')) {
-            return self.syntax_error(&format!("Invalid regular expression: /{body}/: {e}"));
-        }
-        let src = if source.is_empty() { js_str("(?:)") } else { source };
-        let proto = self.realm.regexp_proto;
-        let o = self.heap.alloc(Object::new(Some(proto), Kind::RegExp { source: src, flags }));
-        self.heap
-            .obj_mut(o)
-            .props
-            .insert(PropKey::named("lastIndex"), Prop::data(Value::Number(0.0), true, false, false));
-        Ok(o)
-    }
-}
-
 /// AggregateError (§20.5.7).
 fn install_aggregate_error(vm: &mut Vm) {
     let ep = vm.realm.error_proto(ErrorKind::Error);
@@ -695,10 +592,10 @@ fn install_aggregate_error(vm: &mut Vm) {
             let msg = c.arg(1);
             if !msg.is_undefined() {
                 let m = vm.to_string(&msg)?;
-                vm.heap.obj_mut(o).props.insert(PropKey::named("message"), Prop::method(Value::String(m)));
+                vm.heap.obj_mut(o).props.insert(PropKey::lit("message"), Prop::method(Value::String(m)));
             }
             if let Value::Object(opts) = c.arg(2) {
-                let ck = PropKey::named("cause");
+                let ck = PropKey::lit("cause");
                 if vm.has_property(opts, &ck)? {
                     let cause = vm.get(opts, &ck)?;
                     vm.heap.obj_mut(o).props.insert(ck, Prop::method(cause));
@@ -706,13 +603,13 @@ fn install_aggregate_error(vm: &mut Vm) {
             }
             let errors = vm.iterate_to_vec(&c.arg(0))?;
             let arr = vm.new_array(errors);
-            vm.heap.obj_mut(o).props.insert(PropKey::named("errors"), Prop::method(Value::Object(arr)));
+            vm.heap.obj_mut(o).props.insert(PropKey::lit("errors"), Prop::method(Value::Object(arr)));
             Ok(Value::Object(o))
         },
         proto,
     );
     let g = vm.realm.global;
-    let ec = vm.get(g, &PropKey::named("Error")).ok().and_then(|v| v.as_object());
+    let ec = vm.get(g, &PropKey::lit("Error")).ok().and_then(|v| v.as_object());
     vm.heap.obj_mut(c).proto = ec;
     value(vm, proto, "name", Value::str("AggregateError"));
     value(vm, proto, "message", Value::str(""));

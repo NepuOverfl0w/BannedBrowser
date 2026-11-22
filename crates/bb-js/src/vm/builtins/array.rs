@@ -29,7 +29,7 @@ fn species_create(vm: &mut Vm, original: ObjRef, len: f64) -> JsResult<ObjRef> {
     if !is_array(vm, &Value::Object(original))? {
         return array_create(vm, len, None);
     }
-    let mut c = vm.get(original, &PropKey::named("constructor"))?;
+    let mut c = vm.get(original, &PropKey::lit("constructor"))?;
     if let Value::Object(co) = c {
         let sk = PropKey::Sym(vm.realm.sym_species.clone());
         c = vm.get(co, &sk)?;
@@ -74,7 +74,7 @@ fn relative(vm: &mut Vm, v: &Value, len: f64, default: f64) -> JsResult<f64> {
 }
 
 fn set_length(vm: &mut Vm, o: ObjRef, n: f64) -> JsResult<()> {
-    vm.set_or_throw(o, PropKey::named("length"), Value::Number(n))
+    vm.set_or_throw(o, PropKey::lit("length"), Value::Number(n))
 }
 
 /// The default comparison of `sort` (§23.1.3.30.2 SortCompare without comparefn).
@@ -525,12 +525,12 @@ pub(super) fn install(vm: &mut Vm) {
     });
     method(vm, ap, "toString", 0, |vm, c| {
         let o = vm.to_object(&c.this)?;
-        let f = vm.get(o, &PropKey::named("join"))?;
+        let f = vm.get(o, &PropKey::lit("join"))?;
         if vm.is_callable(&f) {
             return vm.call(&f, Value::Object(o), Vec::new());
         }
         let op = vm.realm.object_proto;
-        let ts = vm.get(op, &PropKey::named("toString"))?;
+        let ts = vm.get(op, &PropKey::lit("toString"))?;
         vm.call(&ts, Value::Object(o), Vec::new())
     });
     method(vm, ap, "toLocaleString", 0, |vm, c| {
@@ -543,7 +543,7 @@ pub(super) fn install(vm: &mut Vm) {
             }
             let v = vm.get(o, &key(k))?;
             if !v.is_nullish() {
-                let f = vm.get_value_key(&v, &PropKey::named("toLocaleString"))?;
+                let f = vm.get_value_key(&v, &PropKey::lit("toLocaleString"))?;
                 let r = vm.call(&f, v, Vec::new())?;
                 out.extend_from_slice(&vm.to_string(&r)?);
             }

@@ -71,9 +71,9 @@ impl<'a> Compiler<'a> {
             ctl: Vec::new(),
             source,
             completion,
-            strings: HashMap::new(),
-            names: HashMap::new(),
-            keys: HashMap::new(),
+            strings: HashMap::default(),
+            names: HashMap::default(),
+            keys: HashMap::default(),
             chain: Vec::new(),
             annex_b: HashSet::new(),
             async_gen: false,
@@ -808,7 +808,13 @@ impl<'a> Compiler<'a> {
                         self.emit(Op::PushScope);
                         self.ctl.push(Ctl::Scope);
                         scoped = true;
-                        per_iter = *k == VarKind::Let;
+                        // Per-iteration copies are only observable through closures or eval
+                        // in the loop (§14.7.4.4); skip them otherwise.
+                        per_iter = *k == VarKind::Let
+                            && (stmt_may_capture(body)
+                                || test.as_ref().is_some_and(expr_may_capture)
+                                || update.as_ref().is_some_and(expr_may_capture)
+                                || decls.iter().any(|(_, i)| i.as_ref().is_some_and(expr_may_capture)));
                         let mut names = Vec::new();
                         for (p, _) in decls {
                             pat_names(p, &mut names);
@@ -1353,7 +1359,7 @@ impl<'a> Compiler<'a> {
         let k = match prop {
             Expr::Ident(n) => PropKey::named(n),
             Expr::Str(s) => PropKey::from_js(s.as_slice().into()),
-            _ => PropKey::named(""),
+            _ => PropKey::lit(""),
         };
         self.key(k)
     }
@@ -2211,7 +2217,7 @@ fn static_key(k: &crate::ast::PropKey) -> PropKey {
         crate::ast::PropKey::Str(s) => PropKey::from_js(s.as_slice().into()),
         crate::ast::PropKey::Num(n) => PropKey::from_f64(*n),
         crate::ast::PropKey::BigInt(b) => PropKey::named(b),
-        _ => PropKey::named(""),
+        _ => PropKey::lit(""),
     }
 }
 
@@ -2488,5 +2494,123 @@ fn annex_b_stmt(
             annex_b_block(&all, stack, params, out);
         }
         _ => {}
+    }
+}
+
+/// Could this code capture the current scope (a closure, class, or direct eval)? Used to skip
+/// unobservable per-iteration environment copies. Conservative: unknown shapes say yes.
+fn stmt_may_capture(s: &Stmt) -> bool {
+    match s {
+        Stmt::Expr(e) | Stmt::Throw(e) => expr_may_capture(e),
+        Stmt::Var(_, ds) => {
+            ds.iter().any(|(p, i)| pat_may_capture(p) || i.as_ref().is_some_and(expr_may_capture))
+        }
+        Stmt::Function(_) | Stmt::Class(_) => true,
+        Stmt::Block(b) => b.iter().any(stmt_may_capture),
+        Stmt::Empty | Stmt::Debugger | Stmt::Break(_) | Stmt::Continue(_) => false,
+        Stmt::If(t, a, b) => {
+            expr_may_capture(t) || stmt_may_capture(a) || b.as_deref().is_some_and(stmt_may_capture)
+        }
+        Stmt::For { init, test, update, body } => {
+            (match init {
+                Some(ForInit::Var(_, ds)) => {
+                    ds.iter().any(|(p, i)| pat_may_capture(p) || i.as_ref().is_some_and(expr_may_capture))
+                }
+                Some(ForInit::Expr(e)) => expr_may_capture(e),
+                None => false,
+            }) || test.as_ref().is_some_and(expr_may_capture)
+                || update.as_ref().is_some_and(expr_may_capture)
+                || stmt_may_capture(body)
+        }
+        Stmt::ForIn { head, right, body } | Stmt::ForOf { head, right, body, .. } => {
+            let hp = match head {
+                ForHead::Var(_, p) | ForHead::Pat(p) => pat_may_capture(p),
+            };
+            hp || expr_may_capture(right) || stmt_may_capture(body)
+        }
+        Stmt::While(t, b) | Stmt::DoWhile(b, t) => expr_may_capture(t) || stmt_may_capture(b),
+        Stmt::Return(e) => e.as_ref().is_some_and(expr_may_capture),
+        Stmt::Try { block, param, handler, finalizer } => {
+            block.iter().any(stmt_may_capture)
+                || param.as_ref().is_some_and(pat_may_capture)
+                || handler.as_ref().is_some_and(|h| h.iter().any(stmt_may_capture))
+                || finalizer.as_ref().is_some_and(|f| f.iter().any(stmt_may_capture))
+        }
+        Stmt::Switch(d, cases) => {
+            expr_may_capture(d)
+                || cases.iter().any(|c| {
+                    c.test.as_ref().is_some_and(expr_may_capture) || c.body.iter().any(stmt_may_capture)
+                })
+        }
+        Stmt::Labeled(_, b) => stmt_may_capture(b),
+        Stmt::With(..) => true,
+        _ => true,
+    }
+}
+
+fn pat_may_capture(p: &Pat) -> bool {
+    match p {
+        Pat::Ident(_) => false,
+        Pat::Array(es, rest) => {
+            es.iter().flatten().any(pat_may_capture) || rest.as_deref().is_some_and(pat_may_capture)
+        }
+        Pat::Object(ps, rest) => {
+            ps.iter().any(|(k, v)| matches!(k, crate::ast::PropKey::Computed(_)) || pat_may_capture(v))
+                || rest.as_deref().is_some_and(pat_may_capture)
+        }
+        Pat::Default(t, d) => pat_may_capture(t) || expr_may_capture(d),
+        Pat::Expr(e) => expr_may_capture(e),
+    }
+}
+
+fn expr_may_capture(e: &Expr) -> bool {
+    match e {
+        Expr::Num(_)
+        | Expr::BigInt(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Null
+        | Expr::Ident(_)
+        | Expr::This
+        | Expr::Regex { .. }
+        | Expr::NewTarget => false,
+        Expr::Function(_) | Expr::Arrow(_) | Expr::Class(_) => true,
+        Expr::Template(parts) => {
+            parts.iter().any(|p| matches!(p, TemplatePart::Expr(x) if expr_may_capture(x)))
+        }
+        Expr::TaggedTemplate { tag, parts } => {
+            expr_may_capture(tag)
+                || parts.iter().any(|p| matches!(p, TemplatePart::Expr(x) if expr_may_capture(x)))
+        }
+        Expr::Array(xs) => xs.iter().flatten().any(expr_may_capture),
+        Expr::Object(props) => props.iter().any(|p| match p {
+            Prop::KeyValue(k, v) => {
+                matches!(k, crate::ast::PropKey::Computed(x) if expr_may_capture(x)) || expr_may_capture(v)
+            }
+            Prop::Shorthand(_, d) => d.as_deref().is_some_and(expr_may_capture),
+            Prop::Spread(x) => expr_may_capture(x),
+            _ => true,
+        }),
+        Expr::Unary(_, x) | Expr::Spread(x) | Expr::Paren(x) | Expr::Await(x) | Expr::OptionalChain(x) => {
+            expr_may_capture(x)
+        }
+        Expr::Update { target, .. } => expr_may_capture(target),
+        Expr::Binary(_, a, b) | Expr::Logical(_, a, b) => expr_may_capture(a) || expr_may_capture(b),
+        Expr::Assign { target, value, .. } => pat_may_capture(target) || expr_may_capture(value),
+        Expr::Cond(a, b, c) => expr_may_capture(a) || expr_may_capture(b) || expr_may_capture(c),
+        Expr::Call { callee, args, .. } => {
+            matches!(&**callee, Expr::Ident(n) if n == "eval")
+                || expr_may_capture(callee)
+                || args.iter().any(expr_may_capture)
+        }
+        Expr::New { callee, args } => expr_may_capture(callee) || args.iter().any(expr_may_capture),
+        Expr::Member { object, prop, .. } => expr_may_capture(object) || expr_may_capture(prop),
+        Expr::PrivateMember { object, .. } => expr_may_capture(object),
+        Expr::PrivateIn(_, x) => expr_may_capture(x),
+        Expr::SuperMember { prop, .. } => expr_may_capture(prop),
+        Expr::SuperCall(args) => args.iter().any(expr_may_capture),
+        Expr::Seq(xs) => xs.iter().any(expr_may_capture),
+        Expr::Yield { arg, .. } => arg.as_deref().is_some_and(expr_may_capture),
+        _ => true,
     }
 }

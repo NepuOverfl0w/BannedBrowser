@@ -427,8 +427,8 @@ pub(super) fn install(vm: &mut Vm) {
             vec![Value::Object(p)],
         );
         let o = vm.new_object();
-        vm.create_data_property_or_throw(o, PropKey::named("proxy"), Value::Object(p))?;
-        vm.create_data_property_or_throw(o, PropKey::named("revoke"), Value::Object(revoke))?;
+        vm.create_data_property_or_throw(o, PropKey::lit("proxy"), Value::Object(p))?;
+        vm.create_data_property_or_throw(o, PropKey::lit("revoke"), Value::Object(revoke))?;
         Ok(Value::Object(o))
     });
 }

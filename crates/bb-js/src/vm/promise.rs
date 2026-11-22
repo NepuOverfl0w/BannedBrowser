@@ -77,7 +77,7 @@ impl Vm {
                 self.reject_promise(p, e);
                 return Ok(());
             }
-            let then = match self.get(*r, &PropKey::named("then")) {
+            let then = match self.get(*r, &PropKey::lit("then")) {
                 Ok(t) => t,
                 Err(e) => {
                     if self.terminated {
@@ -172,7 +172,7 @@ impl Vm {
     /// PromiseResolve (§27.2.4.7.1).
     pub fn promise_resolve(&mut self, c: &Value, x: Value) -> JsResult<Value> {
         if self.is_promise(&x) {
-            let xc = self.get_value_key(&x, &PropKey::named("constructor"))?;
+            let xc = self.get_value_key(&x, &PropKey::lit("constructor"))?;
             if super::value::same_value(&xc, c) {
                 return Ok(x);
             }
@@ -184,7 +184,7 @@ impl Vm {
 
     /// SpeciesConstructor (§7.3.22).
     pub fn species_constructor(&mut self, o: ObjRef, default: ObjRef) -> JsResult<Value> {
-        let c = self.get(o, &PropKey::named("constructor"))?;
+        let c = self.get(o, &PropKey::lit("constructor"))?;
         if c.is_undefined() {
             return Ok(Value::Object(default));
         }
@@ -456,7 +456,7 @@ enum Combinator {
 fn combinator(vm: &mut Vm, c: NativeCall, kind: Combinator) -> JsResult<Value> {
     let ctor = c.this.clone();
     let (p, res, rej) = vm.new_promise_capability(&ctor)?;
-    let resolve_fn = match vm.get_value_key(&ctor, &PropKey::named("resolve")) {
+    let resolve_fn = match vm.get_value_key(&ctor, &PropKey::lit("resolve")) {
         Ok(f) if vm.is_callable(&f) => f,
         Ok(_) => {
             let e = vm.error(ErrorKind::Type, "Promise resolve is not a function");
@@ -594,7 +594,7 @@ fn element(vm: &mut Vm, c: NativeCall, fulfilled: bool) -> JsResult<Value> {
     let v = if kind == Combinator::AllSettled {
         let o = vm.new_object();
         let st = if fulfilled { "fulfilled" } else { "rejected" };
-        vm.create_data_property_or_throw(o, PropKey::named("status"), Value::str(st))?;
+        vm.create_data_property_or_throw(o, PropKey::lit("status"), Value::str(st))?;
         vm.create_data_property_or_throw(
             o,
             PropKey::named(if fulfilled { "value" } else { "reason" }),
@@ -627,7 +627,7 @@ impl Vm {
         if let Value::Object(o) = e {
             self.heap.obj_mut(o).proto = Some(self.realm.aggregate_error_proto);
             let arr = self.new_array(errors);
-            self.heap.obj_mut(o).props.insert(PropKey::named("errors"), Prop::method(Value::Object(arr)));
+            self.heap.obj_mut(o).props.insert(PropKey::lit("errors"), Prop::method(Value::Object(arr)));
         }
         e
     }
@@ -659,9 +659,9 @@ pub(super) fn install(vm: &mut Vm) {
     method(vm, ctor, "withResolvers", 0, |vm, c| {
         let (p, res, rej) = vm.new_promise_capability(&c.this)?;
         let o = vm.new_object();
-        vm.create_data_property_or_throw(o, PropKey::named("promise"), p)?;
-        vm.create_data_property_or_throw(o, PropKey::named("resolve"), res)?;
-        vm.create_data_property_or_throw(o, PropKey::named("reject"), rej)?;
+        vm.create_data_property_or_throw(o, PropKey::lit("promise"), p)?;
+        vm.create_data_property_or_throw(o, PropKey::lit("resolve"), res)?;
+        vm.create_data_property_or_throw(o, PropKey::lit("reject"), rej)?;
         Ok(Value::Object(o))
     });
     method(vm, ctor, "try", 1, |vm, c| {

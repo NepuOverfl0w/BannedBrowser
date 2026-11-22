@@ -252,8 +252,8 @@ fn parse(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let reviver = c.arg(1);
     if vm.is_callable(&reviver) {
         let root = vm.new_object();
-        vm.create_data_property_or_throw(root, PropKey::named(""), v)?;
-        return internalize(vm, root, PropKey::named(""), &reviver, 0);
+        vm.create_data_property_or_throw(root, PropKey::lit(""), v)?;
+        return internalize(vm, root, PropKey::lit(""), &reviver, 0);
     }
     Ok(v)
 }
@@ -306,7 +306,7 @@ impl Ser {
     fn property(&mut self, vm: &mut Vm, key: PropKey, holder: ObjRef) -> JsResult<Option<Vec<u16>>> {
         let mut v = vm.get(holder, &key)?;
         if matches!(v, Value::Object(_) | Value::BigInt(_)) {
-            let tj = vm.get_value_key(&v, &PropKey::named("toJSON"))?;
+            let tj = vm.get_value_key(&v, &PropKey::lit("toJSON"))?;
             if vm.is_callable(&tj) {
                 v = vm.call(&tj, v, vec![key.to_value()])?;
             }
@@ -485,8 +485,8 @@ fn stringify(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
         _ => Vec::new(),
     };
     let wrapper = vm.new_object();
-    vm.create_data_property_or_throw(wrapper, PropKey::named(""), c.arg(0))?;
-    Ok(match ser.property(vm, PropKey::named(""), wrapper)? {
+    vm.create_data_property_or_throw(wrapper, PropKey::lit(""), c.arg(0))?;
+    Ok(match ser.property(vm, PropKey::lit(""), wrapper)? {
         Some(s) => Value::String(s.into()),
         None => Value::Undefined,
     })

@@ -9,6 +9,17 @@ use crate::parser::EvalContext;
 use std::rc::Rc;
 
 impl Vm {
+    /// The property key of a binding name (cached by the name's allocation).
+    pub(super) fn name_key(&mut self, name: &Rc<str>) -> PropKey {
+        let addr = Rc::as_ptr(name) as *const u8 as usize;
+        if let Some((_, k)) = self.name_keys.get(&addr) {
+            return k.clone();
+        }
+        let k = PropKey::named(name);
+        self.name_keys.insert(addr, (name.clone(), k.clone()));
+        k
+    }
+
     /// HasBinding (§9.1.1.*.1).
     fn has_binding(&mut self, r: EnvRef, name: &Rc<str>) -> JsResult<bool> {
         if name.starts_with('#') {
@@ -27,7 +38,7 @@ impl Vm {
             }
             EnvKind::Object { object, with } => (*object, *with),
         };
-        let key = PropKey::named(name);
+        let key = self.name_key(name);
         if !self.has_property(obj, &key)? {
             return Ok(false);
         }
@@ -63,7 +74,7 @@ impl Vm {
             EnvKind::Global { object, .. } if !self.heap.env(r).bindings.contains_key(name) => *object,
             _ => return self.decl_value(r, name),
         };
-        let key = PropKey::named(name);
+        let key = self.name_key(name);
         if !self.has_property(obj, &key)? {
             if strict {
                 return self.reference_error(&format!("{name} is not defined"));
@@ -97,7 +108,7 @@ impl Vm {
             _ => None,
         };
         if let Some(obj) = obj {
-            let key = PropKey::named(name);
+            let key = self.name_key(name);
             let still = self.has_property(obj, &key)?;
             if !still && strict {
                 return self.reference_error(&format!("{name} is not defined"));
@@ -156,7 +167,8 @@ impl Vm {
                     return self.reference_error(&format!("{name} is not defined"));
                 }
                 let g = self.realm.global;
-                self.set(g, PropKey::named(name), v, Value::Object(g))?;
+                let k = self.name_key(name);
+                self.set(g, k, v, Value::Object(g))?;
                 Ok(())
             }
             Some(r) => self.set_mutable_binding(r, name, v, strict),
@@ -193,7 +205,8 @@ impl Vm {
             _ => None,
         };
         if let Some(o) = obj {
-            let ok = self.delete(o, &PropKey::named(name))?;
+            let k = self.name_key(name);
+            let ok = self.delete(o, &k)?;
             if ok {
                 if let EnvKind::Global { var_names, .. } = &mut self.heap.env_mut(r).kind {
                     var_names.remove(name);
@@ -305,7 +318,7 @@ impl Vm {
     /// CreateGlobalVarBinding (§9.1.1.4.17).
     fn create_global_var(&mut self, genv: EnvRef, n: &Rc<str>, deletable: bool) -> JsResult<()> {
         let g = self.global_parts(genv);
-        let key = PropKey::named(n);
+        let key = self.name_key(n);
         if self.get_own_property(g, &key)?.is_none() && self.is_extensible(g)? {
             self.define_own_property_or_throw(
                 g,
@@ -328,7 +341,7 @@ impl Vm {
         deletable: bool,
     ) -> JsResult<()> {
         let g = self.global_parts(genv);
-        let key = PropKey::named(n);
+        let key = self.name_key(n);
         let existing = self.get_own_property(g, &key)?;
         let desc = match existing {
             None => PropDesc::data(f.clone(), true, true, deletable),

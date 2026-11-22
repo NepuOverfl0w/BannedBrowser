@@ -4,7 +4,7 @@
 use super::code::FuncTemplate;
 use super::value::{JsString, PropKey, Sym, Value};
 use super::Frame;
-use std::collections::HashMap;
+use crate::vm::fx::HashMap;
 use std::rc::Rc;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -210,7 +210,7 @@ pub struct Bound {
 
 pub struct ForIn {
     pub object: Option<ObjRef>,
-    pub visited: std::collections::HashSet<PropKey>,
+    pub visited: crate::vm::fx::HashSet<PropKey>,
     pub queue: std::collections::VecDeque<PropKey>,
     pub started: bool,
 }
@@ -334,10 +334,8 @@ pub enum Kind {
     BigInt(Rc<super::bigint::BigInt>),
     Error,
     Date(f64),
-    RegExp {
-        source: JsString,
-        flags: JsString,
-    },
+    RegExp(Box<super::builtins::regexp::RegExpData>),
+    RegExpStringIter(Box<super::builtins::regexp::RegExpStringIter>),
     ArrayIter {
         target: Option<ObjRef>,
         index: u32,
@@ -509,7 +507,7 @@ pub enum EnvKind {
     Global {
         object: ObjRef,
         this: Value,
-        var_names: std::collections::HashSet<Rc<str>>,
+        var_names: crate::vm::fx::HashSet<Rc<str>>,
     },
 }
 
@@ -721,6 +719,7 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
         Kind::WeakRef(v) => push_val(v, os),
         Kind::TypedArray(t) => os.push(t.buffer),
         Kind::IterHelper(h) => h.trace(os),
+        Kind::RegExpStringIter(r) => os.push(r.matcher),
         Kind::DataView(d) => os.push(d.buffer),
         Kind::Proxy(p) => {
             os.extend(p.target);

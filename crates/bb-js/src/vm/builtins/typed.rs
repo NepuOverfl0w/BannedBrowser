@@ -65,7 +65,7 @@ pub(super) fn allocate_buffer(
 
 fn max_option(vm: &mut Vm, opts: &Value) -> JsResult<Option<f64>> {
     let Value::Object(o) = opts else { return Ok(None) };
-    let m = vm.get(*o, &PropKey::named("maxByteLength"))?;
+    let m = vm.get(*o, &PropKey::lit("maxByteLength"))?;
     if m.is_undefined() {
         return Ok(None);
     }
@@ -103,9 +103,9 @@ fn buffer_slice(vm: &mut Vm, c: NativeCall, shared: bool) -> JsResult<Value> {
     let fin = rel(vm, &c.arg(1), len, len)?;
     let new_len = (fin - first).max(0.0);
     let default = if shared {
-        vm.get(vm.realm.global, &PropKey::named("SharedArrayBuffer"))?
+        vm.get(vm.realm.global, &PropKey::lit("SharedArrayBuffer"))?
     } else {
-        vm.get(vm.realm.global, &PropKey::named("ArrayBuffer"))?
+        vm.get(vm.realm.global, &PropKey::lit("ArrayBuffer"))?
     };
     let ctor = vm.species_constructor(o, default.as_object().expect("constructor"))?;
     let new = vm.construct(ctor.as_object().expect("constructor"), vec![Value::Number(new_len)], None)?;
@@ -172,7 +172,7 @@ fn install_buffers(vm: &mut Vm) {
     accessor(
         vm,
         abp,
-        PropKey::named("byteLength"),
+        PropKey::lit("byteLength"),
         Some(|vm, c| {
             let o = buffer_of(vm, &c.this, false)?;
             Ok(Value::Number(buf_data(vm, o).0.unwrap_or(0) as f64))
@@ -182,7 +182,7 @@ fn install_buffers(vm: &mut Vm) {
     accessor(
         vm,
         abp,
-        PropKey::named("maxByteLength"),
+        PropKey::lit("maxByteLength"),
         Some(|vm, c| {
             let o = buffer_of(vm, &c.this, false)?;
             let (len, max) = buf_data(vm, o);
@@ -196,7 +196,7 @@ fn install_buffers(vm: &mut Vm) {
     accessor(
         vm,
         abp,
-        PropKey::named("resizable"),
+        PropKey::lit("resizable"),
         Some(|vm, c| {
             let o = buffer_of(vm, &c.this, false)?;
             Ok(Value::Bool(buf_data(vm, o).1.is_some()))
@@ -206,7 +206,7 @@ fn install_buffers(vm: &mut Vm) {
     accessor(
         vm,
         abp,
-        PropKey::named("detached"),
+        PropKey::lit("detached"),
         Some(|vm, c| {
             let o = buffer_of(vm, &c.this, false)?;
             Ok(Value::Bool(vm.is_detached(o)))
@@ -241,7 +241,7 @@ fn install_buffers(vm: &mut Vm) {
     accessor(
         vm,
         sbp,
-        PropKey::named("byteLength"),
+        PropKey::lit("byteLength"),
         Some(|vm, c| {
             let o = buffer_of(vm, &c.this, true)?;
             Ok(Value::Number(buf_data(vm, o).0.unwrap_or(0) as f64))
@@ -251,7 +251,7 @@ fn install_buffers(vm: &mut Vm) {
     accessor(
         vm,
         sbp,
-        PropKey::named("maxByteLength"),
+        PropKey::lit("maxByteLength"),
         Some(|vm, c| {
             let o = buffer_of(vm, &c.this, true)?;
             let (len, max) = buf_data(vm, o);
@@ -262,7 +262,7 @@ fn install_buffers(vm: &mut Vm) {
     accessor(
         vm,
         sbp,
-        PropKey::named("growable"),
+        PropKey::lit("growable"),
         Some(|vm, c| {
             let o = buffer_of(vm, &c.this, true)?;
             Ok(Value::Bool(buf_data(vm, o).1.is_some()))
@@ -435,14 +435,14 @@ fn install_dataview(vm: &mut Vm) {
     accessor(
         vm,
         dvp,
-        PropKey::named("buffer"),
+        PropKey::lit("buffer"),
         Some(|vm, c| Ok(Value::Object(view_parts(vm, &c.this)?.0))),
         None,
     );
     accessor(
         vm,
         dvp,
-        PropKey::named("byteLength"),
+        PropKey::lit("byteLength"),
         Some(|vm, c| {
             let (b, o, l) = view_parts(vm, &c.this)?;
             match view_length(vm, b, o, l) {
@@ -455,7 +455,7 @@ fn install_dataview(vm: &mut Vm) {
     accessor(
         vm,
         dvp,
-        PropKey::named("byteOffset"),
+        PropKey::lit("byteOffset"),
         Some(|vm, c| {
             let (b, o, l) = view_parts(vm, &c.this)?;
             match view_length(vm, b, o, l) {
@@ -625,7 +625,7 @@ fn ta_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
 }
 
 fn proto_from(vm: &mut Vm, nt: ObjRef, default: ObjRef) -> JsResult<ObjRef> {
-    match vm.get(nt, &PropKey::named("prototype"))? {
+    match vm.get(nt, &PropKey::lit("prototype"))? {
         Value::Object(p) => Ok(p),
         _ => Ok(default),
     }
@@ -764,8 +764,8 @@ fn install_typed_arrays(vm: &mut Vm) {
     vm.heap
         .obj_mut(tac)
         .props
-        .insert(PropKey::named("prototype"), Prop::data(Value::Object(tap), false, false, false));
-    vm.heap.obj_mut(tap).props.insert(PropKey::named("constructor"), Prop::method(Value::Object(tac)));
+        .insert(PropKey::lit("prototype"), Prop::data(Value::Object(tap), false, false, false));
+    vm.heap.obj_mut(tap).props.insert(PropKey::lit("constructor"), Prop::method(Value::Object(tac)));
     let species = PropKey::Sym(vm.realm.sym_species.clone());
     accessor(vm, tac, species, Some(|_, c| Ok(c.this)), None);
     let _ = fp;
@@ -830,7 +830,7 @@ fn install_typed_arrays(vm: &mut Vm) {
     accessor(
         vm,
         tap,
-        PropKey::named("buffer"),
+        PropKey::lit("buffer"),
         Some(|vm, c| match c.this.as_object().and_then(|o| vm.ta(o)) {
             Some((_, b, _, _)) => Ok(Value::Object(b)),
             None => vm.type_error("not a typed array"),
@@ -840,7 +840,7 @@ fn install_typed_arrays(vm: &mut Vm) {
     accessor(
         vm,
         tap,
-        PropKey::named("byteLength"),
+        PropKey::lit("byteLength"),
         Some(|vm, c| match c.this.as_object().and_then(|o| vm.ta(o).map(|t| (o, t))) {
             Some((o, (k, ..))) => Ok(Value::Number((vm.ta_length(o).unwrap_or(0) * k.size()) as f64)),
             None => vm.type_error("not a typed array"),
@@ -850,7 +850,7 @@ fn install_typed_arrays(vm: &mut Vm) {
     accessor(
         vm,
         tap,
-        PropKey::named("byteOffset"),
+        PropKey::lit("byteOffset"),
         Some(|vm, c| match c.this.as_object().and_then(|o| vm.ta(o).map(|t| (o, t))) {
             Some((o, (_, _, off, _))) => {
                 Ok(Value::Number(if vm.ta_length(o).is_some() { off as f64 } else { 0.0 }))
@@ -862,7 +862,7 @@ fn install_typed_arrays(vm: &mut Vm) {
     accessor(
         vm,
         tap,
-        PropKey::named("length"),
+        PropKey::lit("length"),
         Some(|vm, c| match c.this.as_object().filter(|o| vm.ta(*o).is_some()) {
             Some(o) => Ok(Value::Number(vm.ta_length(o).unwrap_or(0) as f64)),
             None => vm.type_error("not a typed array"),
@@ -1132,7 +1132,7 @@ fn install_typed_arrays(vm: &mut Vm) {
             }
             let v = vm.ta_get(o, i as f64);
             if !v.is_nullish() {
-                let f = vm.get_value_key(&v, &PropKey::named("toLocaleString"))?;
+                let f = vm.get_value_key(&v, &PropKey::lit("toLocaleString"))?;
                 let r = vm.call(&f, v, Vec::new())?;
                 out.extend_from_slice(&vm.to_string(&r)?);
             }
@@ -1182,7 +1182,7 @@ fn install_typed_arrays(vm: &mut Vm) {
         Ok(Value::Object(a))
     });
     let ap = vm.realm.array_proto;
-    if let Ok(ts) = vm.get(ap, &PropKey::named("toString")) {
+    if let Ok(ts) = vm.get(ap, &PropKey::lit("toString")) {
         realm::value(vm, tap, "toString", ts);
     }
 

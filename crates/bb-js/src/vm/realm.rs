@@ -4,7 +4,7 @@
 use super::heap::*;
 use super::value::{js_str, PropKey, Sym, Value};
 use super::{builtins, ErrorKind, Vm};
-use std::collections::HashMap;
+use crate::vm::fx::HashMap;
 
 macro_rules! realm_objects {
     ($($f:ident),* $(,)?) => {
@@ -34,7 +34,7 @@ macro_rules! realm_objects {
             /// Every field points at a dummy until `init` fills it in.
             pub fn placeholder(heap: &mut Heap) -> Realm {
                 let d = heap.alloc(Object::new(None, Kind::Ordinary));
-                let genv = heap.alloc_env(Env { outer: None, kind: EnvKind::Declarative, bindings: HashMap::new() });
+                let genv = heap.alloc_env(Env { outer: None, kind: EnvKind::Declarative, bindings: HashMap::default() });
                 let s = |n: &str| Sym::new(Some(js_str(n)));
                 Realm {
                     $($f: d,)*
@@ -92,6 +92,8 @@ realm_objects!(
     weakref_proto,
     finreg_proto,
     bigint_proto,
+    regexp_ctor,
+    regexp_string_iterator_proto,
     iterator_ctor,
     iterator_helper_proto,
     wrap_iterator_proto,
@@ -159,7 +161,7 @@ pub fn init(vm: &mut Vm) {
     vm.realm.global_env = vm.heap.alloc_env(Env {
         outer: None,
         kind: EnvKind::Global { object: global, this: Value::Object(global), var_names: Default::default() },
-        bindings: HashMap::new(),
+        bindings: HashMap::default(),
     });
     for f in [
         &mut vm.realm.array_proto,
@@ -176,13 +178,13 @@ pub fn init(vm: &mut Vm) {
     vm.heap
         .obj_mut(ap)
         .props
-        .insert(PropKey::named("length"), Prop::data(Value::Number(0.0), true, false, false));
+        .insert(PropKey::lit("length"), Prop::data(Value::Number(0.0), true, false, false));
     let sp = vm.realm.string_proto;
     vm.heap.obj_mut(sp).kind = Kind::String(js_str(""));
     vm.heap
         .obj_mut(sp)
         .props
-        .insert(PropKey::named("length"), Prop::data(Value::Number(0.0), false, false, false));
+        .insert(PropKey::lit("length"), Prop::data(Value::Number(0.0), false, false, false));
     let np = vm.realm.number_proto;
     vm.heap.obj_mut(np).kind = Kind::Number(0.0);
     let bp = vm.realm.boolean_proto;
@@ -212,8 +214,8 @@ pub fn native_with(
     let fp = vm.realm.function_proto;
     let o = vm.heap.alloc(Object::new(Some(fp), Kind::Native(Box::new(Native { f, constructor, slots }))));
     let obj = vm.heap.obj_mut(o);
-    obj.props.insert(PropKey::named("length"), Prop::data(Value::Number(length as f64), false, false, true));
-    obj.props.insert(PropKey::named("name"), Prop::data(Value::str(name), false, false, true));
+    obj.props.insert(PropKey::lit("length"), Prop::data(Value::Number(length as f64), false, false, true));
+    obj.props.insert(PropKey::lit("name"), Prop::data(Value::str(name), false, false, true));
     o
 }
 
@@ -262,8 +264,8 @@ pub fn constructor(vm: &mut Vm, name: &str, length: u32, f: NativeFn, proto: Obj
     vm.heap
         .obj_mut(c)
         .props
-        .insert(PropKey::named("prototype"), Prop::data(Value::Object(proto), false, false, false));
-    vm.heap.obj_mut(proto).props.insert(PropKey::named("constructor"), Prop::method(Value::Object(c)));
+        .insert(PropKey::lit("prototype"), Prop::data(Value::Object(proto), false, false, false));
+    vm.heap.obj_mut(proto).props.insert(PropKey::lit("constructor"), Prop::method(Value::Object(c)));
     let g = vm.realm.global;
     value(vm, g, name, Value::Object(c));
     c

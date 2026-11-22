@@ -143,6 +143,16 @@ impl PropKey {
             None => PropKey::Str(s),
         }
     }
+    /// A key for a string literal, interned per thread (no allocation after the first use).
+    pub fn lit(s: &'static str) -> PropKey {
+        thread_local! {
+            static KEYS: std::cell::RefCell<crate::vm::fx::HashMap<usize, PropKey>> = Default::default();
+        }
+        KEYS.with(|k| {
+            let mut k = k.borrow_mut();
+            k.entry(s.as_ptr() as usize ^ (s.len() << 48)).or_insert_with(|| PropKey::named(s)).clone()
+        })
+    }
     pub fn named(s: &str) -> PropKey {
         PropKey::from_js(js_str(s))
     }

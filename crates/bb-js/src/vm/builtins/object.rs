@@ -169,7 +169,7 @@ fn object_to_string(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
                 Kind::Number(_) => "Number",
                 Kind::String(_) => "String",
                 Kind::Date(_) => "Date",
-                Kind::RegExp { .. } => "RegExp",
+                Kind::RegExp(_) => "RegExp",
                 _ => "Object",
             };
             let k = PropKey::Sym(vm.realm.sym_to_string_tag.clone());
@@ -407,14 +407,14 @@ pub(super) fn install(vm: &mut Vm) {
     });
     method(vm, op, "toString", 0, object_to_string);
     method(vm, op, "toLocaleString", 0, |vm, c| {
-        let f = vm.get_value_key(&c.this, &PropKey::named("toString"))?;
+        let f = vm.get_value_key(&c.this, &PropKey::lit("toString"))?;
         vm.call(&f, c.this, Vec::new())
     });
     method(vm, op, "valueOf", 0, |vm, c| Ok(Value::Object(vm.to_object(&c.this)?)));
     accessor(
         vm,
         op,
-        PropKey::named("__proto__"),
+        PropKey::lit("__proto__"),
         Some(|vm, c| {
             let o = vm.to_object(&c.this)?;
             Ok(vm.get_prototype_of(o)?.map(Value::Object).unwrap_or(Value::Null))
@@ -564,7 +564,7 @@ fn function_to_string(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let s = match &vm.heap.obj(o).kind {
         Kind::Function(cl) => cl.tmpl.source_text(),
         Kind::Native(_) | Kind::Bound(_) => {
-            let name = match vm.heap.obj(o).props.get(&PropKey::named("name")).map(|p| &p.slot) {
+            let name = match vm.heap.obj(o).props.get(&PropKey::lit("name")).map(|p| &p.slot) {
                 Some(Slot::Data(Value::String(s))) if matches!(vm.heap.obj(o).kind, Kind::Native(_)) => {
                     to_rust(s)
                 }
@@ -581,8 +581,8 @@ fn install_function(vm: &mut Vm) {
     let fp = vm.realm.function_proto;
     {
         let o = vm.heap.obj_mut(fp);
-        o.props.insert(PropKey::named("length"), Prop::data(Value::Number(0.0), false, false, true));
-        o.props.insert(PropKey::named("name"), Prop::data(Value::str(""), false, false, true));
+        o.props.insert(PropKey::lit("length"), Prop::data(Value::Number(0.0), false, false, true));
+        o.props.insert(PropKey::lit("name"), Prop::data(Value::str(""), false, false, true));
     }
     let ctor = realm::constructor(vm, "Function", 1, function_ctor, fp);
     vm.realm.function_ctor = ctor;
@@ -614,7 +614,7 @@ fn install_function(vm: &mut Vm) {
             vm.heap.alloc(Object::new(proto, Kind::Bound(Box::new(Bound { target, this: c.arg(0), args }))));
         // SetFunctionLength / SetFunctionName (§20.2.3.2 steps 4–10).
         let mut len = 0.0;
-        let lk = PropKey::named("length");
+        let lk = PropKey::lit("length");
         if vm.has_own_property(target, &lk)? {
             if let Value::Number(n) = vm.get(target, &lk)? {
                 len = if n == f64::INFINITY {
@@ -626,7 +626,7 @@ fn install_function(vm: &mut Vm) {
                 };
             }
         }
-        let name = match vm.get(target, &PropKey::named("name"))? {
+        let name = match vm.get(target, &PropKey::lit("name"))? {
             Value::String(s) => s,
             _ => js_str(""),
         };
@@ -634,7 +634,7 @@ fn install_function(vm: &mut Vm) {
         n.extend_from_slice(&name);
         let o = vm.heap.obj_mut(b);
         o.props.insert(lk, Prop::data(Value::Number(len + 0.0), false, false, true));
-        o.props.insert(PropKey::named("name"), Prop::data(Value::String(n.into()), false, false, true));
+        o.props.insert(PropKey::lit("name"), Prop::data(Value::String(n.into()), false, false, true));
         Ok(Value::Object(b))
     });
     method(vm, fp, "toString", 0, function_to_string);
@@ -670,22 +670,22 @@ pub(super) fn install_dynamic_kinds(vm: &mut Vm) {
     vm.heap
         .obj_mut(f)
         .props
-        .insert(PropKey::named("prototype"), Prop::data(Value::Object(gfp), false, false, false));
+        .insert(PropKey::lit("prototype"), Prop::data(Value::Object(gfp), false, false, false));
     vm.heap
         .obj_mut(gfp)
         .props
-        .insert(PropKey::named("constructor"), Prop::data(Value::Object(f), false, false, true));
+        .insert(PropKey::lit("constructor"), Prop::data(Value::Object(f), false, false, true));
     let afp = vm.realm.async_function_proto;
     let af = realm::native_with(vm, "AsyncFunction", 1, function_ctor, true, vec![Value::Number(2.0)]);
     vm.heap.obj_mut(af).proto = Some(fc);
     vm.heap
         .obj_mut(af)
         .props
-        .insert(PropKey::named("prototype"), Prop::data(Value::Object(afp), false, false, false));
+        .insert(PropKey::lit("prototype"), Prop::data(Value::Object(afp), false, false, false));
     vm.heap
         .obj_mut(afp)
         .props
-        .insert(PropKey::named("constructor"), Prop::data(Value::Object(af), false, false, true));
+        .insert(PropKey::lit("constructor"), Prop::data(Value::Object(af), false, false, true));
     let agfp = vm.realm.async_generator_function_proto;
     let ag =
         realm::native_with(vm, "AsyncGeneratorFunction", 1, function_ctor, true, vec![Value::Number(3.0)]);
@@ -693,9 +693,9 @@ pub(super) fn install_dynamic_kinds(vm: &mut Vm) {
     vm.heap
         .obj_mut(ag)
         .props
-        .insert(PropKey::named("prototype"), Prop::data(Value::Object(agfp), false, false, false));
+        .insert(PropKey::lit("prototype"), Prop::data(Value::Object(agfp), false, false, false));
     vm.heap
         .obj_mut(agfp)
         .props
-        .insert(PropKey::named("constructor"), Prop::data(Value::Object(ag), false, false, true));
+        .insert(PropKey::lit("constructor"), Prop::data(Value::Object(ag), false, false, true));
 }

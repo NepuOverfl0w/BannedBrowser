@@ -19,6 +19,7 @@ mod class;
 pub mod code;
 pub mod compiler;
 mod env;
+pub mod fx;
 mod generator;
 pub mod heap;
 pub mod object;
@@ -26,14 +27,15 @@ pub mod ops;
 pub mod promise;
 mod proxy;
 pub mod realm;
+pub mod regex;
 pub mod typed;
 pub mod value;
 
+use crate::vm::fx::HashMap;
 use code::{Code, FuncTemplate, Op};
 use compiler::{Compiler, Unit};
 use heap::*;
 use realm::Realm;
-use std::collections::HashMap;
 use std::rc::Rc;
 pub use value::{js_str, to_rust, JsString, PropKey, Value};
 
@@ -126,6 +128,8 @@ pub struct Vm {
     templates: HashMap<(usize, u32), ObjRef>,
     /// The last suspension was `yield*` passing an inner result object through as-is.
     pub(crate) yield_raw: bool,
+    /// Property keys of binding names, by the name's allocation (kept alive here).
+    name_keys: HashMap<usize, (Rc<str>, PropKey)>,
     /// The job queue (§9.5): run by `run_jobs`.
     pub(crate) jobs: std::collections::VecDeque<Job>,
     /// Values hosts keep alive across calls.
@@ -153,11 +157,12 @@ impl Vm {
             realm,
             frames: Vec::new(),
             nested: 0,
-            registry: HashMap::new(),
-            templates: HashMap::new(),
+            registry: HashMap::default(),
+            templates: HashMap::default(),
             roots: Vec::new(),
             yield_raw: false,
             jobs: Default::default(),
+            name_keys: HashMap::default(),
             output: Vec::new(),
             fuel: None,
             terminated: false,
@@ -185,8 +190,8 @@ impl Vm {
     /// The message of a thrown value, for hosts: `Name: message` for errors.
     pub fn describe(&mut self, v: &Value) -> String {
         if let Value::Object(o) = v {
-            let name = self.get(*o, &PropKey::named("name")).ok();
-            let msg = self.get(*o, &PropKey::named("message")).ok();
+            let name = self.get(*o, &PropKey::lit("name")).ok();
+            let msg = self.get(*o, &PropKey::lit("message")).ok();
             if let (Some(Value::String(n)), Some(Value::String(m))) = (&name, &msg) {
                 return format!("{}: {}", to_rust(n), to_rust(m));
             }
@@ -251,7 +256,7 @@ impl Vm {
         let proto = self.realm.error_proto(kind);
         let o = self.heap.alloc(Object::new(Some(proto), Kind::Error));
         if !msg.is_empty() {
-            self.heap.obj_mut(o).props.insert(PropKey::named("message"), Prop::method(Value::str(msg)));
+            self.heap.obj_mut(o).props.insert(PropKey::lit("message"), Prop::method(Value::str(msg)));
         }
         Value::Object(o)
     }
@@ -422,7 +427,7 @@ impl Vm {
             self.heap.alloc_env(Env {
                 outer: Some(scope),
                 kind: EnvKind::Declarative,
-                bindings: HashMap::new(),
+                bindings: HashMap::default(),
             })
         } else {
             self.heap.alloc_env(Env {
@@ -432,7 +437,7 @@ impl Vm {
                     func: f,
                     new_target: new_target.map(Value::Object).unwrap_or(Value::Undefined),
                 },
-                bindings: HashMap::new(),
+                bindings: HashMap::default(),
             })
         };
         let mut frame = self.frame(code, env, env);
@@ -450,7 +455,7 @@ impl Vm {
 
     /// GetPrototypeFromConstructor (§10.1.14).
     pub fn prototype_from_ctor(&mut self, ctor: ObjRef, default: fn(&Realm) -> ObjRef) -> JsResult<ObjRef> {
-        let p = self.get(ctor, &PropKey::named("prototype"))?;
+        let p = self.get(ctor, &PropKey::lit("prototype"))?;
         Ok(match p {
             Value::Object(o) => o,
             _ => default(&self.realm),
@@ -741,7 +746,7 @@ impl Vm {
                 let e = self.heap.alloc_env(Env {
                     outer: Some(outer),
                     kind: EnvKind::Declarative,
-                    bindings: HashMap::new(),
+                    bindings: HashMap::default(),
                 });
                 self.top().env = e;
             }
@@ -767,7 +772,7 @@ impl Vm {
                 let e = self.heap.alloc_env(Env {
                     outer: Some(outer),
                     kind: EnvKind::Object { object: o, with: true },
-                    bindings: HashMap::new(),
+                    bindings: HashMap::default(),
                 });
                 self.top().env = e;
             }
@@ -776,7 +781,7 @@ impl Vm {
                 let e = self.heap.alloc_env(Env {
                     outer: Some(outer),
                     kind: EnvKind::Declarative,
-                    bindings: HashMap::new(),
+                    bindings: HashMap::default(),
                 });
                 let f = self.top();
                 f.env = e;
@@ -1029,7 +1034,7 @@ impl Vm {
                     let fenv = self.heap.alloc_env(Env {
                         outer: Some(env),
                         kind: EnvKind::Declarative,
-                        bindings: HashMap::new(),
+                        bindings: HashMap::default(),
                     });
                     let f = self.make_function(tmpl, fenv, None, true);
                     self.heap.env_mut(fenv).bindings.insert(
@@ -1053,7 +1058,7 @@ impl Vm {
                 if let (Value::Object(fo), Ok(key)) = (f, self.to_property_key(&k)) {
                     // Only functions without an own name (anonymous definitions).
                     let has_name = matches!(
-                        self.heap.obj(fo).props.get(&PropKey::named("name")).map(|p| &p.slot),
+                        self.heap.obj(fo).props.get(&PropKey::lit("name")).map(|p| &p.slot),
                         Some(heap::Slot::Data(Value::String(s))) if !s.is_empty()
                     );
                     if !has_name {
@@ -1375,18 +1380,18 @@ impl Vm {
                 let Value::Object(ro) = res else {
                     return self.type_error("Iterator result is not an object");
                 };
-                if self.get(ro, &PropKey::named("done"))?.truthy() {
+                if self.get(ro, &PropKey::lit("done"))?.truthy() {
                     self.pop();
                     self.jump(t);
                 } else {
-                    let v = self.get(ro, &PropKey::named("value"))?;
+                    let v = self.get(ro, &PropKey::lit("value"))?;
                     self.push(v);
                 }
             }
             Op::AsyncIterClose(t) => {
                 let Value::Object(r) = self.pop() else { return Ok(None) };
                 let (it, _) = self.iter_parts(r);
-                match self.get_method(&it, &PropKey::named("return"))? {
+                match self.get_method(&it, &PropKey::lit("return"))? {
                     Some(f) => {
                         let res = self.call(&f, it, Vec::new())?;
                         self.push(res);
@@ -1398,7 +1403,7 @@ impl Vm {
                 let exc = self.pop();
                 if let Value::Object(r) = self.pop() {
                     let (it, _) = self.iter_parts(r);
-                    if let Ok(Some(f)) = self.get_method(&it, &PropKey::named("return")) {
+                    if let Ok(Some(f)) = self.get_method(&it, &PropKey::lit("return")) {
                         let _ = self.call(&f, it, Vec::new());
                     }
                 }
@@ -1568,7 +1573,7 @@ impl Vm {
         let lex = self.heap.alloc_env(Env {
             outer: Some(env),
             kind: EnvKind::Declarative,
-            bindings: HashMap::new(),
+            bindings: HashMap::default(),
         });
         let var = if prog.strict { lex } else { var_env };
         if self.frames.len() >= MAX_FRAMES {
@@ -1593,7 +1598,7 @@ impl Vm {
         let lex = self.heap.alloc_env(Env {
             outer: Some(genv),
             kind: EnvKind::Declarative,
-            bindings: HashMap::new(),
+            bindings: HashMap::default(),
         });
         let var = if prog.strict { lex } else { genv };
         let frame = self.frame(code, lex, var);
@@ -1648,16 +1653,15 @@ impl Vm {
         };
         let fo = self.heap.alloc(Object::new(Some(proto), Kind::Function(Box::new(closure))));
         let o = self.heap.obj_mut(fo);
-        o.props
-            .insert(PropKey::named("length"), Prop::data(Value::Number(length as f64), false, false, true));
-        o.props.insert(PropKey::named("name"), Prop::data(Value::String(name), false, false, true));
+        o.props.insert(PropKey::lit("length"), Prop::data(Value::Number(length as f64), false, false, true));
+        o.props.insert(PropKey::lit("name"), Prop::data(Value::String(name), false, false, true));
         if constructor {
             let p = self.new_object();
-            self.heap.obj_mut(p).props.insert(PropKey::named("constructor"), Prop::method(Value::Object(fo)));
+            self.heap.obj_mut(p).props.insert(PropKey::lit("constructor"), Prop::method(Value::Object(fo)));
             self.heap
                 .obj_mut(fo)
                 .props
-                .insert(PropKey::named("prototype"), Prop::data(Value::Object(p), true, false, false));
+                .insert(PropKey::lit("prototype"), Prop::data(Value::Object(p), true, false, false));
         } else if f_gen {
             // Generator functions get a prototype for their generators (§15.5.3), no constructor.
             let gp = if f_async { self.realm.async_generator_proto } else { self.realm.generator_proto };
@@ -1665,7 +1669,7 @@ impl Vm {
             self.heap
                 .obj_mut(fo)
                 .props
-                .insert(PropKey::named("prototype"), Prop::data(Value::Object(p), true, false, false));
+                .insert(PropKey::lit("prototype"), Prop::data(Value::Object(p), true, false, false));
         }
         fo
     }
@@ -1696,7 +1700,7 @@ impl Vm {
         self.heap
             .obj_mut(f)
             .props
-            .insert(PropKey::named("name"), Prop::data(Value::String(name.into()), false, false, true));
+            .insert(PropKey::lit("name"), Prop::data(Value::String(name.into()), false, false, true));
     }
 
     /// CreateUnmappedArgumentsObject (§10.4.4.6). Mapped arguments come later.
@@ -1711,14 +1715,14 @@ impl Vm {
         let iter_key = PropKey::Sym(self.realm.sym_iterator.clone());
         let thrower = self.realm.throw_type_error;
         let o = self.heap.obj_mut(a);
-        o.props.insert(PropKey::named("length"), Prop::method(Value::Number(n as f64)));
+        o.props.insert(PropKey::lit("length"), Prop::method(Value::Number(n as f64)));
         for (i, v) in args.into_iter().enumerate() {
             o.props.insert(PropKey::from_u32(i as u32), Prop::data(v, true, true, true));
         }
         o.props.insert(iter_key, Prop::method(Value::Object(values_fn)));
         if strict {
             o.props.insert(
-                PropKey::named("callee"),
+                PropKey::lit("callee"),
                 Prop {
                     slot: Slot::Accessor(Some(thrower), Some(thrower)),
                     writable: false,
@@ -1727,7 +1731,7 @@ impl Vm {
                 },
             );
         } else if let Some(c) = callee {
-            o.props.insert(PropKey::named("callee"), Prop::method(Value::Object(c)));
+            o.props.insert(PropKey::lit("callee"), Prop::method(Value::Object(c)));
         }
         Ok(a)
     }
@@ -1748,7 +1752,7 @@ impl Vm {
         self.heap
             .obj_mut(t)
             .props
-            .insert(PropKey::named("raw"), Prop::data(Value::Object(raw_arr), false, false, false));
+            .insert(PropKey::lit("raw"), Prop::data(Value::Object(raw_arr), false, false, false));
         let _ = self.set_integrity(raw_arr, true);
         let _ = self.set_integrity(t, true);
         self.templates.insert(key, t);

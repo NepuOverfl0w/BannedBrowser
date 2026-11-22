@@ -173,7 +173,7 @@ fn for_each(vm: &mut Vm, c: NativeCall, which: Coll) -> JsResult<Value> {
 /// GetSetRecord (§24.2.1.2): (object, size, has, keys).
 fn set_record(vm: &mut Vm, v: &Value) -> JsResult<(Value, f64, Value, Value)> {
     let Value::Object(o) = v else { return vm.type_error("set-like argument is not an object") };
-    let raw = vm.get(*o, &PropKey::named("size"))?;
+    let raw = vm.get(*o, &PropKey::lit("size"))?;
     let num = vm.to_number(&raw)?;
     if num.is_nan() {
         return vm.type_error("set-like size is NaN");
@@ -182,11 +182,11 @@ fn set_record(vm: &mut Vm, v: &Value) -> JsResult<(Value, f64, Value, Value)> {
     if size < 0.0 {
         return vm.range_error("set-like size is negative");
     }
-    let has = vm.get(*o, &PropKey::named("has"))?;
+    let has = vm.get(*o, &PropKey::lit("has"))?;
     if !vm.is_callable(&has) {
         return vm.type_error("set-like 'has' is not a function");
     }
-    let keys = vm.get(*o, &PropKey::named("keys"))?;
+    let keys = vm.get(*o, &PropKey::lit("keys"))?;
     if !vm.is_callable(&keys) {
         return vm.type_error("set-like 'keys' is not a function");
     }
@@ -212,7 +212,7 @@ fn new_set(vm: &mut Vm, vals: Vec<Value>) -> Value {
 fn other_keys(vm: &mut Vm, rec: &(Value, f64, Value, Value)) -> JsResult<ObjRef> {
     let it = vm.call(&rec.3, rec.0.clone(), Vec::new())?;
     let Value::Object(_) = it else { return vm.type_error("keys() result is not an object") };
-    let next = vm.get_value_key(&it, &PropKey::named("next"))?;
+    let next = vm.get_value_key(&it, &PropKey::lit("next"))?;
     Ok(vm
         .heap
         .alloc(Object::new(None, Kind::IterRecord(Box::new(IterRecord { iterator: it, next, done: false })))))
@@ -503,7 +503,7 @@ pub(super) fn install(vm: &mut Vm) {
     accessor(
         vm,
         mp,
-        PropKey::named("size"),
+        PropKey::lit("size"),
         Some(|vm, c| {
             check(vm, &c.this, Coll::Map)?;
             Ok(Value::Number(data(vm, &c.this, Coll::Map).map(|d| d.size()).unwrap_or(0) as f64))
@@ -554,7 +554,7 @@ pub(super) fn install(vm: &mut Vm) {
     accessor(
         vm,
         sp,
-        PropKey::named("size"),
+        PropKey::lit("size"),
         Some(|vm, c| {
             check(vm, &c.this, Coll::Set)?;
             Ok(Value::Number(data(vm, &c.this, Coll::Set).map(|d| d.size()).unwrap_or(0) as f64))
@@ -563,7 +563,7 @@ pub(super) fn install(vm: &mut Vm) {
     );
     method(vm, sp, "entries", 0, |vm, c| iter(vm, &c.this, Coll::Set, IterKind::Entries));
     let sv = method(vm, sp, "values", 0, |vm, c| iter(vm, &c.this, Coll::Set, IterKind::Values));
-    vm.heap.obj_mut(sp).props.insert(PropKey::named("keys"), Prop::method(Value::Object(sv)));
+    vm.heap.obj_mut(sp).props.insert(PropKey::lit("keys"), Prop::method(Value::Object(sv)));
     vm.heap.obj_mut(sp).props.insert(PropKey::Sym(si), Prop::method(Value::Object(sv)));
     for (name, o) in [
         ("union", SetOp::Union),

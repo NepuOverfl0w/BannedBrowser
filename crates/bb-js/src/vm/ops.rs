@@ -199,7 +199,7 @@ impl Vm {
         let o = self.heap.alloc(Object::new(Some(proto), kind));
         if let Value::String(s) = v {
             self.heap.obj_mut(o).props.insert(
-                PropKey::named("length"),
+                PropKey::lit("length"),
                 Prop::data(Value::Number(s.len() as f64), false, false, false),
             );
         }
@@ -235,6 +235,9 @@ impl Vm {
 
     /// ToNumeric (§7.1.3): a Number or a BigInt.
     pub fn to_numeric(&mut self, v: &Value) -> JsResult<Value> {
+        if let Value::Number(_) | Value::BigInt(_) = v {
+            return Ok(v.clone());
+        }
         let p = self.to_primitive(v, Hint::Number)?;
         if let Value::BigInt(_) = p {
             return Ok(p);
@@ -263,6 +266,15 @@ impl Vm {
     }
 
     pub(super) fn arith(&mut self, op: Op, a: &Value, b: &Value) -> JsResult<Value> {
+        if let (Value::Number(x), Value::Number(y)) = (a, b) {
+            if let Op::Sub | Op::Mul | Op::Div = op {
+                return Ok(Value::Number(match op {
+                    Op::Sub => x - y,
+                    Op::Mul => x * y,
+                    _ => x / y,
+                }));
+            }
+        }
         let na = self.to_numeric(a)?;
         let nb = self.to_numeric(b)?;
         match (&na, &nb) {
@@ -354,6 +366,14 @@ impl Vm {
     }
 
     pub(super) fn compare(&mut self, op: Op, a: &Value, b: &Value) -> JsResult<bool> {
+        if let (Value::Number(x), Value::Number(y)) = (a, b) {
+            return Ok(match op {
+                Op::Lt => x < y,
+                Op::Gt => x > y,
+                Op::Le => x <= y,
+                _ => x >= y,
+            });
+        }
         let (pa, pb) = if matches!(op, Op::Lt | Op::Le) {
             let pa = self.to_primitive(a, Hint::Number)?;
             let pb = self.to_primitive(b, Hint::Number)?;
@@ -469,7 +489,7 @@ impl Vm {
             return self.instance_of(o, &t);
         }
         let Value::Object(mut obj) = o else { return Ok(false) };
-        let p = self.get(*co, &PropKey::named("prototype"))?;
+        let p = self.get(*co, &PropKey::lit("prototype"))?;
         let Value::Object(p) = p else {
             return self.type_error("Function has non-object prototype in instanceof check");
         };

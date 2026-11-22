@@ -69,15 +69,15 @@ impl Helper {
 fn step(vm: &mut Vm, it: &Value, next: &Value) -> JsResult<Option<Value>> {
     let r = vm.call(next, it.clone(), Vec::new())?;
     let Value::Object(ro) = r else { return vm.type_error("Iterator result is not an object") };
-    if vm.get(ro, &PropKey::named("done"))?.truthy() {
+    if vm.get(ro, &PropKey::lit("done"))?.truthy() {
         return Ok(None);
     }
-    Ok(Some(vm.get(ro, &PropKey::named("value"))?))
+    Ok(Some(vm.get(ro, &PropKey::lit("value"))?))
 }
 
 /// IteratorClose with a normal completion.
 fn close(vm: &mut Vm, it: &Value) -> JsResult<()> {
-    if let Some(f) = vm.get_method(it, &PropKey::named("return"))? {
+    if let Some(f) = vm.get_method(it, &PropKey::lit("return"))? {
         let r = vm.call(&f, it.clone(), Vec::new())?;
         if !matches!(r, Value::Object(_)) {
             return vm.type_error("Iterator result is not an object");
@@ -89,7 +89,7 @@ fn close(vm: &mut Vm, it: &Value) -> JsResult<()> {
 /// IteratorClose with a throw completion: errors from `return` are dropped.
 fn close_throw<T>(vm: &mut Vm, it: &Value, e: Value) -> JsResult<T> {
     if !vm.terminated {
-        if let Ok(Some(f)) = vm.get_method(it, &PropKey::named("return")) {
+        if let Ok(Some(f)) = vm.get_method(it, &PropKey::lit("return")) {
             let _ = vm.call(&f, it.clone(), Vec::new());
         }
     }
@@ -98,7 +98,7 @@ fn close_throw<T>(vm: &mut Vm, it: &Value, e: Value) -> JsResult<T> {
 
 /// GetIteratorDirect (§7.4.2).
 fn direct(vm: &mut Vm, o: &Value) -> JsResult<(Value, Value)> {
-    let next = vm.get_value_key(o, &PropKey::named("next"))?;
+    let next = vm.get_value_key(o, &PropKey::lit("next"))?;
     Ok((o.clone(), next))
 }
 
@@ -414,13 +414,13 @@ pub(super) fn install(vm: &mut Vm) {
     );
     vm.realm.iterator_ctor = ic;
     // `constructor` and @@toStringTag are accessors (§27.1.3.2.1, .13).
-    vm.heap.obj_mut(ip).props.remove(&PropKey::named("constructor"));
+    vm.heap.obj_mut(ip).props.remove(&PropKey::lit("constructor"));
     accessor(
         vm,
         ip,
-        PropKey::named("constructor"),
+        PropKey::lit("constructor"),
         Some(|vm, _| Ok(Value::Object(vm.realm.iterator_ctor))),
-        Some(|vm, c| ignore_proto_setter(vm, &c, PropKey::named("constructor"))),
+        Some(|vm, c| ignore_proto_setter(vm, &c, PropKey::lit("constructor"))),
     );
     let tag = PropKey::Sym(vm.realm.sym_to_string_tag.clone());
     vm.heap.obj_mut(ip).props.remove(&tag);
@@ -449,7 +449,7 @@ pub(super) fn install(vm: &mut Vm) {
     });
     method(vm, wp, "return", 0, |vm, c| {
         let (it, _) = wrapped(vm, &c.this)?;
-        match vm.get_method(&it, &PropKey::named("return"))? {
+        match vm.get_method(&it, &PropKey::lit("return"))? {
             None => Ok(vm.iter_result(Value::Undefined, true)),
             Some(f) => vm.call(&f, it, Vec::new()),
         }

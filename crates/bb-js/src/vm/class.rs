@@ -33,7 +33,7 @@ impl Vm {
                 Value::Null => (None, self.realm.function_proto),
                 Value::Object(so) if self.is_constructor(&s) => {
                     let so = *so;
-                    match self.get(so, &PropKey::named("prototype"))? {
+                    match self.get(so, &PropKey::lit("prototype"))? {
                         Value::Object(p) => (Some(p), so),
                         Value::Null => (None, so),
                         _ => {
@@ -62,8 +62,8 @@ impl Vm {
         }
         let o = self.heap.obj_mut(f);
         o.proto = Some(ctor_parent);
-        o.props.insert(PropKey::named("prototype"), Prop::data(Value::Object(proto), false, false, false));
-        self.heap.obj_mut(proto).props.insert(PropKey::named("constructor"), Prop::method(Value::Object(f)));
+        o.props.insert(PropKey::lit("prototype"), Prop::data(Value::Object(proto), false, false, false));
+        self.heap.obj_mut(proto).props.insert(PropKey::lit("constructor"), Prop::method(Value::Object(f)));
         self.push(Value::Object(f));
         self.push(Value::Object(proto));
         Ok(())

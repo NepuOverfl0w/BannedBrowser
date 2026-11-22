@@ -644,7 +644,7 @@ pub(super) fn install(vm: &mut Vm) {
                 return Ok(Value::Null);
             }
         }
-        let f = vm.get(o, &PropKey::named("toISOString"))?;
+        let f = vm.get(o, &PropKey::lit("toISOString"))?;
         vm.call(&f, Value::Object(o), Vec::new())
     });
     let tp = vm.realm.sym_to_primitive.clone();

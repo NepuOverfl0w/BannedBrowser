@@ -100,20 +100,20 @@ impl Vm {
         for (i, v) in vals.into_iter().enumerate() {
             o.props.insert(PropKey::from_u32(i as u32), Prop::data(v, true, true, true));
         }
-        o.props.insert(PropKey::named("length"), Prop::data(Value::Number(n as f64), true, false, false));
+        o.props.insert(PropKey::lit("length"), Prop::data(Value::Number(n as f64), true, false, false));
         a
     }
 
     /// An array's `length` (no user code runs).
     pub fn length_of_array(&self, a: ObjRef) -> u32 {
-        match self.heap.obj(a).props.get(&PropKey::named("length")).map(|p| &p.slot) {
+        match self.heap.obj(a).props.get(&PropKey::lit("length")).map(|p| &p.slot) {
             Some(Slot::Data(Value::Number(n))) => *n as u32,
             _ => 0,
         }
     }
 
     pub fn set_array_length_raw(&mut self, a: ObjRef, n: u32) {
-        if let Some(p) = self.heap.obj_mut(a).props.get_mut(&PropKey::named("length")) {
+        if let Some(p) = self.heap.obj_mut(a).props.get_mut(&PropKey::lit("length")) {
             p.slot = Slot::Data(Value::Number(n as f64));
         }
     }
@@ -217,7 +217,7 @@ impl Vm {
                     return self.array_set_length(o, d);
                 }
                 if let PropKey::Index(i) = k {
-                    let (len, len_writable) = match self.heap.obj(o).props.get(&PropKey::named("length")) {
+                    let (len, len_writable) = match self.heap.obj(o).props.get(&PropKey::lit("length")) {
                         Some(Prop { slot: Slot::Data(Value::Number(n)), writable, .. }) => {
                             (*n as u32, *writable)
                         }
@@ -257,7 +257,7 @@ impl Vm {
 
     /// ArraySetLength (§10.4.2.4).
     fn array_set_length(&mut self, a: ObjRef, d: PropDesc) -> JsResult<bool> {
-        let lk = PropKey::named("length");
+        let lk = PropKey::lit("length");
         let Some(v) = d.value.clone() else {
             return self.ordinary_define(a, lk, d);
         };
@@ -558,7 +558,7 @@ impl Vm {
 
     /// LengthOfArrayLike (§7.3.19).
     pub fn length_of_array_like(&mut self, o: ObjRef) -> JsResult<f64> {
-        let v = self.get(o, &PropKey::named("length"))?;
+        let v = self.get(o, &PropKey::lit("length"))?;
         self.to_length(&v)
     }
 
@@ -666,7 +666,7 @@ impl Vm {
         if !matches!(it, Value::Object(_)) {
             return self.type_error("Result of the Symbol.iterator method is not an object");
         }
-        let next = self.get_value_key(&it, &PropKey::named("next"))?;
+        let next = self.get_value_key(&it, &PropKey::lit("next"))?;
         Ok(self.heap.alloc(Object::new(
             None,
             Kind::IterRecord(Box::new(IterRecord { iterator: it, next, done: false })),
@@ -703,7 +703,7 @@ impl Vm {
             self.set_iter_done(r);
             return self.type_error("Iterator result is not an object");
         };
-        let done = match self.get(ro, &PropKey::named("done")) {
+        let done = match self.get(ro, &PropKey::lit("done")) {
             Ok(v) => v.truthy(),
             Err(e) => {
                 self.set_iter_done(r);
@@ -714,7 +714,7 @@ impl Vm {
             self.set_iter_done(r);
             return Ok(None);
         }
-        match self.get(ro, &PropKey::named("value")) {
+        match self.get(ro, &PropKey::lit("value")) {
             Ok(v) => Ok(Some(v)),
             Err(e) => {
                 self.set_iter_done(r);
@@ -730,7 +730,7 @@ impl Vm {
             _ => return Ok(()),
         };
         self.set_iter_done(r);
-        let ret = self.get_method(&it, &PropKey::named("return"))?;
+        let ret = self.get_method(&it, &PropKey::lit("return"))?;
         if let Some(f) = ret {
             let res = self.call(&f, it, Vec::new())?;
             if !matches!(res, Value::Object(_)) {
@@ -754,8 +754,8 @@ impl Vm {
     pub fn iter_result(&mut self, v: Value, done: bool) -> Value {
         let o = self.new_object();
         let obj = self.heap.obj_mut(o);
-        obj.props.insert(PropKey::named("value"), Prop::data(v, true, true, true));
-        obj.props.insert(PropKey::named("done"), Prop::data(Value::Bool(done), true, true, true));
+        obj.props.insert(PropKey::lit("value"), Prop::data(v, true, true, true));
+        obj.props.insert(PropKey::lit("done"), Prop::data(Value::Bool(done), true, true, true));
         Value::Object(o)
     }
 
