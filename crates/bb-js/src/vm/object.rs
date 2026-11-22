@@ -123,11 +123,17 @@ impl Vm {
     // ---- [[GetPrototypeOf]] etc. ----
 
     pub fn get_prototype_of(&mut self, o: ObjRef) -> JsResult<Option<ObjRef>> {
+        if self.is_proxy(o) {
+            return self.proxy_get_prototype_of(o);
+        }
         Ok(self.heap.obj(o).proto)
     }
 
     /// OrdinarySetPrototypeOf (§10.1.2.1).
     pub fn set_prototype_of(&mut self, o: ObjRef, v: Option<ObjRef>) -> JsResult<bool> {
+        if self.is_proxy(o) {
+            return self.proxy_set_prototype_of(o, v);
+        }
         let cur = self.heap.obj(o).proto;
         if cur == v {
             return Ok(true);
@@ -144,6 +150,9 @@ impl Vm {
             if x == o {
                 return Ok(false);
             }
+            if self.is_proxy(x) {
+                break;
+            }
             p = self.heap.obj(x).proto;
         }
         self.heap.obj_mut(o).proto = v;
@@ -151,16 +160,25 @@ impl Vm {
     }
 
     pub fn is_extensible(&mut self, o: ObjRef) -> JsResult<bool> {
+        if self.is_proxy(o) {
+            return self.proxy_is_extensible(o);
+        }
         Ok(self.heap.obj(o).extensible)
     }
 
     pub fn prevent_extensions(&mut self, o: ObjRef) -> JsResult<bool> {
+        if self.is_proxy(o) {
+            return self.proxy_prevent_extensions(o);
+        }
         self.heap.obj_mut(o).extensible = false;
         Ok(true)
     }
 
     /// [[GetOwnProperty]] (§10.1.5, §10.4.3.1).
     pub fn get_own_property(&mut self, o: ObjRef, k: &PropKey) -> JsResult<Option<PropDesc>> {
+        if self.is_proxy(o) {
+            return self.proxy_get_own_property(o, k);
+        }
         let obj = self.heap.obj(o);
         if let Some(p) = obj.props.get(k) {
             return Ok(Some(PropDesc::from_prop(p)));
@@ -176,6 +194,7 @@ impl Vm {
     /// [[DefineOwnProperty]] (§10.1.6, §10.4.2.1, §10.4.3.2).
     pub fn define_own_property(&mut self, o: ObjRef, k: PropKey, d: PropDesc) -> JsResult<bool> {
         match &self.heap.obj(o).kind {
+            Kind::Proxy(_) => return self.proxy_define_own_property(o, k, d),
             Kind::Array => {
                 if k.is_str("length") {
                     return self.array_set_length(o, d);
@@ -273,6 +292,9 @@ impl Vm {
         self.burn()?;
         let mut cur = Some(o);
         while let Some(c) = cur {
+            if self.is_proxy(c) {
+                return self.proxy_has(c, k);
+            }
             if self.get_own_property(c, k)?.is_some() {
                 return Ok(true);
             }
@@ -294,6 +316,9 @@ impl Vm {
         self.burn()?;
         let mut cur = o;
         loop {
+            if self.is_proxy(cur) {
+                return self.proxy_get(cur, k, receiver);
+            }
             match self.get_own_property(cur, k)? {
                 Some(d) => {
                     if let Some(v) = d.value {
@@ -316,6 +341,9 @@ impl Vm {
     pub fn set(&mut self, o: ObjRef, k: PropKey, v: Value, receiver: Value) -> JsResult<bool> {
         let mut cur = o;
         let own = loop {
+            if self.is_proxy(cur) {
+                return self.proxy_set(cur, k, v, receiver);
+            }
             match self.get_own_property(cur, &k)? {
                 Some(d) => break d,
                 None => match self.get_prototype_of(cur)? {
@@ -351,6 +379,9 @@ impl Vm {
 
     /// [[Delete]] (§10.1.10).
     pub fn delete(&mut self, o: ObjRef, k: &PropKey) -> JsResult<bool> {
+        if self.is_proxy(o) {
+            return self.proxy_delete(o, k);
+        }
         match self.get_own_property(o, k)? {
             None => Ok(true),
             Some(d) if d.configurable == Some(true) => {
@@ -363,6 +394,9 @@ impl Vm {
 
     /// [[OwnPropertyKeys]] (§10.1.11, §10.4.3.3).
     pub fn own_property_keys(&mut self, o: ObjRef) -> JsResult<Vec<PropKey>> {
+        if self.is_proxy(o) {
+            return self.proxy_own_keys(o);
+        }
         let obj = self.heap.obj(o);
         let mut keys = obj.props.keys();
         if let Kind::String(s) = &obj.kind {

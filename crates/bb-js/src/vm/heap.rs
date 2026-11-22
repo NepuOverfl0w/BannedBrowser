@@ -355,6 +355,7 @@ pub enum Kind {
     /// A running async function: its parked frame and its promise's resolving functions.
     Async(Box<AsyncFn>),
     AsyncGen(Box<AsyncGen>),
+    Proxy(Box<super::proxy::ProxyData>),
     Map(Box<OrderedMap>),
     Set(Box<OrderedMap>),
     /// Weak collections hold their entries strongly: unobservable except as memory (the
@@ -464,7 +465,11 @@ impl Object {
         Object { proto, extensible: true, props: Props::default(), kind, private: Vec::new() }
     }
     pub fn is_callable(&self) -> bool {
-        matches!(self.kind, Kind::Function(_) | Kind::Native(_) | Kind::Bound(_))
+        match &self.kind {
+            Kind::Function(_) | Kind::Native(_) | Kind::Bound(_) => true,
+            Kind::Proxy(p) => p.callable,
+            _ => false,
+        }
     }
 }
 
@@ -707,6 +712,10 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
             }
         }
         Kind::WeakRef(v) => push_val(v, os),
+        Kind::Proxy(p) => {
+            os.extend(p.target);
+            os.extend(p.handler);
+        }
         Kind::FinalizationRegistry(cb, cells) => {
             push_val(cb, os);
             for (a, b, c) in cells {

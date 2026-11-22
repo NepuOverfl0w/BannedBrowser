@@ -136,8 +136,17 @@ fn enumerable_own(vm: &mut Vm, o: ObjRef, kind: KeysKind) -> JsResult<Vec<Value>
     Ok(out)
 }
 
+/// IsArray (§7.2.2), seeing through proxies.
 pub(super) fn is_array(vm: &mut Vm, v: &Value) -> JsResult<bool> {
-    Ok(matches!(v, Value::Object(o) if matches!(vm.heap.obj(*o).kind, Kind::Array)))
+    let Value::Object(o) = v else { return Ok(false) };
+    match &vm.heap.obj(*o).kind {
+        Kind::Array => Ok(true),
+        Kind::Proxy(p) => match p.target {
+            Some(t) => is_array(vm, &Value::Object(t)),
+            None => vm.type_error("Cannot perform 'IsArray' on a proxy that has been revoked"),
+        },
+        _ => Ok(false),
+    }
 }
 
 /// Object.prototype.toString (§20.1.3.6).
@@ -147,7 +156,11 @@ fn object_to_string(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
         Value::Null => return Ok(Value::str("[object Null]")),
         _ => {
             let o = vm.to_object(&c.this)?;
+            let is_arr = is_array(vm, &Value::Object(o))?;
+            let callable = vm.heap.obj(o).is_callable();
             let builtin = match &vm.heap.obj(o).kind {
+                _ if is_arr => "Array",
+                _ if callable => "Function",
                 Kind::Array => "Array",
                 Kind::Arguments => "Arguments",
                 Kind::Function(_) | Kind::Native(_) | Kind::Bound(_) => "Function",

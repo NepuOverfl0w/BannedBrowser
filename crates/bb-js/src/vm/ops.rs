@@ -32,6 +32,7 @@ impl Vm {
             Kind::Function(c) => c.constructor,
             Kind::Native(n) => n.constructor,
             Kind::Bound(b) => self.is_constructor(&Value::Object(b.target)),
+            Kind::Proxy(p) => p.constructor,
             _ => false,
         }
     }

@@ -23,6 +23,7 @@ pub mod heap;
 pub mod object;
 pub mod ops;
 pub mod promise;
+mod proxy;
 pub mod realm;
 pub mod value;
 
@@ -305,15 +306,33 @@ impl Vm {
             Closure,
             Native(NativeFn, bool),
             Bound(ObjRef, Value, Vec<Value>),
+            Proxy(bool, bool),
             None,
         }
         let k = match &self.heap.obj(f).kind {
             Kind::Function(_) => K::Closure,
             Kind::Native(n) => K::Native(n.f, n.constructor),
             Kind::Bound(b) => K::Bound(b.target, b.this.clone(), b.args.clone()),
+            Kind::Proxy(p) => K::Proxy(p.callable, p.constructor),
             _ => K::None,
         };
         match k {
+            K::Proxy(callable, ctor) => {
+                if (new_target.is_some() && !ctor) || !callable {
+                    return self.type_error(if new_target.is_some() {
+                        "not a constructor"
+                    } else {
+                        "not a function"
+                    });
+                }
+                if self.nested >= MAX_NESTED_RUNS || self.frames.len() >= MAX_FRAMES {
+                    return self.range_error("Maximum call stack size exceeded");
+                }
+                self.nested += 1;
+                let r = self.proxy_call(f, this, args, new_target);
+                self.nested -= 1;
+                r.map(Some)
+            }
             K::None => {
                 if new_target.is_some() {
                     self.type_error("not a constructor")

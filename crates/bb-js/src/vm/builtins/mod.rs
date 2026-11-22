@@ -5,6 +5,7 @@ mod collections;
 mod json;
 mod number;
 mod object;
+pub(super) use object::{from_property_descriptor, to_property_descriptor};
 mod string;
 
 use super::heap::*;
@@ -33,6 +34,7 @@ pub(super) fn install(vm: &mut Vm) {
     super::async_gen::install(vm);
     object::install_dynamic_kinds(vm);
     install_reflect(vm);
+    super::proxy::install(vm);
     super::promise::install(vm);
     install_aggregate_error(vm);
     install_regexp(vm);
