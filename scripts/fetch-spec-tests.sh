@@ -43,6 +43,9 @@ if [ "$(git -C test262 rev-parse HEAD 2>/dev/null || true)" != "$TEST262_COMMIT"
   rm -rf test262
   git init -q test262
   (cd test262
+   # Byte-exact files on every OS: some tests check line terminators in source text
+   # (Function.prototype.toString), which Git for Windows would turn into CRLF.
+   git config core.autocrlf false
    git remote add origin https://github.com/tc39/test262
    git sparse-checkout set --no-cone test/language/ test/built-ins/ test/annexB/ harness/
    git fetch -q --depth 1 --filter=blob:none origin "$TEST262_COMMIT"
