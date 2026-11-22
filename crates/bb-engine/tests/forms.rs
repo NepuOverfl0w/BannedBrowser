@@ -405,3 +405,20 @@ fn sanitized_values_keep_showing_what_was_typed() {
     p.click(x, y);
     assert!(p.focused().is_some());
 }
+
+#[test]
+fn textarea_editing_near_multibyte_line_ends() {
+    // Found by forms_robustness: click into a textarea ending in "é\n", Shift+Right,
+    // Backspace, Enter must not slice inside a character.
+    let mut p = page("<textarea name=ta>a\nbé\n</textarea>");
+    for (x, y) in [(39.645912, 34.739983), (10.0, 12.0), (30.0, 25.0), (60.0, 40.0)] {
+        p.click(x, y);
+        p.key(PageKey::Right, KeyMods { shift: true, ..Default::default() });
+        p.key(PageKey::Backspace, KeyMods::default());
+        p.key(PageKey::Enter, KeyMods::default());
+        p.key(PageKey::Up, KeyMods::default());
+        p.key(PageKey::End, KeyMods::default());
+        p.key(PageKey::Down, KeyMods { shift: true, ..Default::default() });
+        p.insert_text("é");
+    }
+}

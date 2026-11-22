@@ -45,12 +45,22 @@ impl TextField {
         self.preedit.clear();
     }
 
+    /// `i` clamped to the text and moved back to a character boundary.
+    fn boundary(&self, i: usize) -> usize {
+        let mut i = i.min(self.text.len());
+        while !self.text.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    }
+
     pub fn selection(&self) -> Option<(usize, usize)> {
-        let a = self.anchor?;
-        if a == self.caret {
+        let a = self.boundary(self.anchor?);
+        let caret = self.boundary(self.caret);
+        if a == caret {
             None
         } else {
-            Some((a.min(self.caret), a.max(self.caret)))
+            Some((a.min(caret), a.max(caret)))
         }
     }
 
@@ -159,7 +169,7 @@ impl TextField {
         } else {
             self.anchor = None;
         }
-        self.caret = to.min(self.text.len());
+        self.caret = self.boundary(to);
     }
 
     pub fn left(&mut self, word: bool, extend: bool) {
@@ -259,7 +269,7 @@ impl TextField {
         if let Some((t, c)) = self.undo.pop() {
             self.redo.push((self.text.clone(), self.caret));
             self.text = t;
-            self.caret = c.min(self.text.len());
+            self.caret = self.boundary(c);
             self.anchor = None;
         }
     }
@@ -268,7 +278,7 @@ impl TextField {
         if let Some((t, c)) = self.redo.pop() {
             self.undo.push((self.text.clone(), self.caret));
             self.text = t;
-            self.caret = c.min(self.text.len());
+            self.caret = self.boundary(c);
             self.anchor = None;
         }
     }
