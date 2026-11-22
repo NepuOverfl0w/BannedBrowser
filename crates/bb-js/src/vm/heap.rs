@@ -357,6 +357,13 @@ pub enum Kind {
     AsyncGen(Box<AsyncGen>),
     Map(Box<OrderedMap>),
     Set(Box<OrderedMap>),
+    /// Weak collections hold their entries strongly: unobservable except as memory (the
+    /// spec lets implementations keep them).
+    WeakMap(Box<OrderedMap>),
+    WeakSet(Box<OrderedMap>),
+    WeakRef(Value),
+    /// (cleanup callback, registered (target, held, token) cells); callbacks never run.
+    FinalizationRegistry(Value, Vec<(Value, Value, Value)>),
     MapIter {
         map: Option<ObjRef>,
         index: usize,
@@ -370,6 +377,50 @@ pub enum Kind {
 pub struct OrderedMap {
     pub entries: Vec<Option<(Value, Value)>>,
     pub index: HashMap<MapKey, usize>,
+}
+
+impl OrderedMap {
+    pub fn get(&self, k: &Value) -> Option<&Value> {
+        self.index.get(&MapKey::of(k)).and_then(|&i| self.entries[i].as_ref().map(|e| &e.1))
+    }
+    pub fn has(&self, k: &Value) -> bool {
+        self.index.contains_key(&MapKey::of(k))
+    }
+    /// Insert or update; -0 keys are stored as +0 (§24.1.3.9 step 5).
+    pub fn set(&mut self, k: Value, v: Value) {
+        let k = match k {
+            Value::Number(n) if n == 0.0 => Value::Number(0.0),
+            k => k,
+        };
+        let mk = MapKey::of(&k);
+        if let Some(&i) = self.index.get(&mk) {
+            if let Some(e) = &mut self.entries[i] {
+                e.1 = v;
+            }
+            return;
+        }
+        self.index.insert(mk, self.entries.len());
+        self.entries.push(Some((k, v)));
+    }
+    pub fn delete(&mut self, k: &Value) -> bool {
+        match self.index.remove(&MapKey::of(k)) {
+            Some(i) => {
+                self.entries[i] = None;
+                true
+            }
+            None => false,
+        }
+    }
+    /// Live iterators see the cleared entries as holes and finish.
+    pub fn clear(&mut self) {
+        for e in &mut self.entries {
+            *e = None;
+        }
+        self.index.clear();
+    }
+    pub fn size(&self) -> usize {
+        self.index.len()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -657,7 +708,16 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
                 trace_reaction(r, os);
             }
         }
-        Kind::Map(m) | Kind::Set(m) => {
+        Kind::WeakRef(v) => push_val(v, os),
+        Kind::FinalizationRegistry(cb, cells) => {
+            push_val(cb, os);
+            for (a, b, c) in cells {
+                push_val(a, os);
+                push_val(b, os);
+                push_val(c, os);
+            }
+        }
+        Kind::Map(m) | Kind::Set(m) | Kind::WeakMap(m) | Kind::WeakSet(m) => {
             for (k, v) in m.entries.iter().flatten() {
                 push_val(k, os);
                 push_val(v, os);

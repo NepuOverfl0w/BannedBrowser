@@ -1,6 +1,8 @@
 //! The built-in objects (ECMA-262 §19–§28).
 
 mod array;
+mod collections;
+mod json;
 mod number;
 mod object;
 mod string;
@@ -34,6 +36,8 @@ pub(super) fn install(vm: &mut Vm) {
     super::promise::install(vm);
     install_aggregate_error(vm);
     install_regexp(vm);
+    collections::install(vm);
+    json::install(vm);
     install_global(vm);
 }
 
