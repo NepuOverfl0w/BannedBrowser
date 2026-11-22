@@ -1280,4 +1280,173 @@ pub(super) fn install(vm: &mut Vm) {
     install_buffers(vm);
     install_dataview(vm);
     install_typed_arrays(vm);
+    install_atomics(vm);
+}
+
+// ---- Atomics (§25.4): one agent, so operations are plain reads and writes ----
+
+/// ValidateIntegerTypedArray + ValidateAtomicAccess (§25.4.3.1–2): (array, element index).
+fn atomic_target(vm: &mut Vm, ta: &Value, idx: &Value, waitable: bool) -> JsResult<(ObjRef, usize)> {
+    let (o, len) = vm.ta_validate(ta)?;
+    let kind = vm.ta(o).expect("typed array").0;
+    let ok = if waitable {
+        matches!(kind, TaKind::Int32 | TaKind::BigInt64)
+    } else {
+        !matches!(kind, TaKind::Float16 | TaKind::Float32 | TaKind::Float64 | TaKind::Uint8Clamped)
+    };
+    if !ok {
+        return vm.type_error("Atomics operations need an integer typed array");
+    }
+    let i = vm.to_index(idx)?;
+    if i >= len as f64 {
+        return vm.range_error("Invalid atomic access index");
+    }
+    Ok((o, i as usize))
+}
+
+fn revalidate(vm: &mut Vm, o: ObjRef, i: usize) -> JsResult<()> {
+    match vm.ta_length(o) {
+        None => vm.type_error("typed array is detached or out of bounds"),
+        Some(l) if i >= l => vm.range_error("Invalid atomic access index"),
+        _ => Ok(()),
+    }
+}
+
+/// An atomic read-modify-write: returns the old value.
+fn atomic_rmw(vm: &mut Vm, c: NativeCall, op: fn(&Value, &Value) -> Value) -> JsResult<Value> {
+    let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), false)?;
+    let v = coerce_integer(vm, o, &c.arg(2))?;
+    revalidate(vm, o, i)?;
+    let old = vm.ta_get(o, i as f64);
+    let new = op(&old, &v);
+    vm.ta_set(o, i as f64, &new)?;
+    Ok(old)
+}
+
+/// ToBigInt or ToIntegerOrInfinity (Atomics convert integers, not ToNumber).
+fn coerce_integer(vm: &mut Vm, o: ObjRef, v: &Value) -> JsResult<Value> {
+    if vm.ta(o).is_some_and(|t| t.0.is_bigint()) {
+        Ok(Value::BigInt(vm.to_bigint(v)?))
+    } else {
+        Ok(Value::Number(vm.to_integer_or_infinity(v)?))
+    }
+}
+
+fn num_or_big(
+    a: &Value,
+    b: &Value,
+    n: fn(f64, f64) -> f64,
+    big: fn(&super::super::bigint::BigInt, &super::super::bigint::BigInt) -> super::super::bigint::BigInt,
+) -> Value {
+    match (a, b) {
+        (Value::BigInt(x), Value::BigInt(y)) => Value::BigInt(std::rc::Rc::new(big(x, y))),
+        (Value::Number(x), Value::Number(y)) => Value::Number(n(*x, *y)),
+        _ => b.clone(),
+    }
+}
+
+fn int(x: f64) -> i64 {
+    super::super::ops::f64_to_int32(x) as i64
+        | ((if x.is_finite() { (x.trunc() / 4294967296.0).trunc() as i64 } else { 0 }) << 32)
+}
+
+fn install_atomics(vm: &mut Vm) {
+    let a = vm.new_object();
+    let g = vm.realm.global;
+    realm::value(vm, g, "Atomics", Value::Object(a));
+    realm::to_string_tag(vm, a, "Atomics");
+    method(vm, a, "add", 3, |vm, c| {
+        atomic_rmw(vm, c, |x, y| num_or_big(x, y, |p, q| p + q, |p, q| p.add(q)))
+    });
+    method(vm, a, "sub", 3, |vm, c| {
+        atomic_rmw(vm, c, |x, y| num_or_big(x, y, |p, q| p - q, |p, q| p.sub(q)))
+    });
+    method(vm, a, "and", 3, |vm, c| {
+        atomic_rmw(vm, c, |x, y| {
+            num_or_big(x, y, |p, q| (int(p) & int(q)) as f64, |p, q| p.bitop(q, |m, n| m & n))
+        })
+    });
+    method(vm, a, "or", 3, |vm, c| {
+        atomic_rmw(vm, c, |x, y| {
+            num_or_big(x, y, |p, q| (int(p) | int(q)) as f64, |p, q| p.bitop(q, |m, n| m | n))
+        })
+    });
+    method(vm, a, "xor", 3, |vm, c| {
+        atomic_rmw(vm, c, |x, y| {
+            num_or_big(x, y, |p, q| (int(p) ^ int(q)) as f64, |p, q| p.bitop(q, |m, n| m ^ n))
+        })
+    });
+    method(vm, a, "exchange", 3, |vm, c| atomic_rmw(vm, c, |_, y| y.clone()));
+    method(vm, a, "compareExchange", 4, |vm, c| {
+        let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), false)?;
+        let expected = coerce_integer(vm, o, &c.arg(2))?;
+        let replacement = coerce_integer(vm, o, &c.arg(3))?;
+        revalidate(vm, o, i)?;
+        let old = vm.ta_get(o, i as f64);
+        // Compare as stored bytes: write the expected value to a scratch element.
+        let kind = vm.ta(o).expect("typed array").0;
+        let p = vm.realm.ta_protos[kind.index()];
+        let scratch = alloc_ta(vm, kind, p, 1.0)?;
+        vm.ta_set(scratch, 0.0, &expected)?;
+        let expected_stored = vm.ta_get(scratch, 0.0);
+        if strict_equals(&old, &expected_stored) {
+            vm.ta_set(o, i as f64, &replacement)?;
+        }
+        Ok(old)
+    });
+    method(vm, a, "load", 2, |vm, c| {
+        let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), false)?;
+        revalidate(vm, o, i)?;
+        Ok(vm.ta_get(o, i as f64))
+    });
+    method(vm, a, "store", 3, |vm, c| {
+        let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), false)?;
+        let v = coerce_integer(vm, o, &c.arg(2))?;
+        let v = match v {
+            Value::Number(n) => Value::Number(n + 0.0),
+            v => v,
+        };
+        revalidate(vm, o, i)?;
+        vm.ta_set(o, i as f64, &v)?;
+        Ok(v)
+    });
+    method(vm, a, "isLockFree", 1, |vm, c| {
+        let n = vm.to_integer_or_infinity(&c.arg(0))?;
+        Ok(Value::Bool(matches!(n as i64, 1 | 2 | 4 | 8) && n.fract() == 0.0))
+    });
+    method(vm, a, "pause", 0, |vm, c| match c.arg(0) {
+        Value::Undefined => Ok(Value::Undefined),
+        Value::Number(n) if n.is_finite() && n.fract() == 0.0 => Ok(Value::Undefined),
+        _ => vm.type_error("Atomics.pause: argument must be an integral Number"),
+    });
+    method(vm, a, "notify", 3, |vm, c| {
+        let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), true)?;
+        if !c.arg(2).is_undefined() {
+            let n = vm.to_integer_or_infinity(&c.arg(2))?;
+            let _ = n.max(0.0);
+        }
+        revalidate(vm, o, i)?;
+        Ok(Value::Number(0.0))
+    });
+    method(vm, a, "wait", 4, |vm, c| {
+        let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), true)?;
+        let buf = vm.ta(o).expect("typed array").1;
+        if !matches!(&vm.heap.obj(buf).kind, Kind::ArrayBuffer(b) if b.shared) {
+            return vm.type_error("Atomics.wait needs a shared typed array");
+        }
+        let v = coerce_integer(vm, o, &c.arg(2))?;
+        let t = vm.to_number(&c.arg(3))?;
+        let _timeout = if t.is_nan() { f64::INFINITY } else { t.max(0.0) };
+        let cur = vm.ta_get(o, i as f64);
+        let expected = match (&cur, &v) {
+            (Value::Number(_), Value::Number(n)) => Value::Number(super::super::ops::f64_to_int32(*n) as f64),
+            (Value::BigInt(_), Value::BigInt(b)) => Value::BigInt(std::rc::Rc::new(b.as_int_n(64))),
+            _ => v.clone(),
+        };
+        if !strict_equals(&cur, &expected) {
+            return Ok(Value::str("not-equal"));
+        }
+        // No other agent can notify us: the wait always times out.
+        Ok(Value::str("timed-out"))
+    });
 }
