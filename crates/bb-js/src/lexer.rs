@@ -68,27 +68,36 @@ pub fn is_whitespace(c: char) -> bool {
     )
 }
 
-/// ID_Start (approximated by Unicode Alphabetic) plus `$` and `_`.
-pub fn is_id_start(c: char) -> bool {
-    // Other_ID_Start: ℘ ℮ ゛ ゜ and two Mongolian letters.
-    c == '$'
-        || c == '_'
-        || c.is_alphabetic()
-        || matches!(c, '\u{1885}' | '\u{1886}' | '\u{2118}' | '\u{212e}' | '\u{309b}' | '\u{309c}')
+fn in_table(c: char, table: &[(u32, u32)]) -> bool {
+    let c = c as u32;
+    table
+        .binary_search_by(|&(a, b)| {
+            if b < c {
+                std::cmp::Ordering::Less
+            } else if a > c {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
-/// ID_Continue (approximated: alphanumerics, combining marks, connector punctuation) plus `$`,
-/// ZWNJ and ZWJ.
-pub fn is_id_continue(c: char) -> bool {
+/// IdentifierStartChar: ID_Start (Unicode 17), `$`, `_`.
+pub fn is_id_start(c: char) -> bool {
     c == '$'
         || c == '_'
+        || (c.is_ascii() && c.is_ascii_alphabetic())
+        || (!c.is_ascii() && in_table(c, crate::unicode_ids::ID_START))
+}
+
+/// IdentifierPartChar: ID_Continue (Unicode 17), `$`, ZWNJ, ZWJ.
+pub fn is_id_continue(c: char) -> bool {
+    c == '$'
         || c == '\u{200c}'
         || c == '\u{200d}'
-        || c.is_alphanumeric()
-        || is_id_start(c)
-        // Other_ID_Continue: · · ፩–፱ ᧚
-        || matches!(c, '\u{b7}' | '\u{387}' | '\u{1369}'..='\u{1371}' | '\u{19da}')
-        || matches!(c, '\u{300}'..='\u{36f}' | '\u{483}'..='\u{487}' | '\u{591}'..='\u{5bd}' | '\u{610}'..='\u{61a}' | '\u{64b}'..='\u{669}' | '\u{6f0}'..='\u{6f9}' | '\u{900}'..='\u{903}' | '\u{93a}'..='\u{94f}' | '\u{966}'..='\u{96f}' | '\u{1ab0}'..='\u{1aff}' | '\u{1dc0}'..='\u{1dff}' | '\u{20d0}'..='\u{20ff}' | '\u{fe00}'..='\u{fe0f}' | '\u{fe20}'..='\u{fe2f}' | '\u{203f}' | '\u{2040}' | '\u{2054}' | '\u{fe33}' | '\u{fe34}' | '\u{fe4d}'..='\u{fe4f}' | '\u{ff3f}' | '\u{e0100}'..='\u{e01ef}')
+        || (c.is_ascii() && (c.is_ascii_alphanumeric() || c == '_'))
+        || (!c.is_ascii() && in_table(c, crate::unicode_ids::ID_CONTINUE))
 }
 
 /// Punctuators, longest first (§12.8).
@@ -192,6 +201,10 @@ impl Lexer {
     /// The next token. `regex_ok`: a `/` here starts a regular expression literal.
     pub fn next(&mut self, regex_ok: bool, html_comments: bool) -> Result<Token, LexError> {
         let at_start = self.pos == 0;
+        // §12.5 Hashbang comment: `#!` at the very start of a script or module.
+        if at_start && self.src.starts_with(&['#', '!']) {
+            self.skip_line();
+        }
         let nl = self.skip_trivia(html_comments, at_start)?;
         let start = self.pos;
         let mut legacy_octal = false;

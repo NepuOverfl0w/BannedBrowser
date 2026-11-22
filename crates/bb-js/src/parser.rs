@@ -141,6 +141,13 @@ pub struct Parser {
     in_params: bool,
     /// Array literals (by start) with a comma after a spread element.
     array_spread_trailing_comma: HashSet<usize>,
+    object_spread_trailing_comma: HashSet<usize>,
+    /// Directly in a switch case's statement list (`using` isn't allowed there).
+    in_case_clause: bool,
+    /// How often `await` was used as an identifier (async arrow parameters can't contain one),
+    /// and the count when the last `async(` head started.
+    await_idents: std::cell::Cell<usize>,
+    async_call_await_mark: usize,
     /// The last directive prologue contained "use strict".
     saw_use_strict: bool,
     /// Decorators parsed before the class being parsed, and its members' decorators.
@@ -150,6 +157,14 @@ pub struct Parser {
 
 fn kw(t: &Token, name: &str) -> bool {
     matches!(&t.kind, TokKind::Ident { name: n, escaped: false } if n == name)
+}
+
+/// §14.13.1 IsLabelledFunction: a (chain of) label(s) on a function declaration.
+fn is_labelled_function(s: &Stmt) -> bool {
+    match s {
+        Stmt::Labeled(_, b) => matches!(**b, Stmt::Function(_)) || is_labelled_function(b),
+        _ => false,
+    }
 }
 
 fn simple_params(params: &[Pat], rest: &Option<Pat>) -> bool {
@@ -221,6 +236,10 @@ impl Parser {
             async_call_trailing_comma: false,
             in_params: false,
             array_spread_trailing_comma: HashSet::new(),
+            object_spread_trailing_comma: HashSet::new(),
+            in_case_clause: false,
+            await_idents: std::cell::Cell::new(0),
+            async_call_await_mark: 0,
             saw_use_strict: false,
             pending_decorators: Vec::new(),
             pending_member_decorators: Vec::new(),
@@ -326,6 +345,9 @@ impl Parser {
         }
         if name == "yield" && self.yield_reserved() {
             return bad("'yield' is reserved here".into());
+        }
+        if name == "await" {
+            self.await_idents.set(self.await_idents.get() + 1);
         }
         if name == "await" && self.await_reserved() {
             return bad("'await' is reserved here".into());
@@ -595,6 +617,28 @@ impl Parser {
         })
     }
 
+    /// In a for head, `using of = …` and `await using of of …` declare `of`.
+    fn using_of_declaration_in_for(&mut self) -> R<bool> {
+        let save = (self.lx.pos, self.tok.clone(), self.prev_end);
+        let mut ok = false;
+        let awaited = self.is_kw("await");
+        if awaited {
+            self.next()?;
+        }
+        if self.is_kw("using") {
+            let n = self.peek()?;
+            if kw(&n, "of") && !n.nl_before {
+                self.next()?;
+                self.next()?;
+                ok = if awaited { self.is_kw("of") } else { self.is("=") };
+            }
+        }
+        self.lx.pos = save.0;
+        self.tok = save.1;
+        self.prev_end = save.2;
+        Ok(ok)
+    }
+
     fn using_declaration_start(&mut self) -> R<bool> {
         if self.is_kw("using") {
             let n = self.peek()?;
@@ -605,13 +649,23 @@ impl Parser {
         if self.is_kw("await") && self.await_reserved() {
             let n = self.peek()?;
             if kw(&n, "using") && !n.nl_before {
-                return Ok(true);
+                let save = (self.lx.pos, self.tok.clone(), self.prev_end);
+                self.next()?;
+                let n2 = self.peek()?;
+                self.lx.pos = save.0;
+                self.tok = save.1;
+                self.prev_end = save.2;
+                let named = matches!(&n2.kind, TokKind::Ident { name, .. } if name != "in" && name != "of" && name != "instanceof");
+                return Ok(named && !n2.nl_before);
             }
         }
         Ok(false)
     }
 
     fn using_declaration(&mut self) -> R<Stmt> {
+        if self.in_case_clause {
+            return self.err("'using' declarations aren't allowed directly in a case clause");
+        }
         if self.scopes.len() == 1 && !self.module {
             return self.err("'using' declarations aren't allowed at the top of a script");
         }
@@ -650,7 +704,10 @@ impl Parser {
             TokKind::Punct("{") => {
                 self.next()?;
                 self.push_scope(false);
-                let body = self.statement_list(false, |p| p.is("}"))?;
+                let saved = std::mem::replace(&mut self.in_case_clause, false);
+                let body = self.statement_list(false, |p| p.is("}"));
+                self.in_case_clause = saved;
+                let body = body?;
                 self.pop_scope();
                 self.expect("}")?;
                 Ok(Stmt::Block(body))
@@ -765,7 +822,14 @@ impl Parser {
                         self.expect("(")?;
                         let o = self.expression(false)?;
                         self.expect(")")?;
+                        let bpos = self.tok.start;
                         let body = self.sub_statement()?;
+                        if is_labelled_function(&body) {
+                            return Err(ParseError {
+                                pos: bpos,
+                                msg: "a labelled function can't be a with body".into(),
+                            });
+                        }
                         Ok(Stmt::With(o, Box::new(body)))
                     }
                     "debugger" => {
@@ -811,7 +875,14 @@ impl Parser {
         let b = self.sub_statement();
         self.fm().loop_depth -= 1;
         self.fm().break_depth -= 1;
-        b
+        let b = b?;
+        if is_labelled_function(&b) {
+            return Err(ParseError {
+                pos: self.prev_end,
+                msg: "a labelled function can't be a loop body".into(),
+            });
+        }
+        Ok(b)
     }
 
     fn if_statement(&mut self) -> R<Stmt> {
@@ -837,7 +908,12 @@ impl Parser {
             self.pop_scope();
             return f;
         }
-        self.sub_statement()
+        let pos = self.tok.start;
+        let b = self.sub_statement()?;
+        if is_labelled_function(&b) {
+            return Err(ParseError { pos, msg: "a labelled function can't be an if body".into() });
+        }
+        Ok(b)
     }
 
     fn expression_or_labelled(&mut self) -> R<Stmt> {
@@ -991,6 +1067,11 @@ impl Parser {
                 Some(VarKind::Const)
             } else if self.is_kw("let") && self.let_is_declaration()? {
                 Some(VarKind::Let)
+            } else if self.is_kw("using") && self.using_of_declaration_in_for()? {
+                Some(VarKind::Using)
+            } else if self.is_kw("await") && self.await_reserved() && self.using_of_declaration_in_for()? {
+                self.next()?;
+                Some(VarKind::AwaitUsing)
             } else if self.using_declaration_start()? && !self.is_kw("await") {
                 Some(VarKind::Using)
             } else if self.is_kw("await") && self.using_declaration_start()? {
@@ -1055,7 +1136,16 @@ impl Parser {
                         return self.err("for await needs of");
                     }
                     self.cover_errs.truncate(before);
-                    let p = self.reinterpret_as_pattern(e, false, start)?;
+                    let p = match e {
+                        Expr::Assign { .. } => {
+                            return Err(ParseError {
+                                pos: start,
+                                msg: "invalid for-in/of left-hand side".into(),
+                            })
+                        }
+                        Expr::Call { optional: false, .. } if !self.strict => Pat::Expr(Box::new(e)),
+                        other => self.reinterpret_as_pattern(other, false, start)?,
+                    };
                     self.next()?;
                     let right = if of { self.assign(false)? } else { self.expression(false)? };
                     self.expect(")")?;
@@ -1186,8 +1276,10 @@ impl Parser {
                     return self.err("expected case or default");
                 };
                 self.expect(":")?;
-                let body =
-                    self.statement_list(false, |p| p.is("}") || p.is_kw("case") || p.is_kw("default"))?;
+                let saved = std::mem::replace(&mut self.in_case_clause, true);
+                let body = self.statement_list(false, |p| p.is("}") || p.is_kw("case") || p.is_kw("default"));
+                self.in_case_clause = saved;
+                let body = body?;
                 cases.push(Case { test, body });
             }
             Ok(())
@@ -1881,6 +1973,18 @@ impl Parser {
                     }
                 }
             }
+            // `accessor x = 1;` (auto-accessors, with decorators): a field with generated get/set.
+            if self.is_kw("accessor") {
+                let n = self.peek()?;
+                if !n.nl_before
+                    && !matches!(
+                        n.kind,
+                        TokKind::Punct("(") | TokKind::Punct("=") | TokKind::Punct(";") | TokKind::Punct("}")
+                    )
+                {
+                    self.next()?;
+                }
+            }
             let (mut is_async, mut is_gen, mut accessor) = (false, false, None::<FuncKind>);
             if self.is_kw("async") {
                 let n = self.peek()?;
@@ -1901,7 +2005,11 @@ impl Parser {
                 let n = self.peek()?;
                 if !matches!(
                     n.kind,
-                    TokKind::Punct("(") | TokKind::Punct("=") | TokKind::Punct(";") | TokKind::Punct("}")
+                    TokKind::Punct("(")
+                        | TokKind::Punct("=")
+                        | TokKind::Punct(";")
+                        | TokKind::Punct("}")
+                        | TokKind::Punct("*")
                 ) {
                     accessor = Some(if self.is_kw("get") { FuncKind::Getter } else { FuncKind::Setter });
                     self.next()?;
@@ -2123,7 +2231,7 @@ impl Parser {
         // async arrows: `async x => …`, `async (…) => …`
         if self.is_kw("async") {
             let n = self.peek()?;
-            if !n.nl_before {
+            if !n.nl_before && self.async_ident_arrow()? {
                 if let TokKind::Ident { name, .. } = &n.kind {
                     if name != "function" {
                         self.next()?;
@@ -2179,10 +2287,17 @@ impl Parser {
                             if i + 1 != n {
                                 return self.err("rest parameter must be last");
                             }
-                            rest = Some(self.reinterpret_as_pattern(*inner, true, start)?);
+                            let p = self.reinterpret_as_pattern(*inner, true, start)?;
+                            if matches!(p, Pat::Default(..)) {
+                                return self.err("a rest parameter can't have a default");
+                            }
+                            rest = Some(p);
                         } else {
                             params.push(self.reinterpret_as_pattern(a, true, start)?);
                         }
+                    }
+                    if self.await_idents.get() > self.async_call_await_mark {
+                        return self.err("'await' in async arrow parameters");
                     }
                     if self.async_call_trailing_comma && rest.is_some() {
                         return self.err("trailing comma after rest parameter");
@@ -2220,7 +2335,7 @@ impl Parser {
                     self.cover_errs.truncate(before);
                     self.reinterpret_as_pattern(lhs, false, start)?
                 } else {
-                    self.simple_target(lhs, start, op == "=")?
+                    self.simple_target(lhs, start, !matches!(op, "&&=" | "||=" | "??="))?
                 };
                 self.next()?;
                 let value = self.assign(no_in)?;
@@ -2234,6 +2349,20 @@ impl Parser {
             });
         }
         Ok(lhs)
+    }
+
+    /// `async x =>`: the token after the identifier after `async` is `=>`.
+    fn async_ident_arrow(&mut self) -> R<bool> {
+        let save = (self.lx.pos, self.tok.clone(), self.prev_end);
+        self.next()?;
+        let mut ok = matches!(self.tok.kind, TokKind::Ident { .. });
+        if ok {
+            ok = matches!(self.peek()?.kind, TokKind::Punct("=>"));
+        }
+        self.lx.pos = save.0;
+        self.tok = save.1;
+        self.prev_end = save.2;
+        Ok(ok)
     }
 
     /// Whether the cover errors recorded after `before` belong to this assignment expression
@@ -2286,8 +2415,9 @@ impl Parser {
                 }
                 other => self.simple_target(other, pos, _plain),
             },
-            // Annex B: `f() = 1` is a runtime ReferenceError in sloppy scripts, but an early
-            // error everywhere since ES2024 for logical assignment; we reject it uniformly.
+            // Annex B.3.6: in sloppy code a call as a target is a runtime ReferenceError, not an
+            // early error (not for logical assignment).
+            Expr::Call { optional: false, .. } if !self.strict && _plain => Ok(Pat::Expr(Box::new(e))),
             _ => Err(ParseError { pos, msg: "invalid assignment target".into() }),
         }
     }
@@ -2298,6 +2428,9 @@ impl Parser {
         match e {
             Expr::Ident(n) => {
                 self.check_ident(&n, binding, pos)?;
+                if self.strict && (n == "eval" || n == "arguments") {
+                    return Err(ParseError { pos, msg: format!("can't assign to '{n}' in strict mode") });
+                }
                 Ok(Pat::Ident(n))
             }
             Expr::Assign { op: "=", target, value } => {
@@ -2355,6 +2488,12 @@ impl Parser {
                         Prop::KeyValue(k, v) => out.push((k, self.reinterpret_as_pattern(v, binding, pos)?)),
                         Prop::Shorthand(name, init) => {
                             self.check_ident(&name, binding, pos)?;
+                            if self.strict && (name == "eval" || name == "arguments") {
+                                return Err(ParseError {
+                                    pos,
+                                    msg: format!("can't assign to '{name}' in strict mode"),
+                                });
+                            }
                             let t = Pat::Ident(name.clone());
                             let t = match init {
                                 Some(d) => Pat::Default(Box::new(t), d),
@@ -2363,7 +2502,7 @@ impl Parser {
                             out.push((PropKey::Ident(name), t));
                         }
                         Prop::Spread(inner) => {
-                            if i + 1 != n {
+                            if i + 1 != n || self.object_spread_trailing_comma.contains(&pos) {
                                 return bad();
                             }
                             let p = self.reinterpret_as_pattern(inner, binding, pos)?;
@@ -2560,7 +2699,7 @@ impl Parser {
             self.next()?;
             let tpos = self.tok.start;
             let arg = self.unary()?;
-            let t = self.simple_target(arg, tpos, false)?;
+            let t = self.simple_target(arg, tpos, true)?;
             let target = match t {
                 Pat::Ident(n) => Expr::Ident(n),
                 Pat::Expr(e) => *e,
@@ -2572,7 +2711,7 @@ impl Parser {
             if self.f().static_block || self.in_params {
                 return self.err("await isn't allowed here");
             }
-            if !self.f().is_async && !self.module {
+            if !self.f().is_async && !(self.module && self.fns.len() == 1) {
                 return self.err("await outside an async function");
             }
             self.yield_await_seen.push(pos);
@@ -2587,7 +2726,7 @@ impl Parser {
         let e = self.lhs_expression()?;
         if (self.is("++") || self.is("--")) && !self.tok.nl_before {
             let op = if self.is("++") { "++" } else { "--" };
-            let t = self.simple_target(e, tpos, false)?;
+            let t = self.simple_target(e, tpos, true)?;
             self.next()?;
             let target = match t {
                 Pat::Ident(n) => Expr::Ident(n),
@@ -2650,6 +2789,7 @@ impl Parser {
                 if defer {
                     self.cover_defer += 1;
                 }
+                let await_mark = self.await_idents.get();
                 let args = self.arguments();
                 if defer {
                     self.cover_defer -= 1;
@@ -2657,6 +2797,7 @@ impl Parser {
                 let args = args?;
                 if is_async_callee {
                     self.async_call_start = Some(start);
+                    self.async_call_await_mark = await_mark;
                 }
                 e = Expr::Call { callee: Box::new(e), args, optional: false };
             } else if let TokKind::Template { .. } = self.tok.kind {
@@ -3076,6 +3217,7 @@ impl Parser {
     }
 
     fn object_literal(&mut self) -> R<Expr> {
+        let start = self.tok.start;
         self.next()?;
         let mut props = Vec::new();
         let mut proto_seen = false;
@@ -3085,6 +3227,9 @@ impl Parser {
                 props.push(self.object_property(&mut proto_seen)?);
                 if !self.eat(",")? {
                     break;
+                }
+                if self.is("}") && matches!(props.last(), Some(Prop::Spread(_))) {
+                    self.object_spread_trailing_comma.insert(start);
                 }
             }
             Ok(())

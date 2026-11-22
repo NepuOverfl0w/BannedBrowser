@@ -10,5 +10,6 @@ pub mod lexer;
 pub mod parser;
 pub mod regexp;
 mod regexp_props;
+mod unicode_ids;
 
 pub use parser::{parse_module, parse_script, ParseError};

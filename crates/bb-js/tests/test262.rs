@@ -3,7 +3,8 @@
 //! flags ask for (strict and sloppy, module, raw); it passes when it fails to parse exactly when
 //! its metadata says `negative: phase: parse`. Running the tests comes with the interpreter.
 //!
-//! Milestone D is in progress: the pass count may only go up (`FLOOR`), and the goal is all.
+//! The parse phase passes 100 % (`FLOOR` is the whole suite at the pinned commit); running the
+//! tests (milestone D's interpreter) comes next.
 //! `cargo test -p bb-js --test test262 -- --nocapture` prints the numbers; failures go to
 //! `target/test262-parse-failures.txt`.
 
@@ -11,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-/// Tests passing at the last count (raise it as the parser improves; never lower it).
-const FLOOR: usize = 48_675;
+/// The parse phase passes in full: every test must keep passing.
+const FLOOR: usize = 48_803;
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../third_party/test262")
@@ -159,5 +160,8 @@ fn test262_parse_phase() {
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/test262-parse-failures.txt");
     let _ = std::fs::write(&out, failures.join("\n"));
     assert!(panics.is_empty(), "the parser panicked on {} tests:\n{}", panics.len(), panics.join("\n"));
-    assert!(passed >= FLOOR, "parse-phase passes fell below the floor: {passed} < {FLOOR}");
+    assert!(
+        passed >= FLOOR && passed == total,
+        "test262 parse phase: {passed}/{total} (expected all {FLOOR})"
+    );
 }
