@@ -220,7 +220,7 @@ fn other_keys(vm: &mut Vm, rec: &(Value, f64, Value, Value)) -> JsResult<ObjRef>
 
 fn norm(v: Value) -> Value {
     match v {
-        Value::Number(n) if n == 0.0 => Value::Number(0.0),
+        Value::Number(n) if n == 0.0 && n.is_sign_negative() => Value::Number(0.0),
         v => v,
     }
 }

@@ -389,7 +389,7 @@ impl OrderedMap {
     /// Insert or update; -0 keys are stored as +0 (§24.1.3.9 step 5).
     pub fn set(&mut self, k: Value, v: Value) {
         let k = match k {
-            Value::Number(n) if n == 0.0 => Value::Number(0.0),
+            Value::Number(n) if n == 0.0 && n.is_sign_negative() => Value::Number(0.0),
             k => k,
         };
         let mk = MapKey::of(&k);
@@ -413,9 +413,7 @@ impl OrderedMap {
     }
     /// Live iterators see the cleared entries as holes and finish.
     pub fn clear(&mut self) {
-        for e in &mut self.entries {
-            *e = None;
-        }
+        self.entries.fill(None);
         self.index.clear();
     }
     pub fn size(&self) -> usize {
