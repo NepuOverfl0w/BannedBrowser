@@ -1480,6 +1480,10 @@ impl ApplicationHandler<UserEvent> for App {
             bw.window.request_redraw();
             break;
         }
+        // Focus may have moved between the page and the chrome (e.g. Tab past the last element).
+        for w in self.windows.values_mut() {
+            w.sync_window_focus();
+        }
         // Open any background tabs requested by Ctrl+click.
         let ids: Vec<WindowId> = self.windows.keys().copied().collect();
         for id in ids {
