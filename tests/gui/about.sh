@@ -9,14 +9,11 @@ export BB_UPDATE_URL="$BASE/gui/releases-latest.json"
 start_browser "$BASE/gui/start.html"
 wait_state '.title == "GUI Start" and .loading == false and .about == None'
 
-# ≡ menu → About BannedBrowser (Up from the top wraps: Exit, then About).
+# ≡ menu → About BannedBrowser.
 W=$(state_num win_w)
 click_at $((W - 24)) 60
 wait_state '.menu["kind"] == "app"'
-key Up
-key Up
-wait_state '.menu["items"][.menu["hover"]] == "About BannedBrowser"'
-key Return
+menu_select "About BannedBrowser"
 wait_state '.about != None and .about["update"] == "newer:9.9.9" and .about["links"][0] == "update"'
 WAIT_TRIES=50 wait_state '.about["has_focus"] == true' || fail "the About window didn't get the focus"
 sleep 0.5
@@ -35,9 +32,7 @@ wait_state '.window_tabs == 2 and .url == "about:bannedbrowser"'
 W=$(state_num win_w)
 click_at $((W - 24)) 60
 wait_state '.menu["kind"] == "app"'
-key Up
-key Up
-key Return
+menu_select "About BannedBrowser"
 WAIT_TRIES=50 wait_state '.about["has_focus"] == true' || fail "the About window didn't come back to the front"
 key Escape
 wait_state '.about == None'

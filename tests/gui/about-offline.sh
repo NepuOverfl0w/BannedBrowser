@@ -10,9 +10,7 @@ wait_state '.title == "GUI Start" and .loading == false'
 W=$(state_num win_w)
 click_at $((W - 24)) 60
 wait_state '.menu["kind"] == "app"'
-key Up
-key Up
-key Return
+menu_select "About BannedBrowser"
 wait_state '.about != None and .about["update"] == "failed" and .about["links"][0] == "update"'
 sleep 0.5
 shot about-offline

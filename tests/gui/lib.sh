@@ -157,6 +157,18 @@ click_target() {
   click_at $xy
 }
 
+# menu_select <label>: in the open menu, press Up until <label> is highlighted (Up cycles, so a
+# key lost right after the click that opened the menu only costs another press), then Enter.
+menu_select() {
+  local i
+  for i in $(seq 1 16); do
+    WAIT_TRIES=3 wait_state ".menu != None and .menu[\"hover\"] != None and .menu[\"items\"][.menu[\"hover\"]] == \"$1\"" && break
+    key Up
+  done
+  wait_state ".menu[\"items\"][.menu[\"hover\"]] == \"$1\""
+  key Return
+}
+
 # key <combo>: e.g. accel+t, shift+Return, alt+Left, Escape.
 key() {
   local k="$1"
