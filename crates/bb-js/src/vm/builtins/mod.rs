@@ -7,6 +7,8 @@ pub(super) mod iterator;
 mod json;
 mod number;
 mod object;
+mod selfhost;
+pub(super) use selfhost::MARK as SELF_HOSTED;
 pub(super) mod regexp;
 mod typed;
 pub(super) use object::{from_property_descriptor, to_property_descriptor};
@@ -48,6 +50,7 @@ pub(super) fn install(vm: &mut Vm) {
     iterator::install(vm);
     typed::install(vm);
     install_global(vm);
+    selfhost::install(vm);
 }
 
 /// A string argument of a native, converted.

@@ -218,6 +218,13 @@ impl Vm {
         Ok(p)
     }
 
+    /// CreateAsyncFromSyncIterator (§27.1.6.1) on a sync (iterator, next) pair.
+    pub(super) fn async_from_sync(&mut self, iterator: Value, next: Value) -> ObjRef {
+        let proto = self.realm.async_from_sync_iterator_proto;
+        let rec = IterRecord { iterator, next, done: false };
+        self.heap.alloc(Object::new(Some(proto), Kind::IterRecord(Box::new(rec))))
+    }
+
     /// GetIterator(obj, async) (§7.4.3).
     pub(super) fn get_async_iterator(&mut self, v: &Value) -> JsResult<ObjRef> {
         let ak = PropKey::Sym(self.realm.sym_async_iterator.clone());

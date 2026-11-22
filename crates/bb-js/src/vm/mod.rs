@@ -207,6 +207,13 @@ impl Vm {
         self.execute(frame)
     }
 
+    /// Run compiled script code in the global environment.
+    pub(super) fn run_global_code(&mut self, code: Rc<Code>) -> JsResult<Value> {
+        let genv = self.realm.global_env;
+        let frame = self.frame(code, genv, genv);
+        self.execute(frame)
+    }
+
     /// The message of a thrown value, for hosts: `Name: message` for errors.
     pub fn describe(&mut self, v: &Value) -> String {
         if let Value::Object(o) = v {

@@ -563,6 +563,13 @@ fn function_to_string(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
         return vm.type_error("Function.prototype.toString requires that 'this' be a Function");
     };
     let s = match &vm.heap.obj(o).kind {
+        Kind::Function(cl) if cl.tmpl.referrer.as_deref() == Some(super::SELF_HOSTED) => {
+            let name = match vm.heap.obj(o).props.get(&PropKey::lit("name")).map(|p| &p.slot) {
+                Some(Slot::Data(Value::String(s))) => to_rust(s),
+                _ => String::new(),
+            };
+            format!("function {name}() {{ [native code] }}")
+        }
         Kind::Function(cl) => cl.tmpl.source_text(),
         Kind::Native(_) | Kind::Bound(_) => {
             let name = match vm.heap.obj(o).props.get(&PropKey::lit("name")).map(|p| &p.slot) {

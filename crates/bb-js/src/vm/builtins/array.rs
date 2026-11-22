@@ -12,7 +12,7 @@ fn key(i: f64) -> PropKey {
 }
 
 /// ArrayCreate (§10.4.2.2).
-fn array_create(vm: &mut Vm, len: f64, proto: Option<ObjRef>) -> JsResult<ObjRef> {
+pub(super) fn array_create(vm: &mut Vm, len: f64, proto: Option<ObjRef>) -> JsResult<ObjRef> {
     if len > 4294967295.0 {
         return vm.range_error("Invalid array length");
     }
