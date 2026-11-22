@@ -1,6 +1,6 @@
 # BannedBrowser — progress log
 
-_Last updated: 2026-11-22 (session 2)._
+_Last updated: 2026-11-22 (session 2, milestone C done)._
 
 ## Status at a glance
 
@@ -120,7 +120,7 @@ CI is green on all three OSes with every suite at 100 % and the GUI tests on eac
 session history. Remaining placement gaps (macOS app-menu About, no Help submenu) are listed under
 "Known gaps".
 
-**Now:** milestone C (M8 network + storage). Done: C1 cookies with the Public Suffix List (kept current: downloaded at build time, at first start and then daily); C2 interactive forms and keyboard focus (theoldnet's search and archive forms work); C3 profile storage (`bb-profile`, SQLite: persistent cookies, window size); C4 HTTP cache (RFC 9111); C5 HTTP/2 (our own framing, HPACK, flow control; ALPN `h2`). Milestone C is complete once CI is green on all three OSes. Next: D (JS core).
+**Now:** milestone C (M8 network + storage). Done: C1 cookies with the Public Suffix List (kept current: downloaded at build time, at first start and then daily); C2 interactive forms and keyboard focus (theoldnet's search and archive forms work); C3 profile storage (`bb-profile`, SQLite: persistent cookies, window size); C4 HTTP cache (RFC 9111); C5 HTTP/2 (our own framing, HPACK, flow control; ALPN `h2`). **Milestone C is done** (CI run 72 green on all three OSes). Next: D (JS core).
 
 ## v0.2 scope (agreed with the maintainer)
 
