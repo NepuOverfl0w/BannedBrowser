@@ -9,6 +9,9 @@ Everything on `main` after the 0.1.0 release commit counts toward v0.2.
 The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 
 ### Added
+- **JavaScript engine, first part (milestone D in progress):** `bb-js` has a lexer and a parser
+  for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
+  measured against test262. Scripts don't run yet.
 - **HTTP/2** (RFC 9113) with our own HPACK (RFC 7541, incl. Huffman coding), negotiated with
   ALPN `h2` over TLS (also through CONNECT proxies); HTTP/1.1 otherwise. One connection per
   origin carries every request to it (multiplexed, up to the server's

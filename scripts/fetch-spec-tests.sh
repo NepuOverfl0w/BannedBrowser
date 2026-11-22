@@ -6,6 +6,8 @@
 #     it deliberately and fix what the new tests reveal.
 #   - WPT url/resources/urltestdata.json
 #   - WHATWG entities.json (used to regenerate the named character reference table)
+#   - test262 (test/language, test/built-ins, test/annexB, harness), pinned to TEST262_COMMIT:
+#     the v0.2 JavaScript scope (intl402 and staging are out of scope).
 #   - The Public Suffix List's own test vectors (tests/test_psl.txt, HEAD). The list itself
 #     is downloaded by bb-net's build script, so both are current.
 set -euo pipefail
@@ -36,6 +38,18 @@ mkdir -p wpt-url
 [ -s wpt-url/urltestdata.json ] || curl -fsSL -o wpt-url/urltestdata.json \
   https://raw.githubusercontent.com/web-platform-tests/wpt/master/url/resources/urltestdata.json
 [ -s entities.json ] || curl -fsSL -o entities.json https://html.spec.whatwg.org/entities.json
+TEST262_COMMIT="2a1ade303f72d3de80565c921d685222405c32ce" # 2026-11-22
+if [ "$(git -C test262 rev-parse HEAD 2>/dev/null || true)" != "$TEST262_COMMIT" ]; then
+  rm -rf test262
+  git init -q test262
+  (cd test262
+   git remote add origin https://github.com/tc39/test262
+   git sparse-checkout set --no-cone test/language/ test/built-ins/ test/annexB/ harness/
+   git fetch -q --depth 1 --filter=blob:none origin "$TEST262_COMMIT"
+   git -c advice.detachedHead=false checkout -q FETCH_HEAD)
+fi
+[ -d test262/test/language ] || { echo "test262 missing after fetch" >&2; exit 1; }
+
 mkdir -p psl
 [ -s psl/test_psl.txt ] || curl -fsSL -o psl/test_psl.txt \
   https://raw.githubusercontent.com/publicsuffix/list/main/tests/test_psl.txt

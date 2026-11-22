@@ -23,6 +23,7 @@ _Last updated: 2026-11-22 (session 2, milestone C done)._
 | WPT `url/resources/urltestdata.json` | **904 / 904 (100.0 %)** |
 | html5lib tokenizer (HEAD) | **7046 / 7046 (100 %)**, nothing skipped (incl. the 4 lone-surrogate cases) |
 | Public Suffix List `tests/test_psl.txt` (HEAD) against the list the build embedded | **78 / 78 (100 %)** |
+| test262 parse phase (`language`, `built-ins`, `annexB`, pinned `2a1ade3`): parses exactly when it should | **48120/48803** (98.60 %), milestone D in progress; the floor in `crates/bb-js/tests/test262.rs` only goes up. Running the tests needs the interpreter |
 | HPACK, RFC 7541 Appendix C examples (C.1 integers, C.3/C.4 requests, C.6 responses with eviction) | **all pass**, plus Huffman round trips and malformed-block tests |
 | HTTP/2 against the Python `h2` server (`tests/server/h2server.py`) | **8 / 8** integration tests: headers, POST bodies past the peer's window, a 20 MB download past ours, 20 requests multiplexed under a 5-stream limit, redirects/cookies/gzip, trailers, CONTINUATION, PING, REFUSED_STREAM and GOAWAY retries, a malformed content-length |
 | Tree construction, WPT `html/syntax/parsing/resources` (pinned `9986bb3`, 2026-11-21) | **1959 / 1959 (100 %)**; 14 `#script-on` cases not run yet (need JS, milestone E) |
@@ -120,7 +121,9 @@ CI is green on all three OSes with every suite at 100 % and the GUI tests on eac
 session history. Remaining placement gaps (macOS app-menu About, no Help submenu) are listed under
 "Known gaps".
 
-**Now:** milestone C (M8 network + storage). Done: C1 cookies with the Public Suffix List (kept current: downloaded at build time, at first start and then daily); C2 interactive forms and keyboard focus (theoldnet's search and archive forms work); C3 profile storage (`bb-profile`, SQLite: persistent cookies, window size); C4 HTTP cache (RFC 9111); C5 HTTP/2 (our own framing, HPACK, flow control; ALPN `h2`). **Milestone C is done** (CI run 72 green on all three OSes). Next: D (JS core).
+**Now:** milestone C (M8 network + storage). Done: C1 cookies with the Public Suffix List (kept current: downloaded at build time, at first start and then daily); C2 interactive forms and keyboard focus (theoldnet's search and archive forms work); C3 profile storage (`bb-profile`, SQLite: persistent cookies, window size); C4 HTTP cache (RFC 9111); C5 HTTP/2 (our own framing, HPACK, flow control; ALPN `h2`). **Milestone C is done** (CI run 72 green on all three OSes).
+
+**Now:** milestone D (JS core). Done: test262 fetched and run (parse phase); `bb-js` lexer, parser into an AST with the early errors. Next: regular expression syntax, then bytecode, interpreter, GC and built-ins (test262 execution).
 
 ## v0.2 scope (agreed with the maintainer)
 
