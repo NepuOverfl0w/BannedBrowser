@@ -899,6 +899,13 @@ enum Inst {
     },
     /// Switch the flags in effect (modifiers).
     SetFlags(Flags),
+    /// A quantified single-character matcher (the instruction at pc+1), forward and without
+    /// groups: scans in one step and backtracks a character at a time; continues at pc+2.
+    Star {
+        min: u32,
+        max: Option<u32>,
+        greedy: bool,
+    },
     Match,
 }
 
@@ -971,6 +978,12 @@ impl Compiler {
                 for j in jumps {
                     self.prog[j] = Inst::Jmp(end);
                 }
+            }
+            Node::Repeat { node, min, max, greedy, groups: 0, .. }
+                if !back && matches!(**node, Node::Char(_) | Node::Any | Node::Set(..)) =>
+            {
+                self.emit(Inst::Star { min: *min, max: *max, greedy: *greedy });
+                self.node(node, back, flags);
             }
             Node::Repeat { node, min, max, greedy, first_group, groups } => {
                 let r = self.regs;
@@ -1092,6 +1105,8 @@ impl Regex {
 
 enum Undo {
     Choice(usize, usize),
+    /// A Star's state: (its pc, start position, position, count).
+    Star(usize, usize, usize, u32),
     Cap(usize, Option<usize>),
     Reg(usize, usize),
     Flags(Flags),
@@ -1187,6 +1202,18 @@ impl Matcher<'_> {
             }
             None => false,
         }
+    }
+
+    /// The width of the single-character matcher at `pc` matching forward at `pos`.
+    fn item_at(&self, pc: usize, pos: usize) -> Option<usize> {
+        let (x, w) = self.read(pos, false)?;
+        let ok = match &self.re.prog[pc] {
+            Inst::Char(c) => x == *c || (self.flags.ignore_case && self.canon(x) == self.canon(*c)),
+            Inst::Any => self.flags.dot_all || !is_line_terminator(x),
+            Inst::Set(i, neg) => self.set_has(*i, x) != *neg,
+            _ => false,
+        };
+        ok.then_some(w)
     }
 
     /// Run from `pc` at `pos`; `Some(end)` on reaching Match/LookEnd.
@@ -1373,6 +1400,28 @@ impl Matcher<'_> {
                     pc += 1;
                     true
                 }
+                Inst::Star { min, max, greedy } => {
+                    let (min, max, greedy) = (*min, *max, *greedy);
+                    let start = pos;
+                    let limit = if greedy { max.unwrap_or(u32::MAX) } else { min };
+                    let mut n = 0u32;
+                    while n < limit {
+                        let Some(w) = self.item_at(pc + 1, pos) else { break };
+                        if *self.budget == 0 {
+                            return Err(Exhausted);
+                        }
+                        *self.budget -= 1;
+                        pos += w;
+                        n += 1;
+                    }
+                    if n < min {
+                        false
+                    } else {
+                        stack.push(Undo::Star(pc, start, pos, n));
+                        pc += 2;
+                        true
+                    }
+                }
             };
             if ok {
                 continue;
@@ -1385,6 +1434,30 @@ impl Matcher<'_> {
                         pc = p;
                         pos = q;
                         break;
+                    }
+                    Some(Undo::Star(spc, start, at, n)) => {
+                        let Inst::Star { min, max, greedy } = self.re.prog[spc] else { continue };
+                        if greedy {
+                            // Give back one character.
+                            if n > min {
+                                let w = match self.read(at, true) {
+                                    Some((_, w)) if at - w >= start => w,
+                                    _ => 1,
+                                };
+                                stack.push(Undo::Star(spc, start, at - w, n - 1));
+                                pc = spc + 2;
+                                pos = at - w;
+                                break;
+                            }
+                        } else if max.is_none_or(|m| n < m) {
+                            // Take one more.
+                            if let Some(w) = self.item_at(spc + 1, at) {
+                                stack.push(Undo::Star(spc, start, at + w, n + 1));
+                                pc = spc + 2;
+                                pos = at + w;
+                                break;
+                            }
+                        }
                     }
                     Some(Undo::Cap(s, v)) => self.caps[s] = v,
                     Some(Undo::Reg(r, v)) => self.regs[r] = v,

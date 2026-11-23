@@ -31,6 +31,16 @@ pub enum Op {
     SetResolved(u32),
     /// Drop the top resolved reference.
     DropRef,
+    /// `x++` / `x--` / `++x` / `--x` on an identifier in one op (GetValue, ToNumeric, ±1,
+    /// PutValue): flags 1 = increment, 2 = push the result, 4 = postfix (the result is the
+    /// old numeric value).
+    UpdateVar(u32, u8),
+    /// SetProp / SetNamed / SetVar whose result is discarded (`[obj key v] → []` …).
+    SetPropPop,
+    SetNamedPop(u32),
+    SetVarPop(u32),
+    /// `[a b] →`: compare (0 <, 1 >, 2 <=, 3 >=, 4 ===, 5 !==, 6 ==, 7 !=) and jump when false.
+    CmpJumpIfFalse(u8, u32),
     /// `[] → [cap]`: a `using` scope's DisposeCapability.
     DisposeScope,
     /// `[cap v] → [cap v]`: AddDisposableResource (true: async-dispose).
@@ -376,8 +386,8 @@ pub struct FuncTemplate {
     pub default_ctor: bool,
     /// Source text for `toString` when it isn't the function's own (class constructors).
     pub text_span: Option<(usize, usize)>,
-    /// Defined inside `with` or in code with a direct eval: identifier references in
-    /// assignments are resolved once (`Op::ResolveVar`).
+    /// Defined inside `with`: identifier references in assignments are resolved once
+    /// (`Op::ResolveVar`); a function with its own direct eval does that too.
     pub dynamic: bool,
 }
 

@@ -62,6 +62,11 @@ pub struct Compiler<'a> {
     referrer: Option<Rc<str>>,
     /// Inside `with` or code with a direct eval: resolve assignment references once.
     dynamic: bool,
+    /// Lexically inside `with` (inherited by nested functions; an eval is not).
+    in_with: bool,
+    /// The furthest position a jump was patched to (compare/jump fusion must not remove a
+    /// jump target).
+    max_target: u32,
 }
 
 pub enum Unit<'a> {
@@ -85,6 +90,8 @@ impl<'a> Compiler<'a> {
             async_gen: false,
             referrer: None,
             dynamic: false,
+            in_with: false,
+            max_target: 0,
         }
     }
 
@@ -102,10 +109,12 @@ impl<'a> Compiler<'a> {
         self.patch_to(at, to);
     }
     fn patch_to(&mut self, at: usize, to: u32) {
+        self.max_target = self.max_target.max(to);
         let op = &mut self.code.ops[at];
         *op = match *op {
             Op::Jump(_) => Op::Jump(to),
             Op::JumpIfFalse(_) => Op::JumpIfFalse(to),
+            Op::CmpJumpIfFalse(k, _) => Op::CmpJumpIfFalse(k, to),
             Op::JumpIfTrue(_) => Op::JumpIfTrue(to),
             Op::JumpIfFalseKeep(_) => Op::JumpIfFalseKeep(to),
             Op::JumpIfTrueKeep(_) => Op::JumpIfTrueKeep(to),
@@ -171,7 +180,7 @@ impl<'a> Compiler<'a> {
             referrer: self.referrer.clone(),
             default_ctor: false,
             text_span: None,
-            dynamic: self.dynamic,
+            dynamic: self.in_with,
         };
         self.code.funcs.push(Rc::new(t));
         self.code.funcs.len() as u32 - 1
@@ -197,6 +206,8 @@ impl<'a> Compiler<'a> {
         let dynamic = !prog.strict && (is_eval || has_eval);
         let mut c = Compiler::new(source, prog.strict, true);
         c.dynamic = dynamic;
+        // Eval code may itself be inside `with`, and so its functions.
+        c.in_with = !prog.strict && is_eval;
         c.referrer = referrer.clone();
         c.code.referrer = referrer;
         let body = &prog.body;
@@ -424,6 +435,7 @@ impl<'a> Compiler<'a> {
     pub fn compile_function(t: &FuncTemplate) -> Code {
         let f = &t.ast;
         let mut c = Compiler::new(t.source.clone(), f.strict, false);
+        c.in_with = t.dynamic;
         c.dynamic = t.dynamic || (!f.strict && t.source_text().contains("eval"));
         c.referrer = t.referrer.clone();
         c.code.referrer = t.referrer.clone();
@@ -705,8 +717,12 @@ impl<'a> Compiler<'a> {
     fn stmt(&mut self, s: &'a Stmt) {
         match s {
             Stmt::Expr(e) => {
-                self.expr(e);
-                self.emit(if self.completion { Op::SetCompletion } else { Op::Pop });
+                if self.completion {
+                    self.expr(e);
+                    self.emit(Op::SetCompletion);
+                } else {
+                    self.expr_discard(e);
+                }
             }
             Stmt::Var(kind, decls) => self.var_decl(*kind, decls),
             Stmt::Function(f) => {
@@ -736,8 +752,7 @@ impl<'a> Compiler<'a> {
             Stmt::Empty | Stmt::Debugger => {}
             Stmt::If(t, a, b) => {
                 self.set_completion_undefined();
-                self.expr(t);
-                let j = self.emit(Op::JumpIfFalse(0));
+                let j = self.cond_jump_false(t);
                 self.branch(a);
                 if let Some(b) = b {
                     let k = self.emit(Op::Jump(0));
@@ -807,8 +822,10 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::PushWith);
                 self.ctl.push(Ctl::Scope);
                 let dynamic = std::mem::replace(&mut self.dynamic, true);
+                let in_with = std::mem::replace(&mut self.in_with, true);
                 self.stmt(body);
                 self.dynamic = dynamic;
+                self.in_with = in_with;
                 self.ctl.pop();
                 self.emit(Op::PopScope);
             }
@@ -1078,8 +1095,7 @@ impl<'a> Compiler<'a> {
         match s {
             Stmt::While(t, body) => {
                 let top = self.here();
-                self.expr(t);
-                let exit = self.emit(Op::JumpIfFalse(0));
+                let exit = self.cond_jump_false(t);
                 self.push_loop(labels);
                 self.stmt(body);
                 for c in self.take_continues() {
@@ -1150,10 +1166,7 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::CopyScope);
                 }
                 let top = self.here();
-                let exit = test.as_ref().map(|t| {
-                    self.expr(t);
-                    self.emit(Op::JumpIfFalse(0))
-                });
+                let exit = test.as_ref().map(|t| self.cond_jump_false(t));
                 self.push_loop(labels);
                 self.stmt(body);
                 for c in self.take_continues() {
@@ -1163,8 +1176,7 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::CopyScope);
                 }
                 if let Some(u) = update {
-                    self.expr(u);
-                    self.emit(Op::Pop);
+                    self.expr_discard(u);
                 }
                 self.emit(Op::Jump(top));
                 if let Some(e) = exit {
@@ -2386,6 +2398,68 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// An expression whose value is unused: `x++` on an identifier is one op.
+    fn expr_discard(&mut self, e: &'a Expr) {
+        let mut t = e;
+        while let Expr::Paren(i) = t {
+            t = i;
+        }
+        if let Expr::Update { op, target, .. } = t {
+            let mut x: &Expr = target;
+            while let Expr::Paren(i) = x {
+                x = i;
+            }
+            if let (Expr::Ident(n), false) = (x, self.dynamic) {
+                let i = self.name(n);
+                self.emit(Op::UpdateVar(i, u8::from(*op == "++")));
+                return;
+            }
+        }
+        self.expr(e);
+        // An assignment statement doesn't push its value just to pop it.
+        if let Expr::Assign { op, .. } = t {
+            let at = self.code.ops.len().wrapping_sub(1);
+            if *op == "=" && (self.max_target as usize) <= at {
+                let fused = match self.code.ops.last() {
+                    Some(Op::SetProp) => Some(Op::SetPropPop),
+                    Some(Op::SetNamed(k)) => Some(Op::SetNamedPop(*k)),
+                    Some(Op::SetVar(i)) => Some(Op::SetVarPop(*i)),
+                    _ => None,
+                };
+                if let Some(f) = fused {
+                    self.code.ops[at] = f;
+                    return;
+                }
+            }
+        }
+        self.emit(Op::Pop);
+    }
+
+    /// `cond` then a jump when it is false (patch the returned op); a comparison and the
+    /// jump fuse into one op when no jump targets the position between them.
+    fn cond_jump_false(&mut self, cond: &'a Expr) -> usize {
+        self.expr(cond);
+        let at = self.code.ops.len().wrapping_sub(1);
+        let k = match self.code.ops.last() {
+            Some(Op::Lt) => Some(0),
+            Some(Op::Gt) => Some(1),
+            Some(Op::Le) => Some(2),
+            Some(Op::Ge) => Some(3),
+            Some(Op::StrictEq) => Some(4),
+            Some(Op::StrictNe) => Some(5),
+            Some(Op::Eq) => Some(6),
+            Some(Op::Ne) => Some(7),
+            _ => None,
+        };
+        match k {
+            Some(k) if (self.max_target as usize) <= at => {
+                self.code.ops[at] = Op::CmpJumpIfFalse(k, 0);
+                at
+            }
+            _ => self.emit(Op::JumpIfFalse(0)),
+        }
+    }
+
     /// GetValue of an identifier that is then assigned (resolved once when dynamic).
     fn ident_get(&mut self, i: u32) {
         if self.dynamic {
@@ -2408,6 +2482,11 @@ impl<'a> Compiler<'a> {
             t = i;
         }
         match t {
+            Expr::Ident(n) if !self.dynamic => {
+                let i = self.name(n);
+                let flags = u8::from(op == "++") | 2 | if prefix { 0 } else { 4 };
+                self.emit(Op::UpdateVar(i, flags));
+            }
             Expr::Ident(n) => {
                 let i = self.name(n);
                 self.ident_get(i);
@@ -2636,7 +2715,7 @@ impl<'a> Compiler<'a> {
             referrer: self.referrer.clone(),
             default_ctor: c.constructor.is_none(),
             text_span: Some(c.span),
-            dynamic: self.dynamic,
+            dynamic: self.in_with,
         };
         self.code.funcs.push(Rc::new(t));
         let ti = self.code.funcs.len() as u32 - 1;

@@ -20,10 +20,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 43_011;
+const FLOOR: usize = 43_461;
 
-/// Instructions per test variant before it counts as hung.
-const FUEL: u64 = 20_000_000;
+/// Instructions per test variant before it counts as hung (TEST262_FUEL overrides it
+/// for experiments). The heaviest legitimate tests, the generated RegExp property-escape
+/// tests (they build strings of all 1.1M code points in JavaScript), need about 25M,
+/// a second or two; a hung test stops here.
+const FUEL: u64 = 30_000_000;
+
+fn fuel() -> u64 {
+    std::env::var("TEST262_FUEL").ok().and_then(|v| v.parse().ok()).unwrap_or(FUEL)
+}
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../third_party/test262")
@@ -191,14 +198,14 @@ fn run_variant(
         files.extend(m.includes.iter().cloned());
         for f in files {
             let h = harness(&f, cache);
-            vm.fuel = Some(FUEL);
+            vm.fuel = Some(fuel());
             if let Err(e) = vm.run_script(&h) {
                 return Err(format!("harness {f} threw {}", vm.describe(&e)));
             }
         }
     }
     let code = if strict { format!("\"use strict\";\n{src}") } else { src.to_string() };
-    vm.fuel = Some(FUEL);
+    vm.fuel = Some(fuel());
     // The same normalized form the loader produces, so self-imports find this module.
     let key = resolve_specifier(&path.to_string_lossy(), None).to_string_lossy().into_owned();
     let r = if module {

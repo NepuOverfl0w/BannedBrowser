@@ -930,6 +930,12 @@ impl Vm {
                 let env = self.top().env;
                 self.set_var(env, &name, v)?;
             }
+            Op::SetVarPop(i) => {
+                let name = self.name(i);
+                let v = self.pop();
+                let env = self.top().env;
+                self.set_var(env, &name, v)?;
+            }
             Op::InitBinding(i) => {
                 let name = self.name(i);
                 let v = self.pop();
@@ -1078,7 +1084,7 @@ impl Vm {
                 let v = self.get_value_key(&o, &k)?;
                 self.push(v);
             }
-            Op::SetProp => {
+            Op::SetProp | Op::SetPropPop => {
                 let v = self.pop();
                 let k = self.pop();
                 let o = self.pop();
@@ -1096,9 +1102,11 @@ impl Vm {
                 }
                 let key = self.to_property_key(&k)?;
                 self.put_value(&o, key, v.clone())?;
-                self.push(v);
+                if op == Op::SetProp {
+                    self.push(v);
+                }
             }
-            Op::SetNamed(i) => {
+            Op::SetNamed(i) | Op::SetNamedPop(i) => {
                 let k = self.top().code.keys[i as usize].clone();
                 let v = self.pop();
                 let o = self.pop();
@@ -1110,7 +1118,9 @@ impl Vm {
                     ));
                 }
                 self.put_value(&o, k, v.clone())?;
-                self.push(v);
+                if matches!(op, Op::SetNamed(_)) {
+                    self.push(v);
+                }
             }
             Op::DefineProp => {
                 let v = self.pop();
@@ -1387,6 +1397,45 @@ impl Vm {
                 let a = self.pop();
                 let r = self.loosely_equal(&a, &b)?;
                 self.push(Value::Bool(r == (op == Op::Eq)));
+            }
+            Op::UpdateVar(i, flags) => {
+                let name = self.name(i);
+                let env = self.top().env;
+                let old = self.get_var(env, &name)?;
+                let old = match old {
+                    Value::Number(_) => old,
+                    v => self.to_numeric(&v)?,
+                };
+                let inc = flags & 1 != 0;
+                let new = match &old {
+                    Value::Number(n) => Value::Number(if inc { n + 1.0 } else { n - 1.0 }),
+                    Value::BigInt(b) => {
+                        let one = bigint::BigInt::from_i64(if inc { 1 } else { -1 });
+                        Value::BigInt(Rc::new(b.add(&one)))
+                    }
+                    _ => Value::Number(f64::NAN),
+                };
+                self.set_var(env, &name, new.clone())?;
+                if flags & 2 != 0 {
+                    self.push(if flags & 4 != 0 { old } else { new });
+                }
+            }
+            Op::CmpJumpIfFalse(k, t) => {
+                let b = self.pop();
+                let a = self.pop();
+                let r = match k {
+                    0 => self.compare(Op::Lt, &a, &b)?,
+                    1 => self.compare(Op::Gt, &a, &b)?,
+                    2 => self.compare(Op::Le, &a, &b)?,
+                    3 => self.compare(Op::Ge, &a, &b)?,
+                    4 => value::strict_equals(&a, &b),
+                    5 => !value::strict_equals(&a, &b),
+                    6 => self.loosely_equal(&a, &b)?,
+                    _ => !self.loosely_equal(&a, &b)?,
+                };
+                if !r {
+                    self.jump(t);
+                }
             }
             Op::StrictEq | Op::StrictNe => {
                 let b = self.pop();

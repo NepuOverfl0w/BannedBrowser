@@ -99,6 +99,8 @@ for f in lines("Scripts.txt"):
     by_sc[f[1]].append((a, b))
     for c in range(a, b + 1):
         sc_of[c] = f[1]
+# Code points Scripts.txt doesn't list have the script Unknown (UAX #24).
+by_sc["Unknown"] = ranges_of(set(range(MAX + 1)) - set(sc_of))
 for k in sorted(by_sc):
     out.append(f"S {k} {fmt(merge(by_sc[k]))}")
 # Short script names (ScriptExtensions uses them) → long names.
