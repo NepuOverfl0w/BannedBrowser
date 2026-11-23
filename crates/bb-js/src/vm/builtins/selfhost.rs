@@ -136,6 +136,34 @@ pub(super) fn install(vm: &mut Vm) {
         };
         vm.to_primitive(&c.arg(0), hint)
     });
+    // bigDiv(n, d): the exact quotient of two BigInts, correctly rounded to a Number.
+    helper(vm, i, "bigDiv", |vm, c| {
+        use super::super::bigint::BigInt;
+        let (Value::BigInt(n), Value::BigInt(d)) = (c.arg(0), c.arg(1)) else {
+            return vm.type_error("bigDiv needs BigInts");
+        };
+        if d.is_zero() {
+            return vm.range_error("division by zero");
+        }
+        let neg = (n.to_f64() < 0.0) != (d.to_f64() < 0.0);
+        let abs = |x: &BigInt| if x.to_f64() < 0.0 { x.neg() } else { x.clone() };
+        let (n, d) = (abs(&n), abs(&d));
+        if n.is_zero() {
+            return Ok(Value::Number(0.0));
+        }
+        // A quotient of 66+ bits with a sticky bit rounds once, correctly.
+        let shift = (66 + d.bit_len()).saturating_sub(n.bit_len());
+        let Some((q, r)) = n.shl(shift).divrem(&d) else { return Ok(Value::Number(f64::NAN)) };
+        let q = q.shl(1).add(&BigInt::from_u64(u64::from(!r.is_zero())));
+        let mut v = q.to_f64();
+        let mut e = shift + 1;
+        while e > 0 {
+            let s = e.min(1000);
+            v *= 2f64.powi(-(s as i32));
+            e -= s;
+        }
+        Ok(Value::Number(if neg { -v } else { v }))
+    });
     helper(vm, i, "asciiLower", |vm, c| {
         let s = vm.to_string(&c.arg(0))?;
         let v: Vec<u16> = s.iter().map(|&u| if (65..=90).contains(&u) { u + 32 } else { u }).collect();

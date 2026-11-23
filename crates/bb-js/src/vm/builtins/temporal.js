@@ -178,6 +178,14 @@
     return v;
   }
 
+  // ValidateTemporalUnitValue's group check.
+  function checkGroup(u, group) {
+    if (u === "auto") return;
+    const i = unitIndex(u);
+    if (group === "date" && i > 3) throw new RangeError(`${u} is not a date unit`);
+    if (group === "time" && i < 4) throw new RangeError(`${u} is not a time unit`);
+  }
+
   // ValidateTemporalRoundingIncrement.
   function validateIncrement(inc, dividend, inclusive) {
     const maximum = inclusive ? dividend : dividend - 1;
@@ -201,6 +209,23 @@
       case "halfTrunc": return "half-zero";
       default: return "half-even";
     }
+  }
+
+  // RoundNumberToIncrementAsIfPositive (instants: towards the Big Bang, not the epoch).
+  function roundBigPositive(x, inc, mode) {
+    const q = bdiv(x, inc);
+    const r = x - q * inc;
+    let n = q;
+    if (r !== 0n) {
+      const um = unsignedMode(mode, false);
+      if (um === "infinity") n += 1n;
+      else if (um !== "zero") {
+        const twice = r * 2n;
+        if (twice > inc) n += 1n;
+        else if (twice === inc && (um === "half-infinity" || (um === "half-even" && bmod(q, 2n) === 1n))) n += 1n;
+      }
+    }
+    return n * inc;
   }
 
   // RoundNumberToIncrement on exact integers (BigInt): a multiple of `inc`.
@@ -1004,11 +1029,11 @@
 
   // ToMonthCode.
   function toMonthCode(v) {
+    // Syntax only (M, two digits, optional L); fitness for the calendar comes later.
     const s = toPrimitiveString(v);
-    if (s.length !== 3 || cu(s, 0) !== 77 || !isDigit(cu(s, 1)) || !isDigit(cu(s, 2))) {
-      throw new RangeError(`invalid monthCode ${s}`);
-    }
-    if (s === "M00") throw new RangeError(`invalid monthCode ${s}`);
+    const ok = (s.length === 3 || (s.length === 4 && cu(s, 3) === 76)) && cu(s, 0) === 77 && isDigit(cu(s, 1)) &&
+      isDigit(cu(s, 2));
+    if (!ok || s === "M00") throw new RangeError(`invalid monthCode ${s}`);
     return s;
   }
 
@@ -1063,9 +1088,10 @@
   // The month of fields with month and/or monthCode (ISO calendar).
   function resolveMonth(f) {
     let month = f.month;
+    if (month === undefined && f.monthCode === undefined) throw new TypeError("month or monthCode is required");
     if (f.monthCode !== undefined) {
       const mc = NumberF(sub(f.monthCode, 1, 3));
-      if (mc < 1 || mc > 12) throw new RangeError(`invalid monthCode ${f.monthCode}`);
+      if (f.monthCode.length !== 3 || mc < 1 || mc > 12) throw new RangeError(`invalid monthCode ${f.monthCode}`);
       if (month !== undefined && month !== mc) throw new RangeError("month and monthCode disagree");
       month = mc;
     }
@@ -1077,6 +1103,7 @@
   function dateFromFields(f, overflow) {
     if (f.year === undefined) throw new TypeError("year is required");
     if (f.day === undefined) throw new TypeError("day is required");
+    if (f.month === undefined && f.monthCode === undefined) throw new TypeError("month or monthCode is required");
     const month = resolveMonth(f);
     const d = regulateDate(f.year, month, f.day, overflow);
     checkDate(d.year, d.month, d.day);
@@ -1243,10 +1270,12 @@
   };
 
   // ISODateSurpasses.
+  // (The candidate's day is constrained to its month first.)
   function surpasses(sign, y1, m1, d1, two) {
+    const d = d1 > daysInMonth(y1, m1) ? daysInMonth(y1, m1) : d1;
     if (y1 !== two[0]) return sign * (y1 - two[0]) > 0;
     if (m1 !== two[1]) return sign * (m1 - two[1]) > 0;
-    if (d1 !== two[2]) return sign * (d1 - two[2]) > 0;
+    if (d !== two[2]) return sign * (d - two[2]) > 0;
     return false;
   }
 
@@ -1346,7 +1375,7 @@
     }
     const num = babs(dest - startNs);
     const den = babs(endNs - startNs);
-    const total = r1 + (NumberF(num) / NumberF(den)) * inc * sign;
+    const total = I.bigDiv(BigIntF(r1) * den + BigIntF(inc * sign) * num, den);
     const um = unsignedMode(mode, sign < 0);
     const r1Even = mod(abs(r1) / inc, 2) === 0;
     // progress = 1 (the destination is the end) rounds to r2.
@@ -1441,10 +1470,7 @@
 
   // TotalTimeDuration.
   function totalTime(t, unit) {
-    const u = unitNs(unit);
-    const q = t / u;
-    const r = t % u;
-    return NumberF(q) + NumberF(r) / NumberF(u);
+    return I.bigDiv(t, unitNs(unit));
   }
 
   // TotalRelativeDuration.
@@ -1477,12 +1503,15 @@
 
   // GetDifferenceSettings.
   function differenceSettings(since, o, group, disallowed, fallbackSmallest, defaultLargestFloor) {
-    let largest = unitOpt(o, "largestUnit", group, "auto", ["auto"]);
-    if (includes(disallowed, largest)) throw new RangeError(`${largest} isn't allowed here`);
+    // All options are read before any is validated against the unit group.
+    let largest = unitOpt(o, "largestUnit", "datetime", "auto", ["auto"]);
     const inc = roundingIncrementOpt(o);
     let mode = roundingModeOpt(o, "trunc");
     if (since) mode = negateMode(mode);
-    const smallest = unitOpt(o, "smallestUnit", group, fallbackSmallest);
+    const smallest = unitOpt(o, "smallestUnit", "datetime", fallbackSmallest);
+    checkGroup(largest, group);
+    if (includes(disallowed, largest)) throw new RangeError(`${largest} isn't allowed here`);
+    checkGroup(smallest, group);
     if (includes(disallowed, smallest)) throw new RangeError(`${smallest} isn't allowed here`);
     const defLargest = largerUnit(defaultLargestFloor, smallest);
     if (largest === "auto") largest = defLargest;
@@ -1575,8 +1604,8 @@
       return timeFromFields(f, overflow);
     }
     if (typeof item !== "string") throw new TypeError("a time must be a string or an object");
+    // A calendar annotation is allowed and ignored.
     const r = parseTimeString(item);
-    if (r.calendar !== undefined) canonCalendar(r.calendar);
     overflowOpt(getOptionsObject(options));
     return r.time;
   }
@@ -2135,6 +2164,8 @@
   // DifferencePlainDateTimeWithRounding.
   function diffDateTimeRounded(a, b, largest, inc, smallest, mode) {
     if (compareDT(a, b) === 0) return zeroInternal();
+    checkDateTime(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
+    checkDateTime(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8]);
     const d = diffDateTime(dtDate(a), dtTime(a), dtDate(b), dtTime(b), largest);
     if (smallest === "nanosecond" && inc === 1) return d;
     const dest = utcEpochNs(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8]);
@@ -2228,8 +2259,8 @@
     if (time === undefined) return zonedEpochNs(tz, date[0], date[1], date[2], [0, 0, 0, 0, 0, 0]);
     if (behaviour === "wall" || offsetOption === "ignore") return zonedEpochNs(tz, date[0], date[1], date[2], time);
     if (behaviour === "exact" || offsetOption === "use") {
-      checkDaysRange(date);
       const e = utcEpochNs(date[0], date[1], date[2], time[0], time[1], time[2], time[3], time[4], time[5]) - BigIntF(offNs);
+      if (babs(bdiv(e, NS_PER_DAY)) > 100000000n) throw new RangeError("the date is out of range");
       checkEpochNs(e);
       return e;
     }
@@ -2389,6 +2420,7 @@
       }
       const t1 = d1.time + BigIntF(days1) * NS_PER_DAY;
       const t2 = d2.time + BigIntF(days2) * NS_PER_DAY;
+      if (babs(t1) >= MAX_TIME || babs(t2) >= MAX_TIME) throw new RangeError("the duration is out of range");
       return t1 < t2 ? -1 : t1 > t2 ? 1 : 0;
     }
     get years() { return slots(this, DURATION)[0]; }
@@ -2495,6 +2527,8 @@
         const tg = plainTarget(r, rel.plain);
         const a = tg[0], b = tg[1];
         if (compareDT(a, b) === 0) return 0;
+        checkDateTime(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
+        checkDateTime(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8]);
         const d = diffDateTime(dtDate(a), dtTime(a), dtDate(b), dtTime(b), unit);
         if (unit === "nanosecond") return NumberF(d.time);
         const dest = utcEpochNs(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8]);
@@ -2569,12 +2603,12 @@
     if (typeof v !== "string") throw new TypeError("an instant must be a string or an object");
     const r = parseDateTime(v);
     if (r.time === undefined || (!r.z && r.offset === undefined)) throw new RangeError("an instant needs a UTC offset");
-    if (r.calendar !== undefined) canonCalendar(r.calendar);
     const off = r.z ? 0 : r.offset.ns;
     const t = r.time;
     const local = utcEpochNs(r.date[0], r.date[1], r.date[2], t[0], t[1], t[2], t[3], t[4], t[5]);
-    checkDaysRange(r.date);
     const ns = local - BigIntF(off);
+    // CheckISODaysRange on the UTC (balanced) date.
+    if (babs(bdiv(ns, NS_PER_DAY)) > 100000000n) throw new RangeError("the date is out of range");
     checkEpochNs(ns);
     return ns;
   }
@@ -2639,7 +2673,7 @@
       const mode = roundingModeOpt(o, "halfExpand");
       const unit = unitOpt(o, "smallestUnit", "time", "required");
       validateIncrement(inc, INSTANT_MAX[unit], true);
-      return makeInstant(roundBig(ns, unitNs(unit) * BigIntF(inc), mode));
+      return makeInstant(roundBigPositive(ns, unitNs(unit) * BigIntF(inc), mode));
     }
     equals(other) {
       const ns = slots(this, INSTANT)[0];
@@ -2650,12 +2684,13 @@
       const o = getOptionsObject(options);
       const digits = fractionalDigitsOpt(o);
       const mode = roundingModeOpt(o, "trunc");
-      const smallest = unitOpt(o, "smallestUnit", "time", undefined);
+      const smallest = unitOpt(o, "smallestUnit", "datetime", undefined);
       let tz = o.timeZone;
+      checkGroup(smallest === undefined ? "auto" : smallest, "time");
       if (smallest === "hour") throw new RangeError("smallestUnit can't be hour here");
       if (tz !== undefined) tz = toTimeZone(tz);
       const pr = precisionRecord(smallest, digits);
-      const rounded = roundBig(ns, unitNs(pr.unit) * BigIntF(pr.increment), mode);
+      const rounded = roundBigPositive(ns, unitNs(pr.unit) * BigIntF(pr.increment), mode);
       checkEpochNs(rounded);
       return instantToString(rounded, tz, pr.precision);
     }
@@ -2763,7 +2798,7 @@
   }
 
   function zonedToString(z, precision, showCal, showTz, showOffset, inc, unit, mode) {
-    const ns = roundBig(z[0], unitNs(unit) * BigIntF(inc), mode);
+    const ns = roundBigPositive(z[0], unitNs(unit) * BigIntF(inc), mode);
     checkEpochNs(ns);
     const a = zonedDateTime(z[1], ns);
     let s = dateTimeToString(a, "iso8601", precision, "never");
@@ -2910,9 +2945,10 @@
       const digits = fractionalDigitsOpt(o);
       const showOffset = showOffsetOpt(o);
       const mode = roundingModeOpt(o, "trunc");
-      const smallest = unitOpt(o, "smallestUnit", "time", undefined);
-      if (smallest === "hour") throw new RangeError("smallestUnit can't be hour here");
+      const smallest = unitOpt(o, "smallestUnit", "datetime", undefined);
       const showTz = timeZoneNameOpt(o);
+      checkGroup(smallest === undefined ? "auto" : smallest, "time");
+      if (smallest === "hour") throw new RangeError("smallestUnit can't be hour here");
       const pr = precisionRecord(smallest, digits);
       return zonedToString(z, pr.precision, showCal, showTz, showOffset, pr.increment, pr.unit, mode);
     }
@@ -3121,15 +3157,12 @@
     let r = toDurationRecord(like);
     if (sign < 0) r = negateRecord(r);
     const overflow = overflowOpt(getOptionsObject(options));
-    const dsign = durationSign(r);
-    let date = [s[0], s[1], 1];
-    if (dsign < 0) {
-      const next = dateAdd(date, [0, 1, 0, 0], "constrain");
-      date = addDays(next, -1);
-    }
-    const dd = dateDurationOf(r);
-    const added = dateAdd(date, dd, overflow);
-    return makeYearMonth([added[0], added[1], 1], s[3]);
+    void overflow;
+    // Units below months can't be added to a year-month.
+    for (let i = 2; i < 10; i++) if (r[i] !== 0) throw new RangeError("only years and months can be added");
+    checkDate(s[0], s[1], 1);
+    const ym = balanceYearMonth(s[0] + r[0], s[1] + r[1]);
+    return makeYearMonth([ym.year, ym.month, 1], s[3]);
   }
 
   function diffYearMonths(since, o, other, options) {
@@ -3140,6 +3173,8 @@
     const a = [s[0], s[1], 1];
     const bb = [b[0][0], b[0][1], 1];
     if (compareDate([s[0], s[1], s[2]], b[0]) === 0) return makeDuration([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    checkDate(a[0], a[1], a[2]);
+    checkDate(bb[0], bb[1], bb[2]);
     const dd = dateUntil(a, bb, st.largest);
     let d = { date: [dd[0], dd[1], 0, 0], time: 0n };
     if (st.smallest !== "month" || st.inc !== 1) {
@@ -3159,11 +3194,8 @@
 
   // CalendarMonthDayFromFields (ISO): [1972, month, day].
   function monthDayFromFields(f, overflow) {
-    if (f.monthCode === undefined && f.month !== undefined && f.year === undefined) {
-      throw new TypeError("year or monthCode is required with month");
-    }
-    const m = resolveMonth(f);
     if (f.day === undefined) throw new TypeError("day is required");
+    const m = resolveMonth(f);
     const y = f.year === undefined ? 1972 : f.year;
     const d = regulateDate(y, m, f.day, overflow);
     return [1972, d.month, d.day];
@@ -3186,8 +3218,7 @@
     const r = parseMonthDayString(item);
     const cal = r.calendar === undefined ? "iso8601" : canonCalendar(r.calendar);
     overflowOpt(getOptionsObject(options));
-    if (r.date[0] === undefined) return [[1972, r.date[1], r.date[2]], cal];
-    checkDate(r.date[0], r.date[1], r.date[2]);
+    // Only the month and day of the string count (its year may be out of range).
     return [[1972, r.date[1], r.date[2]], cal];
   }
 
