@@ -59,9 +59,12 @@ Windows, macOS and Linux. Every web-platform component is ours.
    panics and show "BannedBrowser hit a snag".
 5. **The UI thread never blocks** on network, parsing or layout. Each tab runs its `Page` on a
    worker thread (`crates/bannedbrowser/src/tab.rs`); `Page` is not `Send` (it uses `Rc`).
-6. **Engine crates contain no OS-specific code.**
-   - OS code lives in `crates/bannedbrowser`, and OS video decoding in `crates/bb-media-os`,
-     behind `#[cfg(target_os = ...)]`.
+6. **OS-specific code is allowed in any crate** (maintainer, 2026-11-23), e.g. `bb-js` asking
+   the OS for its time zone.
+   - Keep it behind `#[cfg(...)]` in small functions with a portable fallback, so every crate
+     still builds and passes its tests on Linux, Windows and macOS.
+   - The browser's windowing and input code stays in `crates/bannedbrowser`, OS video decoding
+     in `crates/bb-media-os`.
    - Use Cmd on macOS and Ctrl elsewhere. Get HiDPI from `scale_factor()`.
 7. **Original branding only:**
    - Data files maintained by others are fine when their licence allows it and they are used

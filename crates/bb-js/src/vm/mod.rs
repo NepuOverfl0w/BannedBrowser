@@ -159,9 +159,8 @@ pub struct Vm {
     pub(crate) module_async_count: u64,
     /// Emptied operand stacks of returned frames, for the next calls.
     stack_pool: Vec<Vec<Value>>,
-    /// The host's time zone (a primary tz database identifier or "UTC"), for Date's local
-    /// time and Temporal.Now. The engine has no OS code (AGENTS.md rule 6): hosts find the
-    /// system's zone and call `set_time_zone`; until then it is UTC.
+    /// The time zone (a primary tz database identifier or "UTC") for Date's local time and
+    /// Temporal.Now: the system's, unless the host calls `set_time_zone`.
     time_zone: String,
     /// Its database entry, cached for Date's LocalTime and UTC.
     local_zone: Option<Option<&'static tz::Zone>>,
@@ -213,7 +212,7 @@ impl Vm {
             loader: None,
             module_async_count: 0,
             stack_pool: Vec::new(),
-            time_zone: "UTC".to_string(),
+            time_zone: tz::system_zone().to_string(),
             local_zone: None,
             name_keys: HashMap::default(),
             output: Vec::new(),

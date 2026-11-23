@@ -8,7 +8,7 @@
 //! `$262.agent` runs each agent on its own thread with its own VM; SharedArrayBuffers
 //! share their Shared Data Block across them.
 //!
-//! The VM's time zone is UTC, or the tz database name in `TZ`: the tests must pass in any.
+//! The VM's time zone is the system's (`TZ` overrides it): the tests must pass in any.
 //! `FLOOR` only ever goes up.
 //!
 //! `cargo test -p bb-js --test test262_exec -- --nocapture` prints the numbers; failures go to
@@ -323,10 +323,6 @@ fn run_variant(
     cache: &mut HashMap<String, String>,
 ) -> Result<(), String> {
     let mut vm = Vm::new();
-    // The host's time zone: UTC, or TZ (tests must pass in any zone).
-    if let Ok(tz) = std::env::var("TZ") {
-        vm.set_time_zone(&tz);
-    }
     install_262(&mut vm);
     HUB.with(|h| {
         *h.borrow_mut() = Some(Arc::new(Hub {

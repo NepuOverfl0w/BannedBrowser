@@ -393,9 +393,97 @@ fn day_of(year: i64, d: RuleDate) -> i64 {
     }
 }
 
+/// The OS's time zone as a primary identifier (SystemTimeZoneIdentifier): the `TZ`
+/// variable, else what the OS says, else "UTC". Asked once per process.
+pub fn system_zone() -> &'static str {
+    static ZONE: OnceLock<&'static str> = OnceLock::new();
+    ZONE.get_or_init(|| {
+        let named = |n: &str| {
+            let n = n.trim().trim_start_matches(':');
+            // A path into a zoneinfo directory names the zone after it.
+            let n = n.rsplit_once("zoneinfo/").map_or(n, |x| x.1);
+            lookup(n).map(|x| x.1)
+        };
+        std::env::var("TZ")
+            .ok()
+            .and_then(|t| named(&t))
+            .or_else(|| os_zone().and_then(|t| named(&t)))
+            .unwrap_or("UTC")
+    })
+}
+
+/// Unix: /etc/localtime links into the zoneinfo directory (Linux, the BSDs, macOS);
+/// Debian-style systems also name the zone in /etc/timezone.
+#[cfg(unix)]
+fn os_zone() -> Option<String> {
+    if let Ok(p) = std::fs::read_link("/etc/localtime") {
+        let p = p.to_string_lossy().into_owned();
+        if p.contains("zoneinfo/") {
+            return Some(p);
+        }
+    }
+    std::fs::read_to_string("/etc/timezone").ok()
+}
+
+/// Windows: its ICU (icu.dll, Windows 10 1903 and later) maps the system's zone to an IANA
+/// name. It's loaded at run time, so older systems fall back to UTC rather than fail to start.
+#[cfg(windows)]
+fn os_zone() -> Option<String> {
+    use std::ffi::{c_char, c_void};
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
+    }
+    // ICU's `int32_t ucal_getDefaultTimeZone(UChar *result, int32_t capacity, UErrorCode *ec)`.
+    type GetDefault = unsafe extern "C" fn(*mut u16, i32, *mut i32) -> i32;
+    let lib: Vec<u16> = "icu.dll\0".encode_utf16().collect();
+    // SAFETY: `lib` is a NUL-terminated UTF-16 string that outlives the call.
+    let m = unsafe { LoadLibraryW(lib.as_ptr()) };
+    if m.is_null() {
+        return None;
+    }
+    // SAFETY: `m` is a module handle LoadLibraryW returned (never freed); the name is a
+    // NUL-terminated ASCII string.
+    let f = unsafe { GetProcAddress(m, c"ucal_getDefaultTimeZone".as_ptr()) };
+    if f.is_null() {
+        return None;
+    }
+    // SAFETY: icu.dll exports ucal_getDefaultTimeZone with exactly this C signature.
+    let f = unsafe { std::mem::transmute::<*mut c_void, GetDefault>(f) };
+    let mut buf = [0u16; 128];
+    let mut ec = 0i32;
+    // SAFETY: `buf` has room for the capacity passed and `ec` is a valid out-pointer; ICU
+    // writes at most `capacity` units and reports overflow in `ec`.
+    let n = unsafe { f(buf.as_mut_ptr(), buf.len() as i32, &mut ec) };
+    // UErrorCode: > 0 is a failure.
+    if ec > 0 || n <= 0 || n as usize > buf.len() {
+        return None;
+    }
+    Some(String::from_utf16_lossy(&buf[..n as usize]))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn os_zone() -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_zone_is_known() {
+        assert!(lookup(system_zone()).is_some());
+    }
+
+    /// Windows 10 1903+ (every CI runner) has icu.dll; this checks the FFI really answers.
+    #[cfg(windows)]
+    #[test]
+    fn windows_icu_names_a_zone() {
+        let z = os_zone().expect("icu.dll reports a zone");
+        assert!(lookup(&z).is_some(), "{z}");
+    }
 
     fn at(y: i64, m: i64, d: i64, h: i64, mi: i64) -> i64 {
         days_from_civil(y, m, d) * 86400 + h * 3600 + mi * 60
