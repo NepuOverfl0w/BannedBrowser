@@ -127,7 +127,7 @@ pub(super) fn install(vm: &mut Vm) {
         };
         Ok(Value::String(s[a.min(b)..b.max(a)].into()))
     });
-    helper(vm, i, "toPrimitive", |vm, c| {
+    helper(vm, i, "toPrimitiveValue", |vm, c| {
         let hint = match c.arg(1) {
             Value::String(s) if s.iter().copied().eq("string".encode_utf16()) => {
                 super::super::ops::Hint::String

@@ -87,7 +87,7 @@
   // ToPrimitiveAndRequireString.
   function toPrimitiveString(v) {
     let p = v;
-    if (isObject(v)) p = I.toPrimitive(v, "string");
+    if (isObject(v)) p = I.toPrimitiveValue(v, "string");
     if (typeof p !== "string") throw new TypeError("the value must be a string");
     return p;
   }
@@ -552,7 +552,7 @@
     p.i++;
     const h = digits(p, 2);
     if (h === undefined || h > 23) fail(p.s);
-    let mi = 0, s = 0, f = 0;
+    let mi = 0, s = 0, f = 0, secs = false;
     const colon = at(p, ":");
     if (colon) p.i++;
     const m2 = digits(p, 2);
@@ -563,6 +563,7 @@
       mi = m2;
       if (colon ? at(p, ":") : p.i < p.n && isDigit(peek(p))) {
         if (minutesOnly) fail(p.s);
+        secs = true;
         if (colon) p.i++;
         const s2 = digits(p, 2);
         if (s2 === undefined || s2 > 59) fail(p.s);
@@ -572,7 +573,8 @@
       }
     }
     const ns = ((h * 60 + mi) * 60 + s) * 1e9 + f;
-    return { ns: c === 45 ? -ns : ns, text: sub(p.s, start, p.i), hasSubMinute: s !== 0 || f !== 0 };
+    // A seconds part, even :00, isn't allowed in a time zone (hasSubMinute).
+    return { ns: c === 45 ? -ns : ns, text: sub(p.s, start, p.i), hasSubMinute: secs };
   }
 
   const isAlpha = (c) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
@@ -1339,7 +1341,7 @@
     const ed = dateAdd(date, end, "constrain");
     const startNs = epochOf(sd, time, tz);
     const endNs = epochOf(ed, time, tz);
-    if (sign === 1 ? (startNs > dest || dest >= endNs) : (startNs < dest || dest <= endNs)) {
+    if (sign === 1 ? (startNs > dest || dest > endNs) : (startNs < dest || dest < endNs)) {
       throw new RangeError("the duration can't be rounded relative to this date");
     }
     const num = babs(dest - startNs);
@@ -1347,7 +1349,8 @@
     const total = r1 + (NumberF(num) / NumberF(den)) * inc * sign;
     const um = unsignedMode(mode, sign < 0);
     const r1Even = mod(abs(r1) / inc, 2) === 0;
-    const expand = pickR2(num, den, um, r1Even);
+    // progress = 1 (the destination is the end) rounds to r2.
+    const expand = num === den || pickR2(num, den, um, r1Even);
     return {
       duration: { date: expand ? end : start, time: 0n },
       nudged: expand ? endNs : startNs,
@@ -1459,7 +1462,7 @@
     const timeSign = bsign(time);
     const dateSign = compareDate(d2, d1);
     let adj = d2;
-    if (timeSign === dateSign && timeSign !== 0) {
+    if (timeSign === -dateSign && timeSign !== 0) {
       adj = addDays(adj, timeSign);
       time -= BigIntF(timeSign) * NS_PER_DAY;
     }
@@ -2549,7 +2552,7 @@
   }
 
   function toBigIntValue(v) {
-    const p = isObject(v) ? I.toPrimitive(v, "number") : v;
+    const p = isObject(v) ? I.toPrimitiveValue(v, "number") : v;
     if (typeof p === "number") throw new TypeError("a BigInt is required");
     return BigIntF(p);
   }
@@ -2561,7 +2564,7 @@
       const b = brand(v);
       if (b === INSTANT) return slots(v, INSTANT)[0];
       if (b === ZONED) return slots(v, ZONED)[0];
-      v = I.toPrimitive(v, "string");
+      v = I.toPrimitiveValue(v, "string");
     }
     if (typeof v !== "string") throw new TypeError("an instant must be a string or an object");
     const r = parseDateTime(v);
