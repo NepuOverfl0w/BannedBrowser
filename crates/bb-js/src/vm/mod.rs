@@ -30,6 +30,7 @@ pub mod promise;
 mod proxy;
 pub mod realm;
 pub mod regex;
+mod shadow;
 pub mod typed;
 pub mod value;
 
@@ -430,11 +431,15 @@ impl Vm {
         let Value::Object(fo) = f else {
             return self.type_error("not a function");
         };
+        // enter_closure switches to the callee's realm; the caller's comes back after.
+        let saved = self.cur_realm;
         match self.begin_call(*fo, this, args, None)? {
             Some(v) => Ok(v),
             None => {
                 let frame = self.frames.pop().expect("pushed frame");
-                self.execute(frame)
+                let r = self.execute(frame);
+                self.switch_realm(saved);
+                r
             }
         }
     }
@@ -442,11 +447,14 @@ impl Vm {
     /// Construct (§7.3.15).
     pub fn construct(&mut self, f: ObjRef, args: Vec<Value>, new_target: Option<ObjRef>) -> JsResult<Value> {
         let nt = new_target.unwrap_or(f);
+        let saved = self.cur_realm;
         match self.begin_call(f, Value::Undefined, args, Some(nt))? {
             Some(v) => Ok(v),
             None => {
                 let frame = self.frames.pop().expect("pushed frame");
-                self.execute(frame)
+                let r = self.execute(frame);
+                self.switch_realm(saved);
+                r
             }
         }
     }

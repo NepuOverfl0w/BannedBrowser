@@ -120,6 +120,7 @@ realm_objects!(
     suppressed_error_proto,
     disposable_stack_proto,
     async_disposable_stack_proto,
+    shadow_realm_proto,
     set_iterator_proto,
     eval,
     throw_type_error,

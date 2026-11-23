@@ -45,6 +45,7 @@ pub(super) fn install(vm: &mut Vm) {
     super::promise::install(vm);
     install_aggregate_error(vm);
     super::dispose::install(vm);
+    super::shadow::install(vm);
     regexp::install(vm);
     collections::install(vm);
     json::install(vm);
