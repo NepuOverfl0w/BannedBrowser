@@ -102,3 +102,15 @@ fn syntax_errors_and_uncaught_exceptions_reach_the_host() {
     let (mut vm, r) = run("throw new TypeError('nope')");
     assert_eq!(vm.describe(&r.unwrap_err()), "TypeError: nope");
 }
+
+#[test]
+fn binary_operator_precedence() {
+    assert_eq!(number("1 + 2 * 3"), 7.0);
+    assert_eq!(number("10 - 6 / 2"), 7.0);
+    assert_eq!(number("var a = 2019, b = 5; a - b * 400"), 19.0);
+    assert_eq!(number("1 + 2 % 2"), 1.0);
+    assert_eq!(number("2 ** 3 ** 2"), 512.0);
+    assert_eq!(number("10 - 2 - 3"), 5.0);
+    assert_eq!(number("1 << 2 + 1"), 8.0);
+    assert_eq!(number("1 | 2 & 3 ^ 4 === 4 ? 1 : 0"), 1.0);
+}

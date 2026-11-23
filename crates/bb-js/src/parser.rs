@@ -2603,7 +2603,7 @@ impl Parser {
         };
         let mut chain: Option<&'static str> = None;
         while let Some((op, prec)) = self.binary_prec(no_in) {
-            if prec < min || (prec == min && op != "**") {
+            if prec < min {
                 break;
             }
             if op == "**" {
