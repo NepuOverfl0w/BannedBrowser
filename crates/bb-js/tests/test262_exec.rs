@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 43_525;
+const FLOOR: usize = 43_611;
 
 /// Instructions per test variant before it counts as hung (TEST262_FUEL overrides it
 /// for experiments). The heaviest legitimate tests, the generated RegExp property-escape

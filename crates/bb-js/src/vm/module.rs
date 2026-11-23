@@ -30,6 +30,8 @@ pub struct ModuleRecord {
     pub error: Option<Value>,
     pub env: Option<EnvRef>,
     pub namespace: Option<ObjRef>,
+    /// The deferred namespace (`import defer`, import-defer proposal).
+    pub deferred_ns: Option<ObjRef>,
     pub meta: Option<ObjRef>,
     /// specifier → module id
     pub loaded: Vec<(String, usize)>,
@@ -41,6 +43,7 @@ impl ModuleRecord {
     pub fn trace(&self, roots: &mut Roots) {
         roots.envs.extend(self.env);
         roots.objects.extend(self.namespace);
+        roots.objects.extend(self.deferred_ns);
         roots.objects.extend(self.meta);
         if let Some(e) = &self.error {
             roots.values.push(e.clone());
@@ -108,6 +111,7 @@ impl Vm {
             error: None,
             env: None,
             namespace: None,
+            deferred_ns: None,
             meta: None,
             loaded: Vec::new(),
             eval_promise: None,
@@ -301,7 +305,8 @@ impl Vm {
             let m = self.child(id, &ie.request);
             match &ie.import_name {
                 None => {
-                    let ns = self.module_namespace(m)?;
+                    let ns =
+                        if ie.deferred { self.deferred_namespace(m)? } else { self.module_namespace(m)? };
                     self.heap.env_mut(env).bindings.insert(
                         ie.local.clone(),
                         Binding {
@@ -380,7 +385,17 @@ impl Vm {
 
     /// GetModuleNamespace (§16.2.1.10).
     fn module_namespace(&mut self, id: usize) -> JsResult<ObjRef> {
-        if let Some(ns) = self.modules[id].namespace {
+        self.namespace_object(id, false)
+    }
+
+    /// GetModuleNamespace(module, defer) (import-defer).
+    fn deferred_namespace(&mut self, id: usize) -> JsResult<ObjRef> {
+        self.namespace_object(id, true)
+    }
+
+    fn namespace_object(&mut self, id: usize, deferred: bool) -> JsResult<ObjRef> {
+        let cached = if deferred { self.modules[id].deferred_ns } else { self.modules[id].namespace };
+        if let Some(ns) = cached {
             return Ok(ns);
         }
         let mut names: Vec<JsString> = self
@@ -389,12 +404,17 @@ impl Vm {
             .filter(|n| matches!(self.resolve_export(id, n, &mut Vec::new()), Resolution::Found(..)))
             .collect();
         names.sort_by(|a, b| a[..].cmp(&b[..]));
-        let ns = self.heap.alloc(Object::new(None, Kind::ModuleNamespace(id, names)));
+        let ns = self.heap.alloc(Object::new(None, Kind::ModuleNamespace(id, names, deferred)));
         let tag = PropKey::Sym(self.realm.sym_to_string_tag.clone());
         let o = self.heap.obj_mut(ns);
-        o.props.insert(tag, Prop::data(Value::str("Module"), false, false, false));
+        let label = if deferred { "Deferred Module" } else { "Module" };
+        o.props.insert(tag, Prop::data(Value::str(label), false, false, false));
         o.extensible = false;
-        self.modules[id].namespace = Some(ns);
+        if deferred {
+            self.modules[id].deferred_ns = Some(ns);
+        } else {
+            self.modules[id].namespace = Some(ns);
+        }
         Ok(ns)
     }
 
@@ -402,8 +422,104 @@ impl Vm {
 
     fn ns_names(&self, o: ObjRef) -> Option<(usize, &[JsString])> {
         match &self.heap.obj(o).kind {
-            Kind::ModuleNamespace(id, names) => Some((*id, names)),
+            Kind::ModuleNamespace(id, names, _) => Some((*id, names)),
             _ => None,
+        }
+    }
+
+    /// IsSymbolLikeNamespaceKey: symbols, and `then` of a deferred namespace.
+    fn ns_symbol_like(&self, o: ObjRef, k: &PropKey) -> bool {
+        match k {
+            PropKey::Sym(_) => true,
+            _ => matches!(self.heap.obj(o).kind, Kind::ModuleNamespace(_, _, true)) && k.is_str("then"),
+        }
+    }
+
+    /// GetModuleExportsList's evaluation step: a deferred namespace evaluates its module
+    /// synchronously on first use (ReadyForSyncExecution, EvaluateSync).
+    fn ns_trigger(&mut self, o: ObjRef) -> JsResult<()> {
+        let Kind::ModuleNamespace(id, _, true) = self.heap.obj(o).kind else { return Ok(()) };
+        if self.modules[id].status == Status::Evaluated {
+            return match self.modules[id].error.clone() {
+                Some(e) => Err(e),
+                None => Ok(()),
+            };
+        }
+        if !self.ready_for_sync(id, &mut Vec::new()) {
+            return self.type_error("the deferred module can't be evaluated synchronously now");
+        }
+        self.evaluate_sync(id)
+    }
+
+    /// ReadyForSyncExecution (import-defer).
+    fn ready_for_sync(&self, id: usize, seen: &mut Vec<usize>) -> bool {
+        if seen.contains(&id) {
+            return true;
+        }
+        seen.push(id);
+        let m = &self.modules[id];
+        if m.status == Status::Evaluated {
+            return true;
+        }
+        if m.status == Status::Evaluating || m.eval_promise.is_some() {
+            return false;
+        }
+        if m.code.module.as_ref().is_some_and(|i| i.has_tla) {
+            return false;
+        }
+        let deferred = self.module_info(id).deferred.clone();
+        m.loaded.iter().filter(|(s, _)| !deferred.contains(s)).all(|(_, c)| self.ready_for_sync(*c, seen))
+    }
+
+    /// EvaluateSync: run the module's (synchronous) graph now; its error, if any, throws.
+    fn evaluate_sync(&mut self, id: usize) -> JsResult<()> {
+        let mut order = Vec::new();
+        self.eval_order(id, &mut Vec::new(), &mut order);
+        for m in order {
+            if self.modules[m].status == Status::Evaluated {
+                if let Some(e) = self.modules[m].error.clone() {
+                    return Err(e);
+                }
+                continue;
+            }
+            let dep_error = self.modules[m].loaded.iter().find_map(|(_, c)| self.modules[*c].error.clone());
+            if let Some(e) = dep_error {
+                self.modules[m].status = Status::Evaluated;
+                self.modules[m].error = Some(e.clone());
+                return Err(e);
+            }
+            self.modules[m].status = Status::Evaluating;
+            let code = self.modules[m].code.clone();
+            let env = self.modules[m].env.expect("linked module");
+            let frame = self.frame(code, env, env);
+            let r = self.execute(frame);
+            self.modules[m].status = Status::Evaluated;
+            if let Err(e) = r {
+                if !self.terminated {
+                    self.modules[m].error = Some(e.clone());
+                }
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// GatherAsynchronousTransitiveDependencies: the modules with top-level await a
+    /// deferred import still evaluates eagerly.
+    fn gather_async(&self, id: usize, seen: &mut Vec<usize>, out: &mut Vec<usize>) {
+        if seen.contains(&id) || self.modules[id].status == Status::Evaluated {
+            return;
+        }
+        seen.push(id);
+        if self.modules[id].code.module.as_ref().is_some_and(|i| i.has_tla) {
+            out.push(id);
+            return;
+        }
+        let deferred = self.module_info(id).deferred.clone();
+        for (s, c) in &self.modules[id].loaded {
+            if !deferred.contains(s) {
+                self.gather_async(*c, seen, out);
+            }
         }
     }
 
@@ -421,7 +537,7 @@ impl Vm {
 
     /// [[Get]] of an export: the binding's current value (TDZ → ReferenceError).
     pub(super) fn ns_get(&mut self, o: ObjRef, k: &PropKey) -> JsResult<Value> {
-        if let PropKey::Sym(_) = k {
+        if self.ns_symbol_like(o, k) {
             return Ok(self
                 .heap
                 .obj(o)
@@ -430,6 +546,7 @@ impl Vm {
                 .and_then(|p| if let Slot::Data(v) = &p.slot { Some(v.clone()) } else { None })
                 .unwrap_or_default());
         }
+        self.ns_trigger(o)?;
         if !self.ns_has_export(o, k) {
             return Ok(Value::Undefined);
         }
@@ -446,9 +563,10 @@ impl Vm {
     }
 
     pub(super) fn ns_get_own(&mut self, o: ObjRef, k: &PropKey) -> JsResult<Option<PropDesc>> {
-        if let PropKey::Sym(_) = k {
+        if self.ns_symbol_like(o, k) {
             return Ok(self.heap.obj(o).props.get(k).map(PropDesc::from_prop));
         }
+        self.ns_trigger(o)?;
         if !self.ns_has_export(o, k) {
             return Ok(None);
         }
@@ -457,7 +575,7 @@ impl Vm {
     }
 
     pub(super) fn ns_define(&mut self, o: ObjRef, k: PropKey, d: PropDesc) -> JsResult<bool> {
-        if let PropKey::Sym(_) = &k {
+        if self.ns_symbol_like(o, &k) {
             let cur = self.heap.obj(o).props.get(&k).map(PropDesc::from_prop);
             let obj = self.heap.obj_mut(o);
             return Ok(super::object::validate_and_apply(Some(&mut obj.props), &k, false, &d, cur.as_ref()));
@@ -476,31 +594,34 @@ impl Vm {
         Ok(true)
     }
 
-    pub(super) fn ns_has(&self, o: ObjRef, k: &PropKey) -> bool {
-        if let PropKey::Sym(_) = k {
-            return self.heap.obj(o).props.contains(k);
+    pub(super) fn ns_has(&mut self, o: ObjRef, k: &PropKey) -> JsResult<bool> {
+        if self.ns_symbol_like(o, k) {
+            return Ok(self.heap.obj(o).props.contains(k));
         }
-        self.ns_has_export(o, k)
+        self.ns_trigger(o)?;
+        Ok(self.ns_has_export(o, k))
     }
 
-    pub(super) fn ns_delete(&mut self, o: ObjRef, k: &PropKey) -> bool {
-        if let PropKey::Sym(_) = k {
+    pub(super) fn ns_delete(&mut self, o: ObjRef, k: &PropKey) -> JsResult<bool> {
+        if self.ns_symbol_like(o, k) {
             let configurable = self.heap.obj(o).props.get(k).is_none_or(|p| p.configurable);
             if configurable {
                 self.heap.obj_mut(o).props.remove(k);
             }
-            return configurable;
+            return Ok(configurable);
         }
-        !self.ns_has_export(o, k)
+        self.ns_trigger(o)?;
+        Ok(!self.ns_has_export(o, k))
     }
 
-    pub(super) fn ns_keys(&self, o: ObjRef) -> Vec<PropKey> {
+    pub(super) fn ns_keys(&mut self, o: ObjRef) -> JsResult<Vec<PropKey>> {
+        self.ns_trigger(o)?;
         let mut out: Vec<PropKey> = self
             .ns_names(o)
             .map(|(_, n)| n.iter().map(|s| PropKey::from_js(s.clone())).collect())
             .unwrap_or_default();
         out.extend(self.heap.obj(o).props.keys());
-        out
+        Ok(out)
     }
 
     // ---- evaluation ----
@@ -547,13 +668,36 @@ impl Vm {
         Ok(Value::Object(p))
     }
 
+    /// Evaluate several modules' graphs in order, as one promise.
+    fn evaluate_list(&mut self, ids: &[usize]) -> JsResult<Value> {
+        let p = self.new_promise(None);
+        let (resolve, reject) = self.create_resolving_functions(p);
+        let mut order = Vec::new();
+        let mut seen = Vec::new();
+        for &id in ids {
+            self.eval_order(id, &mut seen, &mut order);
+        }
+        self.continue_eval(PendingEval { order, next: 0, resolve, reject })?;
+        Ok(Value::Object(p))
+    }
+
     fn eval_order(&self, id: usize, seen: &mut Vec<usize>, order: &mut Vec<usize>) {
         if seen.contains(&id) || self.modules[id].status == Status::Evaluated {
             return;
         }
         seen.push(id);
-        for (_, c) in &self.modules[id].loaded {
-            self.eval_order(*c, seen, order);
+        let deferred = self.module_info(id).deferred.clone();
+        for (s, c) in &self.modules[id].loaded {
+            if deferred.contains(s) {
+                // A deferred import evaluates only its asynchronous dependencies now.
+                let mut asyncs = Vec::new();
+                self.gather_async(*c, &mut Vec::new(), &mut asyncs);
+                for a in asyncs {
+                    self.eval_order(a, seen, order);
+                }
+            } else {
+                self.eval_order(*c, seen, order);
+            }
         }
         order.push(id);
     }
@@ -632,6 +776,12 @@ impl Vm {
 
     /// `import(specifier, options)` (§13.3.10.1): always a promise.
     pub(super) fn dynamic_import(&mut self, spec: Value, opts: Value) -> Value {
+        self.dynamic_import_phase(spec, opts, false)
+    }
+
+    /// `import(spec)`, or `import.defer(spec)` (`deferred`): that one evaluates only the
+    /// module's asynchronous dependencies and resolves to the deferred namespace.
+    pub(super) fn dynamic_import_phase(&mut self, spec: Value, opts: Value, deferred: bool) -> Value {
         let p = self.new_promise(None);
         let (resolve, reject) = self.create_resolving_functions(p);
         let r = (|| -> JsResult<(usize, Value)> {
@@ -661,7 +811,13 @@ impl Vm {
             let id = self.host_load(&to_rust(&s), referrer.as_deref())?;
             self.load_graph(id)?;
             self.link(id)?;
-            let ep = self.evaluate(id)?;
+            let ep = if deferred {
+                let mut asyncs = Vec::new();
+                self.gather_async(id, &mut Vec::new(), &mut asyncs);
+                self.evaluate_list(&asyncs)?
+            } else {
+                self.evaluate(id)?
+            };
             Ok((id, ep))
         })();
         match r {
@@ -677,7 +833,7 @@ impl Vm {
                     1,
                     import_fulfilled,
                     false,
-                    vec![resolve, Value::Number(id as f64), reject.clone()],
+                    vec![resolve, Value::Number(id as f64), reject.clone(), Value::Bool(deferred)],
                 );
                 if let Value::Object(po) = ep {
                     self.perform_then(po, Value::Object(ful), reject, None);
@@ -739,7 +895,12 @@ fn module_rejected(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
 fn import_fulfilled(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let s = slots(vm, c.callee);
     let Value::Number(id) = s[1] else { return Ok(Value::Undefined) };
-    match vm.module_namespace(id as usize) {
+    let ns = if matches!(s.get(3), Some(Value::Bool(true))) {
+        vm.deferred_namespace(id as usize)
+    } else {
+        vm.module_namespace(id as usize)
+    };
+    match ns {
         Ok(ns) => vm.call(&s[0], Value::Undefined, vec![Value::Object(ns)])?,
         Err(e) => vm.call(&s[2], Value::Undefined, vec![e])?,
     };

@@ -236,6 +236,8 @@ pub enum Op {
     ImportCall,
     /// `import.source(…)`: a source text module has no source phase (§16.2.1.7).
     ImportSourceCall,
+    /// `[spec opts] → [promise]`: `import.defer(spec)`.
+    ImportDeferCall,
     ImportMeta,
     // Async functions (§27.7).
     /// First instruction of an async function: run the rest as its own run, `→ [promise]`.
@@ -354,12 +356,16 @@ pub struct ImportEntry {
     /// `None`: `import * as ns` (the namespace object).
     pub import_name: Option<JsString>,
     pub local: Rc<str>,
+    /// `import defer * as ns`: the deferred namespace.
+    pub deferred: bool,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct ModuleInfo {
     /// Module specifiers in source order, without duplicates.
     pub requests: Vec<String>,
+    /// Requests imported only with `import defer` (not evaluated with this module).
+    pub deferred: Vec<String>,
     pub imports: Vec<ImportEntry>,
     /// (export name, local binding name)
     pub local_exports: Vec<(JsString, Rc<str>)>,

@@ -1702,6 +1702,12 @@ impl Vm {
                 let p = self.dynamic_import(spec, opts);
                 self.push(p);
             }
+            Op::ImportDeferCall => {
+                let _ = self.pop();
+                let spec = self.pop();
+                let p = self.dynamic_import_phase(spec, Value::Undefined, true);
+                self.push(p);
+            }
             Op::ImportSourceCall => {
                 let _ = self.pop();
                 let spec = self.pop();

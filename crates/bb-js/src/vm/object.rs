@@ -336,7 +336,7 @@ impl Vm {
                 return self.proxy_has(c, k);
             }
             if self.is_namespace(c) {
-                return Ok(self.ns_has(c, k));
+                return self.ns_has(c, k);
             }
             if let Some(n) = self.ta_numeric(c, k) {
                 return Ok(self.ta_has(c, n));
@@ -449,7 +449,7 @@ impl Vm {
             return self.proxy_delete(o, k);
         }
         if self.is_namespace(o) {
-            return Ok(self.ns_delete(o, k));
+            return self.ns_delete(o, k);
         }
         if let Some(n) = self.ta_numeric(o, k) {
             return Ok(!self.ta_has(o, n));
@@ -524,7 +524,7 @@ impl Vm {
             return self.proxy_own_keys(o);
         }
         if self.is_namespace(o) {
-            return Ok(self.ns_keys(o));
+            return self.ns_keys(o);
         }
         if matches!(self.heap.obj(o).kind, Kind::TypedArray(_)) {
             let mut keys = self.ta_keys(o);

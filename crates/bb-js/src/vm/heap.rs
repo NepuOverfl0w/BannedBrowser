@@ -368,7 +368,7 @@ pub enum Kind {
     Async(Box<AsyncFn>),
     AsyncGen(Box<AsyncGen>),
     /// Module namespace exotic object (§10.4.6): (module id, sorted export names).
-    ModuleNamespace(usize, Vec<JsString>),
+    ModuleNamespace(usize, Vec<JsString>, bool),
     Proxy(Box<super::proxy::ProxyData>),
     IterHelper(Box<super::builtins::iterator::Helper>),
     ArrayBuffer(Box<super::typed::Buffer>),

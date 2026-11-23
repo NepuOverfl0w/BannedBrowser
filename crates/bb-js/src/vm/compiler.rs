@@ -296,10 +296,15 @@ impl<'a> Compiler<'a> {
             r
         };
         let mut export_list: Vec<(JsString, JsString)> = Vec::new();
+        let mut eager: Vec<String> = Vec::new();
         for s in body {
             match s {
                 Stmt::Import { specs, source } => {
                     let r = req(&mut info, source);
+                    if specs.is_empty() || specs.iter().any(|sp| !matches!(sp, ImportSpec::DeferNamespace(_)))
+                    {
+                        eager.push(r.clone());
+                    }
                     for sp in specs {
                         let (import_name, local) = match sp {
                             ImportSpec::Default(l) => (Some(js_str("default")), l),
@@ -313,11 +318,13 @@ impl<'a> Compiler<'a> {
                             request: r.clone(),
                             import_name,
                             local: local.as_str().into(),
+                            deferred: matches!(sp, ImportSpec::DeferNamespace(_)),
                         });
                     }
                 }
                 Stmt::ExportNamed { specs, source: Some(src), star } => {
                     let r = req(&mut info, src);
+                    eager.push(r.clone());
                     if *star && specs.is_empty() {
                         info.star_exports.push(r);
                     } else if *star {
@@ -419,6 +426,7 @@ impl<'a> Compiler<'a> {
         }
         info.has_tla = body.iter().any(stmt_has_await);
         c.code.decls = decls;
+        info.deferred = info.requests.iter().filter(|r| !eager.contains(r)).cloned().collect();
         c.code.module = Some(Box::new(info));
         if c.code.module.as_ref().is_some_and(|m| m.has_tla) {
             c.emit(Op::AsyncStart);
@@ -2157,7 +2165,7 @@ impl<'a> Compiler<'a> {
                 if *phase == "source" {
                     self.emit(Op::ImportSourceCall);
                 } else {
-                    self.emit(Op::ImportCall);
+                    self.emit(Op::ImportDeferCall);
                 }
             }
             Expr::Paren(x) => self.expr(x),
