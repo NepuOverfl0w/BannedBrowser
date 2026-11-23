@@ -54,6 +54,29 @@ pub trait Embedder {
     fn user_agent(&self) -> String {
         "Mozilla/5.0".to_string()
     }
+    /// An element's computed values (CSSOM §9 getComputedStyle), as (property, CSS text).
+    fn computed_style(&self, _doc: &Document, _node: NodeId) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    /// An element's boxes (CSSOM View §6), if it has a layout box.
+    fn box_info(&self, _doc: &Document, _node: NodeId) -> Option<BoxInfo> {
+        None
+    }
+    /// The element at a viewport point (CSSOM View §5 elementFromPoint).
+    fn element_at(&self, _doc: &Document, _x: f64, _y: f64) -> Option<NodeId> {
+        None
+    }
+}
+
+/// Layout facts about an element's box, in CSS px.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BoxInfo {
+    /// The border box (x, y, width, height) in document coordinates.
+    pub border: [f64; 4],
+    /// The padding box relative to the border box: (left border, top border, width, height).
+    pub client: [f64; 4],
+    /// The scrollable overflow size (width, height).
+    pub scroll: (f64, f64),
 }
 
 /// An event listener (DOM §2.7).
@@ -111,6 +134,10 @@ pub enum CollKind {
     ClassList(NodeRef),
     /// HTMLElement.dataset.
     Dataset(NodeRef),
+    /// Element.style (the declarations of its style attribute).
+    InlineStyle(NodeRef),
+    /// getComputedStyle's read-only declarations: (element, its computed values).
+    Computed(NodeRef, Vec<(String, String)>),
     /// HTMLSelectElement.options (its list of options).
     Options(NodeRef),
     /// HTMLFormElement.elements (its listed controls).

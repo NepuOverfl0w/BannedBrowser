@@ -1272,6 +1272,8 @@ pub fn setup_document(vm: &mut Vm, proto: ObjRef) {
         crate::attr::new_detached(vm, &h, n.doc, ns, prefix, &local)
     });
     op(vm, proto, "createEvent", 1, crate::events::create_event);
+    crate::css::setup_document_geometry(vm, proto);
+    crate::events::setup_event_handlers(vm, proto);
     op(vm, proto, "write", 0, |vm, c| crate::loader::document_write(vm, &c, false));
     op(vm, proto, "writeln", 0, |vm, c| crate::loader::document_write(vm, &c, true));
     op(vm, proto, "open", 0, |vm, c| {

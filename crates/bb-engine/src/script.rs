@@ -2,23 +2,110 @@
 //! while scripts run; the page holds it the rest of the time (styling, layout, painting) and
 //! lends it back around each task (`Page::run_scripts`).
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use bb_dom::Document;
+use bb_layout::{ImageState, LayoutTree};
 use bb_net::{Client, Request};
+use bb_style::StyleMap;
 use bb_url::Url;
 
-/// What a page's Window gets from the engine: script fetching, the clock, the viewport.
+/// What the page's style and layout need, shared with the embedder so scripts' layout
+/// queries (getComputedStyle, getBoundingClientRect, …) can style and lay out the document
+/// they hold. The page keeps it current after each layout.
+pub struct LayoutCtx {
+    pub sheets: Vec<bb_style::Sheet>,
+    pub images: HashMap<String, ImageState>,
+    pub base: Url,
+    pub config: crate::PageConfig,
+    /// The style markup `sheets` were collected from (see `crate::style_signature`).
+    pub signature: Option<String>,
+    pub client: Client,
+    /// The last query's results, by (document generation, node count).
+    cache: Option<((u64, usize), StyleMap, LayoutTree)>,
+}
+
+impl LayoutCtx {
+    pub fn new(base: Url, config: crate::PageConfig, client: Client) -> LayoutCtx {
+        LayoutCtx {
+            sheets: Vec::new(),
+            images: HashMap::new(),
+            base,
+            config,
+            signature: None,
+            client,
+            cache: None,
+        }
+    }
+
+    /// Styles and layout for `doc` as it is now (recomputed when it changed).
+    fn ensure(&mut self, doc: &Document) -> (&StyleMap, &LayoutTree) {
+        let key = (doc.generation, doc.len());
+        if self.cache.as_ref().map(|c| c.0) != Some(key) {
+            let c = &self.config;
+            let media = bb_css::MediaContext {
+                width: c.viewport.0,
+                height: c.viewport.1,
+                dark: c.prefers_dark,
+                print: false,
+                dppx: 1.0,
+            };
+            // Stylesheets as the document now has them (scripts can run before the page
+            // collected them, or add new ones).
+            let sig = crate::style_signature(doc);
+            if self.signature.as_deref() != Some(sig.as_str()) {
+                let deadline = Instant::now() + c.subresource_timeout;
+                let author = if c.no_author_styles {
+                    Vec::new()
+                } else {
+                    crate::collect_stylesheets(&self.client, doc, &self.base, &media, deadline)
+                };
+                let mut sheets = bb_style::ua_sheets(doc.quirks_mode == bb_dom::QuirksMode::Quirks);
+                sheets.push(bb_style::ua_scripting_sheet());
+                sheets.extend(author);
+                self.sheets = sheets;
+                self.signature = Some(sig);
+            }
+            let c = &self.config;
+            let env = bb_style::StyleEnv {
+                viewport: c.viewport,
+                prefers_dark: c.prefers_dark,
+                no_author_styles: c.no_author_styles,
+                min_font_size: 0.0,
+                container_margins: c.container_margins,
+            };
+            let styles = bb_style::Stylist::new(&self.sheets, media).compute(doc, &env);
+            let res = crate::PageResources { base: &self.base, images: &self.images };
+            let mut tree = bb_layout::build_tree(doc, &styles, &res, c.viewport);
+            bb_layout::layout(&mut tree);
+            self.cache = Some((key, styles, tree));
+        }
+        let c = self.cache.as_ref().expect("filled above");
+        (&c.1, &c.2)
+    }
+}
+
+/// What a page's Window gets from the engine: script fetching, the clock, the viewport,
+/// and style and layout answers.
 pub struct PageEmbedder {
     pub client: Client,
     pub page_url: Url,
     pub start: Instant,
     pub origin_ms: f64,
     pub viewport: Cell<(f64, f64)>,
+    pub layout: Rc<RefCell<LayoutCtx>>,
 }
 
 impl PageEmbedder {
-    pub fn new(client: Client, page_url: Url, viewport: (f32, f32)) -> PageEmbedder {
+    pub fn new(
+        client: Client,
+        page_url: Url,
+        viewport: (f32, f32),
+        layout: Rc<RefCell<LayoutCtx>>,
+    ) -> PageEmbedder {
         let origin_ms =
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0);
         PageEmbedder {
@@ -27,6 +114,7 @@ impl PageEmbedder {
             start: Instant::now(),
             origin_ms,
             viewport: Cell::new((viewport.0 as f64, viewport.1 as f64)),
+            layout,
         }
     }
 }
@@ -56,6 +144,42 @@ impl bb_webapi::Embedder for PageEmbedder {
     }
     fn user_agent(&self) -> String {
         self.client.user_agent().to_string()
+    }
+    fn computed_style(&self, doc: &Document, node: NodeId) -> Vec<(String, String)> {
+        let Ok(mut ctx) = self.layout.try_borrow_mut() else { return Vec::new() };
+        let (styles, tree) = ctx.ensure(doc);
+        let Some(st) = styles.get(node) else { return Vec::new() };
+        let used = tree.node_box.get(&node).map(|&b| {
+            let (_, _, w, h) = tree.boxes[b].content_rect();
+            (w, h)
+        });
+        bb_style::computed::css_values(st, used)
+    }
+    fn box_info(&self, doc: &Document, node: NodeId) -> Option<bb_webapi::BoxInfo> {
+        let Ok(mut ctx) = self.layout.try_borrow_mut() else { return None };
+        let (_, tree) = ctx.ensure(doc);
+        if let Some(&b) = tree.node_box.get(&node) {
+            let b = &tree.boxes[b];
+            let bw = |i: usize| b.border[i] as f64;
+            let border =
+                [(b.x + b.rel_offset.0) as f64, (b.y + b.rel_offset.1) as f64, b.w as f64, b.h as f64];
+            let client =
+                [bw(3), bw(0), (b.w as f64 - bw(1) - bw(3)).max(0.0), (b.h as f64 - bw(0) - bw(2)).max(0.0)];
+            return Some(bb_webapi::BoxInfo { border, client, scroll: (client[2], client[3]) });
+        }
+        // Inline elements: the union of their line fragments.
+        let r = bb_layout::node_rects(tree, doc, node).into_iter().reduce(|a, b| a.union(&b))?;
+        let border = [r.x as f64, r.y as f64, r.w as f64, r.h as f64];
+        Some(bb_webapi::BoxInfo { border, client: [0.0; 4], scroll: (0.0, 0.0) })
+    }
+    fn element_at(&self, doc: &Document, x: f64, y: f64) -> Option<NodeId> {
+        let Ok(mut ctx) = self.layout.try_borrow_mut() else { return None };
+        let (_, tree) = ctx.ensure(doc);
+        let mut n = bb_layout::hit_test(tree, x as f32, y as f32).node?;
+        while !doc.node(n).is_element() {
+            n = doc.parent(n)?;
+        }
+        Some(n)
     }
 }
 

@@ -27,6 +27,7 @@ pub fn collection(vm: &mut Vm, h: &Host, kind: CollKind, cache: Option<(u8, u64)
         CollKind::Attributes(_) => C::NamedNodeMap,
         CollKind::ClassList(_) => C::DOMTokenList,
         CollKind::Dataset(_) => C::DOMStringMap,
+        CollKind::InlineStyle(_) | CollKind::Computed(..) => C::CSSStyleDeclaration,
         _ => C::HTMLCollection,
     };
     let id = {
@@ -117,7 +118,11 @@ pub fn items(h: &Host, kind: &CollKind) -> Vec<NodeRef> {
         CollKind::FormElements(n) => doc_of(n)
             .map(|d| d.form_controls(n.id).into_iter().map(|k| n.with(k)).collect())
             .unwrap_or_default(),
-        CollKind::Attributes(_) | CollKind::ClassList(_) | CollKind::Dataset(_) => Vec::new(),
+        CollKind::Attributes(_)
+        | CollKind::ClassList(_)
+        | CollKind::Dataset(_)
+        | CollKind::InlineStyle(_)
+        | CollKind::Computed(..) => Vec::new(),
     }
 }
 
@@ -436,6 +441,7 @@ impl Exotic {
                 _ => 0,
             },
             C::NamedNodeMap => crate::attr::map_len(h, kind),
+            C::CSSStyleDeclaration => crate::css::decl_names(h, kind).len(),
             _ => 0,
         }
     }
@@ -458,6 +464,7 @@ impl Exotic {
                 _ => None,
             },
             C::NamedNodeMap => crate::attr::map_item(vm, h, kind, i)?,
+            C::CSSStyleDeclaration => crate::css::decl_names(h, kind).get(i).map(|s| js(s)),
             _ => None,
         })
     }

@@ -16,6 +16,7 @@ pub enum Origin {
 }
 
 /// A stylesheet with its origin and the media it applies to.
+#[derive(Clone)]
 pub struct Sheet {
     pub origin: Origin,
     pub stylesheet: Rc<Stylesheet>,

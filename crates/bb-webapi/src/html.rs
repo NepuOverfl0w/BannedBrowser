@@ -220,6 +220,11 @@ pub fn setup_html_element(vm: &mut Vm, proto: ObjRef) {
         });
     }
     crate::events::setup_event_handlers(vm, proto);
+    crate::css::setup_inline_style(vm, proto);
+    if let Ok(h) = host(vm) {
+        let ep = h.proto(C::Element);
+        crate::css::setup_element_geometry(vm, ep, proto);
+    }
 }
 
 /// innerText without layout: the text content, with `<br>` as a line break (HTML §3.2.7,

@@ -12,6 +12,7 @@
 pub mod attr;
 pub mod class;
 pub mod collections;
+pub mod css;
 pub mod dom;
 pub mod events;
 pub mod exception;
@@ -29,7 +30,7 @@ use bb_dom::Document;
 use bb_js::{Value, Vm};
 use bb_url::Url;
 
-pub use host::{Embedder, Host, NodeRef, ReadyState};
+pub use host::{BoxInfo, Embedder, Host, NodeRef, ReadyState};
 
 /// Instructions one script (or task) may run before it is stopped, so a runaway page can't
 /// hang its tab.

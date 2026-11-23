@@ -690,3 +690,135 @@ impl ComputedStyle {
         self.custom.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v)
     }
 }
+
+// ---- serialization (CSSOM §9 getComputedStyle) ----
+
+/// A keyword from an enum variant's name: `InlineBlock` → `inline-block`.
+fn keyword<T: std::fmt::Debug>(v: &T) -> String {
+    let d = format!("{v:?}");
+    let name = d.split(['(', ' ', '{']).next().unwrap_or("");
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn px(v: f32) -> String {
+    let r = (v * 1000.0).round() / 1000.0;
+    if r == r.trunc() {
+        format!("{}px", r as i64)
+    } else {
+        format!("{r}px")
+    }
+}
+
+/// CSSOM §6.7.2 serialization of a color: `rgb(r, g, b)` or `rgba(r, g, b, a)`.
+pub fn css_color(c: Rgba) -> String {
+    if c.a == 255 {
+        format!("rgb({}, {}, {})", c.r, c.g, c.b)
+    } else {
+        let a = (c.a as f32 / 255.0 * 1000.0).round() / 1000.0;
+        format!("rgba({}, {}, {}, {a})", c.r, c.g, c.b)
+    }
+}
+
+fn lp(v: &LP) -> String {
+    match v {
+        LP::Px(p) => px(*p),
+        LP::Pct(p) => format!("{p}%"),
+        LP::Calc(_) => "calc()".to_string(),
+    }
+}
+
+fn lpa(v: &LPA) -> String {
+    match v {
+        LPA::LP(l) => lp(l),
+        LPA::Auto => "auto".to_string(),
+    }
+}
+
+/// Resolved values (CSSOM §9 "resolved value") of the properties a computed style holds;
+/// `used` is the element's content box size from layout, for width and height.
+pub fn css_values(s: &ComputedStyle, used: Option<(f32, f32)>) -> Vec<(String, String)> {
+    let mut v: Vec<(String, String)> = Vec::new();
+    let mut put = |k: &str, val: String| v.push((k.to_string(), val));
+    put("display", keyword(&s.display));
+    put("position", keyword(&s.position));
+    put("float", keyword(&s.float));
+    put("clear", keyword(&s.clear));
+    put("visibility", keyword(&s.visibility));
+    put("color", css_color(s.color));
+    put("background-color", css_color(s.background_color));
+    put("opacity", format!("{}", s.opacity));
+    put("z-index", s.z_index.map_or("auto".to_string(), |z| z.to_string()));
+    put("font-family", s.font_family.join(", "));
+    put("font-size", px(s.font_size));
+    put("font-weight", s.font_weight.to_string());
+    put("font-style", keyword(&s.font_style));
+    put(
+        "line-height",
+        match s.line_height {
+            LineHeight::Normal => "normal".to_string(),
+            LineHeight::Number(n) => px(n * s.font_size),
+            LineHeight::Px(p) => px(p),
+        },
+    );
+    put("text-align", keyword(&s.text_align));
+    put("text-transform", keyword(&s.text_transform));
+    put("white-space", keyword(&s.white_space));
+    put("letter-spacing", if s.letter_spacing == 0.0 { "normal".into() } else { px(s.letter_spacing) });
+    put("word-spacing", px(s.word_spacing));
+    put("text-indent", lp(&s.text_indent));
+    let (w, h) = match used {
+        Some((w, h)) => (px(w), px(h)),
+        None => (lpa(&s.width), lpa(&s.height)),
+    };
+    put("width", w);
+    put("height", h);
+    put("min-width", lpa(&s.min_width));
+    put("min-height", lpa(&s.min_height));
+    put("max-width", s.max_width.as_ref().map_or("none".into(), lp));
+    put("max-height", s.max_height.as_ref().map_or("none".into(), lp));
+    for (i, side) in ["top", "right", "bottom", "left"].iter().enumerate() {
+        put(&format!("margin-{side}"), lpa(&s.margin[i]));
+        put(&format!("padding-{side}"), lp(&s.padding[i]));
+        put(&format!("border-{side}-width"), px(s.border_width[i]));
+        put(&format!("border-{side}-style"), keyword(&s.border_style[i]));
+        put(&format!("border-{side}-color"), css_color(s.border_color[i]));
+    }
+    put("top", lpa(&s.top));
+    put("right", lpa(&s.right));
+    put("bottom", lpa(&s.bottom));
+    put("left", lpa(&s.left));
+    put("box-sizing", keyword(&s.box_sizing));
+    put("overflow-x", keyword(&s.overflow_x));
+    put("overflow-y", keyword(&s.overflow_y));
+    put("overflow", keyword(&s.overflow_x));
+    put("flex-direction", keyword(&s.flex_direction));
+    put("flex-wrap", keyword(&s.flex_wrap));
+    put("flex-grow", format!("{}", s.flex_grow));
+    put("flex-shrink", format!("{}", s.flex_shrink));
+    put("flex-basis", lpa(&s.flex_basis));
+    put("justify-content", keyword(&s.justify_content));
+    put("align-items", keyword(&s.align_items));
+    put("align-self", keyword(&s.align_self));
+    put("order", s.order.to_string());
+    put("cursor", keyword(&s.cursor));
+    put("direction", if s.direction_rtl { "rtl".into() } else { "ltr".into() });
+    put("vertical-align", keyword(&s.vertical_align));
+    put("list-style-type", keyword(&s.list_style_type));
+    put("outline-style", keyword(&s.outline_style));
+    put("outline-width", px(s.outline_width));
+    for (name, value) in s.custom.iter() {
+        put(name, bb_css::parser::serialize_cvs(value));
+    }
+    v
+}

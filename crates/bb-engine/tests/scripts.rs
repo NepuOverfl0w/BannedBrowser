@@ -108,3 +108,22 @@ fn scripting_off_renders_noscript() {
     assert_eq!(text(&p, "ns"), "no js");
     assert_ne!(p.title, "x");
 }
+
+#[test]
+fn styles_and_geometry_from_scripts() {
+    let p = page(
+        "<!doctype html><style>body{margin:0} #b{width:120px;height:30px;padding:5px;border:2px solid red}\
+         .x{color:rgb(0, 128, 0)}</style>\
+         <div id=b class=x>box</div><p id=out></p><p id=out2></p>\
+         <script>var b = document.getElementById('b'), r = b.getBoundingClientRect();\
+         var cs = getComputedStyle(b);\
+         document.getElementById('out').textContent = [r.width, r.height, b.offsetWidth, b.clientWidth,\
+           cs.color, cs.getPropertyValue('display'), cs.width, document.elementFromPoint(10, 10) === b].join(' ');\
+         b.style.backgroundColor = 'blue'; b.style.setProperty('margin-left', '10px', 'important');\
+         document.getElementById('out2').textContent = b.style.cssText + ' | ' + b.style.marginLeft + ' ' +\
+           b.style.getPropertyPriority('margin-left') + ' ' + b.style.length;</script>",
+    );
+    assert_eq!(text(&p, "out"), "134 44 134 130 rgb(0, 128, 0) block 120px true");
+    assert_eq!(text(&p, "out2"), "background-color: blue; margin-left: 10px !important; | 10px important 2");
+    assert_eq!(rect(&p, "b")[0], 10.0, "the inline style applies");
+}

@@ -12,10 +12,11 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 - **Pages run JavaScript** (milestone E, in progress): the new `bb-webapi` crate gives each page
   a Window with the DOM (Node, Document, Element, Text, Attr, collections, HTML element
   interfaces, innerHTML), events with capture and bubbling and `on…` handlers, timers,
-  `requestAnimationFrame`, `queueMicrotask`, console, `location` and `navigator`. The parser
+  `requestAnimationFrame`, `queueMicrotask`, console, `location` and `navigator`, `element.style`,
+  `getComputedStyle` and element geometry (`getBoundingClientRect`, `offsetWidth`, …). The parser
   runs scripts as it goes, with `document.write`; script changes restyle and relayout the
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
-  `dom/` tests (8241/10901 subtests so far).
+  `dom/` tests (8255/10893 subtests so far).
 - **JavaScript engine, first part (milestone D in progress):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262. Its interpreter has started: bytecode compiler, stack VM, garbage

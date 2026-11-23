@@ -195,6 +195,7 @@ pub fn init(vm: &mut Vm) {
         Kind::Native(Box::new(Native {
             f: builtins::empty_fn,
             constructor: false,
+            gc_safe: false,
             slots: Vec::new(),
             realm: vm.cur_realm,
         })),
@@ -240,6 +241,38 @@ pub fn init(vm: &mut Vm) {
     vm.realm.throw_type_error = tte;
     vm.realm.legacy_caller = native(vm, "get caller", 0, builtins::legacy_caller);
     builtins::install(vm);
+    mark_gc_safe(vm);
+}
+
+/// Natives that only pass values through to the functions they call (see `Native::gc_safe`),
+/// so long loops in callbacks they run can still be collected.
+fn mark_gc_safe(vm: &mut Vm) {
+    let reflect =
+        match vm.heap.obj(vm.realm.global).props.get(&PropKey::lit("Reflect")).map(|p| p.slot.clone()) {
+            Some(Slot::Data(Value::Object(r))) => Some(r),
+            _ => None,
+        };
+    let mut targets = vec![
+        (vm.realm.function_proto, vec!["call", "apply"]),
+        (
+            vm.realm.array_proto,
+            vec!["forEach", "some", "every", "find", "findIndex", "findLast", "findLastIndex"],
+        ),
+    ];
+    if let Some(r) = reflect {
+        targets.push((r, vec!["apply", "construct"]));
+    }
+    for (on, names) in targets {
+        for n in names {
+            let f = match vm.heap.obj(on).props.get(&PropKey::named(n)).map(|p| p.slot.clone()) {
+                Some(Slot::Data(Value::Object(f))) => f,
+                _ => continue,
+            };
+            if let Kind::Native(nat) = &mut vm.heap.obj_mut(f).kind {
+                nat.gc_safe = true;
+            }
+        }
+    }
 }
 
 // ---- helpers for defining built-ins ----
@@ -260,7 +293,7 @@ pub fn native_with(
     let fp = vm.realm.function_proto;
     let o = vm.heap.alloc(Object::new(
         Some(fp),
-        Kind::Native(Box::new(Native { f, constructor, slots, realm: vm.cur_realm })),
+        Kind::Native(Box::new(Native { f, constructor, gc_safe: false, slots, realm: vm.cur_realm })),
     ));
     let obj = vm.heap.obj_mut(o);
     obj.props.insert(PropKey::lit("length"), Prop::data(Value::Number(length as f64), false, false, true));

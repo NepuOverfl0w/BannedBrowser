@@ -156,6 +156,7 @@ pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
         }
     });
     crate::events::setup_window_handlers(vm, g);
+    op(vm, g, "getComputedStyle", 1, crate::css::get_computed_style);
     install_console(vm, g);
     install_location(vm, g);
     install_navigator(vm, g);

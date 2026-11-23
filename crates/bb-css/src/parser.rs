@@ -100,6 +100,36 @@ impl Stylesheet {
 }
 
 /// Parse a declaration list, e.g. a `style=""` attribute.
+/// Serialize component values back to CSS text (CSSOM §6.7.2 "serialize a CSS value",
+/// for declared values as written), trimmed.
+pub fn serialize_cvs(cvs: &[Cv]) -> String {
+    fn go(cvs: &[Cv], out: &mut String) {
+        for cv in cvs {
+            match cv {
+                Cv::Token(t) => out.push_str(&crate::tokenizer::serialize_tokens(std::slice::from_ref(t))),
+                Cv::Function(name, args) => {
+                    out.push_str(name);
+                    out.push('(');
+                    go(args, out);
+                    out.push(')');
+                }
+                Cv::Block(open, inner) => {
+                    out.push(*open);
+                    go(inner, out);
+                    out.push(match open {
+                        '[' => ']',
+                        '(' => ')',
+                        _ => '}',
+                    });
+                }
+            }
+        }
+    }
+    let mut s = String::new();
+    go(cvs, &mut s);
+    s.trim().to_string()
+}
+
 pub fn parse_declaration_list(css: &str) -> Vec<Declaration> {
     let tokens = Tokenizer::new(css).tokenize();
     let mut p = Parser { tokens, pos: 0 };

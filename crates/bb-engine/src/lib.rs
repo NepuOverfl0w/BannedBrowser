@@ -115,11 +115,13 @@ pub struct Page {
     pub script_repaint: bool,
     /// Set when scripts changed the title (the tab tells the UI and clears it).
     pub script_title_changed: bool,
+    /// What scripts' layout queries style and lay out with (kept current here).
+    layout_ctx: Rc<std::cell::RefCell<script::LayoutCtx>>,
 }
 
-struct PageResources<'a> {
-    base: &'a Url,
-    images: &'a HashMap<String, ImageState>,
+pub(crate) struct PageResources<'a> {
+    pub(crate) base: &'a Url,
+    pub(crate) images: &'a HashMap<String, ImageState>,
 }
 
 impl Resources for PageResources<'_> {
@@ -203,7 +205,7 @@ pub(crate) fn subresource_context(page_url: &Url) -> bb_net::cookies::CookieCont
 
 /// The markup stylesheets come from: `<style>` text and stylesheet `<link>`s (if scripts
 /// change it, the sheets are collected again).
-fn style_signature(doc: &Document) -> String {
+pub(crate) fn style_signature(doc: &Document) -> String {
     let mut s = String::new();
     for n in doc.descendants(Document::ROOT) {
         if doc.is_html(n, "style") {
@@ -325,7 +327,7 @@ fn fetch_document(client: &Client, url: &Url, frame_top: Option<&Url>, post: Opt
 
 /// Collect `<style>` and `<link rel=stylesheet>` in document order, fetching
 /// external sheets (and `@import`s) in parallel.
-fn collect_stylesheets(
+pub(crate) fn collect_stylesheets(
     client: &Client,
     doc: &Document,
     base: &Url,
@@ -602,8 +604,15 @@ impl Page {
         // With scripting on, the parser runs the page's scripts as it goes (bb-webapi).
         let scripting = config.scripting && url.scheme() != "about" && status != 0;
         let mut window = None;
+        let layout_ctx =
+            Rc::new(std::cell::RefCell::new(script::LayoutCtx::new(url.clone(), config, client.clone())));
         let mut doc = if scripting {
-            let emb = Rc::new(script::PageEmbedder::new(client.clone(), url.clone(), config.viewport));
+            let emb = Rc::new(script::PageEmbedder::new(
+                client.clone(),
+                url.clone(),
+                config.viewport,
+                layout_ctx.clone(),
+            ));
             let mut w = bb_webapi::Window::new(url.clone(), emb);
             w.load_html(html);
             let mut d = Document::new();
@@ -714,6 +723,7 @@ impl Page {
             style_signature,
             script_repaint: false,
             script_title_changed: false,
+            layout_ctx,
         };
         page.relayout_styles_ready();
         page.load_frames(client);
@@ -839,6 +849,15 @@ impl Page {
         }
         self.stats.layout_ms = tl.elapsed().as_millis();
         self.doc.clear_dirty();
+        if self.script.is_some() {
+            if let Ok(mut c) = self.layout_ctx.try_borrow_mut() {
+                c.sheets = self.sheets.clone();
+                c.signature = Some(self.style_signature.clone());
+                c.images = self.images.clone();
+                c.base = self.base_url.clone();
+                c.config = self.config;
+            }
+        }
     }
 
     /// Rebuild the display list from the current layout, with the focused text control's caret

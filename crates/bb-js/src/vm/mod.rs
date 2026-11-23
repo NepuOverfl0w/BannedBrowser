@@ -167,6 +167,8 @@ pub struct Vm {
     local_zone: Option<Option<&'static tz::Zone>>,
     /// Values hosts keep alive across calls.
     pub roots: Vec<Value>,
+    /// Nesting levels entered through GC-safe natives (two per native).
+    safe_levels: usize,
     /// The host's state for its natives (`host.rs`).
     pub host: Option<Rc<dyn std::any::Any>>,
     /// Reports errors no script caught (jobs' errors; HTML §8.1.4.6 "report an exception").
@@ -211,6 +213,7 @@ impl Vm {
             registry: HashMap::default(),
             templates: HashMap::default(),
             roots: Vec::new(),
+            safe_levels: 0,
             host: None,
             host_exotic: None,
             host_report: None,
@@ -530,14 +533,14 @@ impl Vm {
     ) -> JsResult<Option<Value>> {
         enum K {
             Closure,
-            Native(NativeFn, bool),
+            Native(NativeFn, bool, bool),
             Bound(ObjRef, Value, Vec<Value>),
             Proxy(bool, bool),
             None,
         }
         let k = match &self.heap.obj(f).kind {
             Kind::Function(_) => K::Closure,
-            Kind::Native(n) => K::Native(n.f, n.constructor),
+            Kind::Native(n) => K::Native(n.f, n.constructor, n.gc_safe),
             Kind::Bound(b) => K::Bound(b.target, b.this.clone(), b.args.clone()),
             Kind::Proxy(p) => K::Proxy(p.callable, p.constructor),
             _ => K::None,
@@ -566,7 +569,7 @@ impl Vm {
                     self.type_error("not a function")
                 }
             }
-            K::Native(nf, ctor) => {
+            K::Native(nf, ctor, gc_safe) => {
                 if new_target.is_some() && !ctor {
                     return self.type_error("not a constructor");
                 }
@@ -580,7 +583,20 @@ impl Vm {
                     _ => saved,
                 };
                 self.switch_realm(nr);
+                // A GC-safe native's `this` and arguments are rooted, and the run it calls
+                // into may collect (see `maybe_gc`).
+                let base = self.roots.len();
+                if gc_safe {
+                    self.roots.push(this.clone());
+                    self.roots.push(Value::Object(f));
+                    self.roots.extend(args.iter().cloned());
+                    self.safe_levels += 2;
+                }
                 let r = nf(self, NativeCall { callee: f, this, args, new_target });
+                if gc_safe {
+                    self.safe_levels -= 2;
+                    self.roots.truncate(base);
+                }
                 self.switch_realm(saved);
                 self.nested -= 1;
                 r.map(Some)
@@ -842,7 +858,10 @@ impl Vm {
         self.top().pc = to as usize;
     }
     fn maybe_gc(&mut self) {
-        if self.nested == 1 && self.heap.allocated > GC_EVERY {
+        // Only where no Rust code up the stack holds unrooted values: the outermost run, or
+        // runs entered only through GC-safe natives (each counts two levels: itself and the
+        // run it calls).
+        if self.nested == 1 + self.safe_levels && self.heap.allocated > GC_EVERY {
             self.collect_garbage();
         }
     }

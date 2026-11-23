@@ -353,6 +353,9 @@ pub struct ArgMap {
 pub struct Native {
     pub f: NativeFn,
     pub constructor: bool,
+    /// The collector may run in functions this native calls: it holds nothing across those
+    /// calls but its `this` and arguments, which are rooted while it runs.
+    pub gc_safe: bool,
     pub slots: Vec<Value>,
     /// [[Realm]].
     pub realm: u32,

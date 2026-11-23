@@ -134,6 +134,10 @@ interfaces! {
     FocusEvent: UIEvent;
     ErrorEvent: Event;
     Window: EventTarget;
+    CSSStyleDeclaration: None;
+    DOMRectReadOnly: None;
+    DOMRect: DOMRectReadOnly;
+    DOMRectList: None;
 }
 
 pub fn name(c: C) -> &'static str {
@@ -298,6 +302,7 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::DocumentFragment => (crate::dom::fragment_ctor, 0),
         C::Document => (crate::dom::document_ctor, 0),
         C::DOMException => (crate::exception::ctor, 0),
+        C::DOMRect | C::DOMRectReadOnly => (crate::css::rect_ctor, 0),
         _ => return None,
     })
 }
@@ -353,6 +358,10 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::Attr => crate::attr::setup_attr(vm, proto),
         C::Element => crate::dom::setup_element(vm, proto),
         C::HTMLElement => crate::html::setup_html_element(vm, proto),
+        C::SVGElement | C::MathMLElement => {
+            crate::css::setup_inline_style(vm, proto);
+            crate::events::setup_event_handlers(vm, proto);
+        }
         C::NodeList => crate::collections::setup_node_list(vm, proto),
         C::HTMLCollection => crate::collections::setup_html_collection(vm, proto),
         C::DOMTokenList => crate::collections::setup_token_list(vm, proto),
@@ -366,6 +375,10 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::KeyboardEvent => crate::events::setup_keyboard_event(vm, proto),
         C::ErrorEvent => crate::events::setup_error_event(vm, proto),
         C::Window => crate::window::setup_window(vm, proto),
+        C::CSSStyleDeclaration => crate::css::setup_style_declaration(vm, proto),
+        C::DOMRectReadOnly => crate::css::setup_rect_readonly(vm, proto),
+        C::DOMRect => crate::css::setup_rect(vm, proto),
+        C::DOMRectList => crate::css::setup_rect_list(vm, proto),
         _ => crate::html::setup_element_interface(vm, c, proto),
     }
 }
