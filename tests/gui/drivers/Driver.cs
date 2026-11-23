@@ -158,7 +158,7 @@ static class Driver
     // visible, unowned top-level window. (Process.MainWindowHandle proved unreliable.)
     static IntPtr MainWindow(int pid)
     {
-        for (int i = 0; i < 50; i++)
+        for (int i = 0; i < 100; i++)
         {
             IntPtr fg = GetForegroundWindow();
             uint fgPid;

@@ -119,8 +119,14 @@ start_browser() {
     xdotool windowactivate --sync "$WID" 2>/dev/null || true
   else
     BB_OS_PID="$BB_PID"
-    if [ "$GUI_OS" = windows ] && [ -r "/proc/$BB_PID/winpid" ]; then BB_OS_PID=$(cat "/proc/$BB_PID/winpid"); fi
     wait_state '.windows >= 1 and .win_x != None'
+    # Git Bash: the Windows pid (the driver's) differs from $!; read it once the window
+    # exists, retrying (reading /proc right after the spawn can race).
+    if [ "$GUI_OS" = windows ]; then
+      local t=0
+      while [ $t -lt 50 ] && ! [ -r "/proc/$BB_PID/winpid" ]; do sleep 0.1; t=$((t+1)); done
+      [ -r "/proc/$BB_PID/winpid" ] && BB_OS_PID=$(cat "/proc/$BB_PID/winpid")
+    fi
     activate_window
     # Start with the pointer inside the page, never over window controls (on macOS, hovering
     # the green button opens a popover that takes the keyboard).
