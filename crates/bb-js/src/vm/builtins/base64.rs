@@ -242,25 +242,21 @@ fn ta_bytes(vm: &mut Vm, o: ObjRef) -> JsResult<Vec<u8>> {
         return vm.type_error("the Uint8Array is detached or out of bounds");
     };
     let (_, buf, off, _) = vm.ta(o).expect("validated");
-    Ok(vm.buffer_bytes(buf).map(|b| b[off..off + len].to_vec()).unwrap_or_default())
+    Ok(vm.buffer_read(buf, off, len).unwrap_or_default())
 }
 
 fn new_uint8(vm: &mut Vm, bytes: &[u8]) -> JsResult<Value> {
     let p = vm.realm.ta_protos[TaKind::Uint8.index()];
     let a = super::typed::alloc_ta(vm, TaKind::Uint8, p, bytes.len() as f64)?;
     let (_, buf, off, _) = vm.ta(a).expect("typed array");
-    if let Some(b) = vm.buffer_bytes_mut(buf) {
-        b[off..off + bytes.len()].copy_from_slice(bytes);
-    }
+    vm.buffer_write(buf, off, bytes);
     Ok(Value::Object(a))
 }
 
 /// The tail of setFromBase64 / setFromHex: write the bytes, then throw or report.
 fn set_result(vm: &mut Vm, into: ObjRef, d: Decoded) -> JsResult<Value> {
     let (_, buf, off, _) = vm.ta(into).expect("validated");
-    if let Some(b) = vm.buffer_bytes_mut(buf) {
-        b[off..off + d.bytes.len()].copy_from_slice(&d.bytes);
-    }
+    vm.buffer_write(buf, off, &d.bytes);
     if let Some(m) = d.error {
         return vm.syntax_error(m);
     }

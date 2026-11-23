@@ -3,9 +3,7 @@
 
 use super::super::heap::*;
 use super::super::realm::{self, accessor, method};
-use super::super::typed::{
-    read_big, read_elem, write_big, write_elem, Buffer, DataView, TaKind, TypedArray, MAX_BUFFER, TA_KINDS,
-};
+use super::super::typed::{Buffer, DataView, TaKind, TypedArray, MAX_BUFFER, TA_KINDS};
 use super::super::value::{js_str, same_value_zero, strict_equals, JsString, PropKey, Value};
 use super::super::{JsResult, Vm};
 use super::array::sort_values;
@@ -29,7 +27,9 @@ fn buffer_of(vm: &mut Vm, v: &Value, shared: bool) -> JsResult<ObjRef> {
 
 fn buf_data(vm: &Vm, b: ObjRef) -> (Option<usize>, Option<usize>) {
     match &vm.heap.obj(b).kind {
-        Kind::ArrayBuffer(d) => (d.bytes.as_ref().map(|x| x.len()), d.max),
+        Kind::ArrayBuffer(d) => {
+            (d.bytes.as_ref().map(|x| x.len()).or(d.block.as_ref().map(|b| b.len())), d.max)
+        }
         _ => (None, None),
     }
 }
@@ -53,13 +53,15 @@ pub(super) fn allocate_buffer(
     if len > MAX_BUFFER as f64 {
         return vm.range_error("Array buffer allocation failed");
     }
+    let (bytes, block) = if shared {
+        let cap = max.map(|m| m as usize).unwrap_or(len as usize);
+        (None, Some(super::super::typed::SharedBlock::new(len as usize, cap)))
+    } else {
+        (Some(vec![0; len as usize]), None)
+    };
     Ok(vm.heap.alloc(Object::new(
         Some(proto),
-        Kind::ArrayBuffer(Box::new(Buffer {
-            bytes: Some(vec![0; len as usize]),
-            max: max.map(|m| m as usize),
-            shared,
-        })),
+        Kind::ArrayBuffer(Box::new(Buffer { bytes, block, max: max.map(|m| m as usize), shared })),
     )))
 }
 
@@ -126,10 +128,8 @@ fn buffer_slice(vm: &mut Vm, c: NativeCall, shared: bool) -> JsResult<Value> {
     let first = first as usize;
     let fin = (fin as usize).min(cur_len);
     if first < fin {
-        let bytes = vm.buffer_bytes(o).map(|b| b[first..fin].to_vec()).unwrap_or_default();
-        if let Some(t) = vm.buffer_bytes_mut(n) {
-            t[..bytes.len()].copy_from_slice(&bytes);
-        }
+        let bytes = vm.buffer_read(o, first, fin - first).unwrap_or_default();
+        vm.buffer_write(n, 0, &bytes);
     }
     Ok(new)
 }
@@ -277,8 +277,8 @@ fn install_buffers(vm: &mut Vm) {
         if n > max as f64 || n < len.unwrap_or(0) as f64 {
             return vm.range_error("Invalid length for SharedArrayBuffer.prototype.grow");
         }
-        if let Some(b) = vm.buffer_bytes_mut(o) {
-            b.resize(n as usize, 0);
+        if let Some(b) = vm.shared_block(&Value::Object(o)) {
+            b.grow(n as usize);
         }
         Ok(Value::Undefined)
     });
@@ -300,7 +300,7 @@ fn view_parts(vm: &mut Vm, v: &Value) -> JsResult<(ObjRef, usize, Option<usize>)
 
 /// GetViewByteLength with the out-of-bounds check (§25.3.1.3–4): `None` when OOB/detached.
 fn view_length(vm: &Vm, buf: ObjRef, off: usize, len: Option<usize>) -> Option<usize> {
-    let blen = vm.buffer_bytes(buf)?.len();
+    let blen = vm.buffer_len(buf)?;
     if off > blen {
         return None;
     }
@@ -321,7 +321,7 @@ fn view_get(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
         return vm.range_error("Offset is outside the bounds of the DataView");
     }
     let at = off + idx as usize;
-    Ok(Value::Number(vm.buffer_bytes(buf).map(|b| read_elem(b, kind, at, !little)).unwrap_or(0.0)))
+    Ok(vm.buffer_get(buf, kind, at, !little).unwrap_or(Value::Number(0.0)))
 }
 
 fn view_set(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
@@ -336,9 +336,7 @@ fn view_set(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
         return vm.range_error("Offset is outside the bounds of the DataView");
     }
     let at = off + idx as usize;
-    if let Some(b) = vm.buffer_bytes_mut(buf) {
-        write_elem(b, kind, at, x, !little);
-    }
+    vm.buffer_set(buf, kind, at, &Value::Number(x), !little);
     Ok(Value::Undefined)
 }
 
@@ -353,8 +351,7 @@ fn view_get_big(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
         return vm.range_error("Offset is outside the bounds of the DataView");
     }
     let at = off + idx as usize;
-    let b = vm.buffer_bytes(buf).map(|b| read_big(b, kind, at, !little)).unwrap_or_default();
-    Ok(Value::BigInt(std::rc::Rc::new(b)))
+    Ok(vm.buffer_get(buf, kind, at, !little).unwrap_or(Value::BigInt(Default::default())))
 }
 
 fn view_set_big(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
@@ -369,9 +366,7 @@ fn view_set_big(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
         return vm.range_error("Offset is outside the bounds of the DataView");
     }
     let at = off + idx as usize;
-    if let Some(b) = vm.buffer_bytes_mut(buf) {
-        write_big(b, at, &x, !little);
-    }
+    vm.buffer_set(buf, TaKind::BigInt64, at, &Value::BigInt(x), !little);
     Ok(Value::Undefined)
 }
 
@@ -911,9 +906,9 @@ fn install_typed_arrays(vm: &mut Vm) {
             if to_b + n > end_byte {
                 n = end_byte.saturating_sub(to_b);
             }
-            if let Some(b) = vm.buffer_bytes_mut(buf) {
-                if n > 0 {
-                    b.copy_within(from_b..from_b + n, to_b);
+            if n > 0 {
+                if let Some(bytes) = vm.buffer_read(buf, from_b, n) {
+                    vm.buffer_write(buf, to_b, &bytes);
                 }
             }
         }
@@ -1279,7 +1274,7 @@ pub(super) fn install(vm: &mut Vm) {
     install_atomics(vm);
 }
 
-// ---- Atomics (§25.4): one agent, so operations are plain reads and writes ----
+// ---- Atomics (§25.4): on shared memory they hold the block's lock ----
 
 /// ValidateIntegerTypedArray + ValidateAtomicAccess (§25.4.3.1–2): (array, element index).
 fn atomic_target(vm: &mut Vm, ta: &Value, idx: &Value, waitable: bool) -> JsResult<(ObjRef, usize)> {
@@ -1308,15 +1303,87 @@ fn revalidate(vm: &mut Vm, o: ObjRef, i: usize) -> JsResult<()> {
     }
 }
 
+/// The Shared Data Block under a typed array (Atomics on it take the block's lock).
+fn ta_block(vm: &Vm, o: ObjRef) -> Option<std::sync::Arc<super::super::typed::SharedBlock>> {
+    let buf = vm.ta(o)?.1;
+    vm.shared_block(&Value::Object(buf))
+}
+
 /// An atomic read-modify-write: returns the old value.
 fn atomic_rmw(vm: &mut Vm, c: NativeCall, op: fn(&Value, &Value) -> Value) -> JsResult<Value> {
     let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), false)?;
     let v = coerce_integer(vm, o, &c.arg(2))?;
     revalidate(vm, o, i)?;
+    let block = ta_block(vm, o);
+    let _g = block.as_deref().map(super::super::atomics::lock);
     let old = vm.ta_get(o, i as f64);
     let new = op(&old, &v);
     vm.ta_set(o, i as f64, &new)?;
     Ok(old)
+}
+
+/// DoWait (§25.4.3.14): `Atomics.wait` (sync) or `Atomics.waitAsync`.
+fn do_wait(vm: &mut Vm, c: NativeCall, sync: bool) -> JsResult<Value> {
+    // A non-shared buffer is a TypeError before the index is validated (steps 1–4).
+    if let Value::Object(t) = c.arg(0) {
+        if let Some((k, buf, _, _)) = vm.ta(t) {
+            if matches!(k, TaKind::Int32 | TaKind::BigInt64) && vm.shared_block(&Value::Object(buf)).is_none()
+            {
+                vm.ta_validate(&c.arg(0))?;
+                return vm.type_error("Atomics.wait needs a shared typed array");
+            }
+        }
+    }
+    let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), true)?;
+    let Some(block) = ta_block(vm, o) else {
+        return vm.type_error("Atomics.wait needs a shared typed array");
+    };
+    let (kind, _, off, _) = vm.ta(o).expect("typed array");
+    let v = coerce_integer(vm, o, &c.arg(2))?;
+    let v = match v {
+        Value::Number(n) => Value::Number(super::super::ops::f64_to_int32(n) as f64),
+        Value::BigInt(b) => Value::BigInt(std::rc::Rc::new(b.as_int_n(64))),
+        v => v,
+    };
+    let q = vm.to_number(&c.arg(3))?;
+    let t = if q.is_nan() || q == f64::INFINITY {
+        f64::INFINITY
+    } else if q == f64::NEG_INFINITY {
+        0.0
+    } else {
+        q.max(0.0)
+    };
+    if sync && !vm.can_block {
+        return vm.type_error("Atomics.wait can't suspend this agent");
+    }
+    let index = off + i * kind.size();
+    let result = |vm: &mut Vm, is_async: bool, value: Value| -> JsResult<Value> {
+        let r = vm.new_object();
+        vm.create_data_property_or_throw(r, PropKey::lit("async"), Value::Bool(is_async))?;
+        vm.create_data_property_or_throw(r, PropKey::lit("value"), value)?;
+        Ok(Value::Object(r))
+    };
+    let mut wl = super::super::atomics::lock(&block);
+    let w = vm.ta_get(o, i as f64);
+    if !strict_equals(&v, &w) {
+        drop(wl);
+        return if sync { Ok(Value::str("not-equal")) } else { result(vm, false, Value::str("not-equal")) };
+    }
+    if t == 0.0 && !sync {
+        drop(wl);
+        return result(vm, false, Value::str("timed-out"));
+    }
+    let signal = std::sync::Arc::new(super::super::typed::Signal::default());
+    wl.push(super::super::typed::Waiter { index, signal: signal.clone() });
+    drop(wl);
+    let until = super::super::atomics::deadline(t);
+    if sync {
+        return Ok(Value::str(super::super::atomics::wait_sync(&block, &signal, until)));
+    }
+    let pc = Value::Object(vm.realm.promise_ctor);
+    let (p, resolve, _) = vm.new_promise_capability(&pc)?;
+    vm.add_async_wait(block, signal, until, resolve);
+    result(vm, true, p)
 }
 
 /// ToBigInt or ToIntegerOrInfinity (Atomics convert integers, not ToNumber).
@@ -1378,6 +1445,8 @@ fn install_atomics(vm: &mut Vm) {
         let expected = coerce_integer(vm, o, &c.arg(2))?;
         let replacement = coerce_integer(vm, o, &c.arg(3))?;
         revalidate(vm, o, i)?;
+        let block = ta_block(vm, o);
+        let _g = block.as_deref().map(super::super::atomics::lock);
         let old = vm.ta_get(o, i as f64);
         // Compare as stored bytes: write the expected value to a scratch element.
         let kind = vm.ta(o).expect("typed array").0;
@@ -1393,6 +1462,8 @@ fn install_atomics(vm: &mut Vm) {
     method(vm, a, "load", 2, |vm, c| {
         let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), false)?;
         revalidate(vm, o, i)?;
+        let block = ta_block(vm, o);
+        let _g = block.as_deref().map(super::super::atomics::lock);
         Ok(vm.ta_get(o, i as f64))
     });
     method(vm, a, "store", 3, |vm, c| {
@@ -1403,6 +1474,8 @@ fn install_atomics(vm: &mut Vm) {
             v => v,
         };
         revalidate(vm, o, i)?;
+        let block = ta_block(vm, o);
+        let _g = block.as_deref().map(super::super::atomics::lock);
         vm.ta_set(o, i as f64, &v)?;
         Ok(v)
     });
@@ -1417,32 +1490,16 @@ fn install_atomics(vm: &mut Vm) {
     });
     method(vm, a, "notify", 3, |vm, c| {
         let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), true)?;
-        if !c.arg(2).is_undefined() {
-            let n = vm.to_integer_or_infinity(&c.arg(2))?;
-            let _ = n.max(0.0);
-        }
-        revalidate(vm, o, i)?;
-        Ok(Value::Number(0.0))
-    });
-    method(vm, a, "wait", 4, |vm, c| {
-        let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), true)?;
-        let buf = vm.ta(o).expect("typed array").1;
-        if !matches!(&vm.heap.obj(buf).kind, Kind::ArrayBuffer(b) if b.shared) {
-            return vm.type_error("Atomics.wait needs a shared typed array");
-        }
-        let v = coerce_integer(vm, o, &c.arg(2))?;
-        let t = vm.to_number(&c.arg(3))?;
-        let _timeout = if t.is_nan() { f64::INFINITY } else { t.max(0.0) };
-        let cur = vm.ta_get(o, i as f64);
-        let expected = match (&cur, &v) {
-            (Value::Number(_), Value::Number(n)) => Value::Number(super::super::ops::f64_to_int32(*n) as f64),
-            (Value::BigInt(_), Value::BigInt(b)) => Value::BigInt(std::rc::Rc::new(b.as_int_n(64))),
-            _ => v.clone(),
+        let count = if c.arg(2).is_undefined() {
+            f64::INFINITY
+        } else {
+            vm.to_integer_or_infinity(&c.arg(2))?.max(0.0)
         };
-        if !strict_equals(&cur, &expected) {
-            return Ok(Value::str("not-equal"));
-        }
-        // No other agent can notify us: the wait always times out.
-        Ok(Value::str("timed-out"))
+        let Some(block) = ta_block(vm, o) else { return Ok(Value::Number(0.0)) };
+        let (kind, _, off, _) = vm.ta(o).expect("typed array");
+        let n = super::super::atomics::notify(&block, off + i * kind.size(), count);
+        Ok(Value::Number(n as f64))
     });
+    method(vm, a, "waitAsync", 4, |vm, c| do_wait(vm, c, false));
+    method(vm, a, "wait", 4, |vm, c| do_wait(vm, c, true));
 }

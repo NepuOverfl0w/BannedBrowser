@@ -5,16 +5,83 @@ use super::heap::*;
 use super::object::PropDesc;
 use super::value::{number_to_string, string_to_number, PropKey, Value};
 use super::{JsResult, Vm};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 /// The largest buffer we allocate (bytes); bigger requests are a RangeError.
 pub const MAX_BUFFER: usize = 1 << 31;
 
 pub struct Buffer {
-    /// `None` once detached.
+    /// An ArrayBuffer's bytes; `None` once detached (and for a SharedArrayBuffer).
     pub bytes: Option<Vec<u8>>,
+    /// A SharedArrayBuffer's Shared Data Block, which other agents can hold too.
+    pub block: Option<Arc<SharedBlock>>,
     /// Resizable (ArrayBuffer) or growable (SharedArrayBuffer) up to this.
     pub max: Option<usize>,
     pub shared: bool,
+}
+
+/// A Shared Data Block (§6.2.9): bytes several agents read and write at once. Plain
+/// accesses are byte-wise relaxed atomics (racing ones may tear, as the memory model
+/// allows); Atomics operations hold `waiters`' lock, which also guards the WaiterList.
+pub struct SharedBlock {
+    data: Box<[AtomicU8]>,
+    len: AtomicUsize,
+    pub waiters: Mutex<Vec<Waiter>>,
+}
+
+/// A waiter in a WaiterList (§25.4.3.x): the byte index it waits on and its signal.
+pub struct Waiter {
+    pub index: usize,
+    pub signal: Arc<Signal>,
+}
+
+/// Set once by Atomics.notify; a blocking waiter sleeps on `cv`.
+#[derive(Default)]
+pub struct Signal {
+    pub notified: Mutex<bool>,
+    pub cv: Condvar,
+}
+
+impl SharedBlock {
+    /// A block of `len` zero bytes that can grow to `cap`.
+    pub fn new(len: usize, cap: usize) -> Arc<SharedBlock> {
+        let data: Box<[AtomicU8]> = (0..cap.max(len)).map(|_| AtomicU8::new(0)).collect();
+        Arc::new(SharedBlock { data, len: AtomicUsize::new(len), waiters: Mutex::new(Vec::new()) })
+    }
+
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::SeqCst)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn read(&self, at: usize, out: &mut [u8]) -> bool {
+        let Some(src) = self.data.get(at..at + out.len()) else { return false };
+        for (o, b) in out.iter_mut().zip(src) {
+            *o = b.load(Ordering::Relaxed);
+        }
+        true
+    }
+
+    pub fn write(&self, at: usize, data: &[u8]) -> bool {
+        let Some(dst) = self.data.get(at..at + data.len()) else { return false };
+        for (b, &v) in dst.iter().zip(data) {
+            b.store(v, Ordering::Relaxed);
+        }
+        true
+    }
+
+    /// Grow to `n` bytes (within the capacity allocated up front); false if it can't.
+    pub fn grow(&self, n: usize) -> bool {
+        if n > self.data.len() {
+            return false;
+        }
+        self.len.fetch_max(n, Ordering::SeqCst);
+        true
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -230,6 +297,98 @@ pub fn canonical_numeric(k: &PropKey) -> Option<f64> {
 }
 
 impl Vm {
+    /// The byte length of an ArrayBuffer or SharedArrayBuffer (`None` when detached).
+    pub fn buffer_len(&self, b: ObjRef) -> Option<usize> {
+        match &self.heap.obj(b).kind {
+            Kind::ArrayBuffer(d) => match (&d.bytes, &d.block) {
+                (Some(v), _) => Some(v.len()),
+                (None, Some(s)) => Some(s.len()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Copy `n` bytes from `at` (`None` when detached or out of range).
+    pub fn buffer_read(&self, b: ObjRef, at: usize, n: usize) -> Option<Vec<u8>> {
+        match &self.heap.obj(b).kind {
+            Kind::ArrayBuffer(d) => match (&d.bytes, &d.block) {
+                (Some(v), _) => v.get(at..at + n).map(<[u8]>::to_vec),
+                (None, Some(s)) if at + n <= s.len() => {
+                    let mut out = vec![0; n];
+                    s.read(at, &mut out).then_some(out)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Write bytes at `at`; false when detached or out of range.
+    pub fn buffer_write(&mut self, b: ObjRef, at: usize, data: &[u8]) -> bool {
+        match &mut self.heap.obj_mut(b).kind {
+            Kind::ArrayBuffer(d) => match (&mut d.bytes, &d.block) {
+                (Some(v), _) => match v.get_mut(at..at + data.len()) {
+                    Some(dst) => {
+                        dst.copy_from_slice(data);
+                        true
+                    }
+                    None => false,
+                },
+                (None, Some(s)) => at + data.len() <= s.len() && s.write(at, data),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// The Shared Data Block of a SharedArrayBuffer.
+    pub fn shared_block(&self, v: &Value) -> Option<Arc<SharedBlock>> {
+        match v {
+            Value::Object(o) => match &self.heap.obj(*o).kind {
+                Kind::ArrayBuffer(d) => d.block.clone(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A SharedArrayBuffer of this realm over an existing block (another agent's).
+    pub fn new_shared_array_buffer(&mut self, block: Arc<SharedBlock>, max: Option<usize>) -> Value {
+        let proto = self.realm.shared_array_buffer_proto;
+        let buf = Buffer { bytes: None, block: Some(block), max, shared: true };
+        Value::Object(self.heap.alloc(Object::new(Some(proto), Kind::ArrayBuffer(Box::new(buf)))))
+    }
+
+    /// A raw element's bytes, read in one go (for decoding).
+    fn elem_bytes(&self, b: ObjRef, at: usize, n: usize) -> Option<[u8; 8]> {
+        let mut out = [0u8; 8];
+        let v = self.buffer_read(b, at, n)?;
+        out[..n].copy_from_slice(&v);
+        Some(out)
+    }
+
+    /// GetValueFromBuffer (§25.1.3.16): a Number or BigInt element.
+    pub fn buffer_get(&self, b: ObjRef, kind: TaKind, at: usize, big_endian: bool) -> Option<Value> {
+        let raw = self.elem_bytes(b, at, kind.size())?;
+        Some(if kind.is_bigint() {
+            Value::BigInt(std::rc::Rc::new(read_big(&raw, kind, 0, big_endian)))
+        } else {
+            Value::Number(read_elem(&raw, kind, 0, big_endian))
+        })
+    }
+
+    /// SetValueInBuffer (§25.1.3.18) with an already converted value.
+    pub fn buffer_set(&mut self, b: ObjRef, kind: TaKind, at: usize, v: &Value, big_endian: bool) {
+        let mut raw = [0u8; 8];
+        match v {
+            Value::BigInt(x) => write_big(&mut raw, 0, x, big_endian),
+            Value::Number(n) => write_elem(&mut raw, kind, 0, *n, big_endian),
+            _ => return,
+        }
+        self.buffer_write(b, at, &raw[..kind.size()]);
+    }
+
     pub fn buffer_bytes(&self, b: ObjRef) -> Option<&Vec<u8>> {
         match &self.heap.obj(b).kind {
             Kind::ArrayBuffer(d) => d.bytes.as_ref(),
@@ -245,7 +404,7 @@ impl Vm {
     }
 
     pub fn is_detached(&self, b: ObjRef) -> bool {
-        matches!(&self.heap.obj(b).kind, Kind::ArrayBuffer(d) if d.bytes.is_none())
+        matches!(&self.heap.obj(b).kind, Kind::ArrayBuffer(d) if d.bytes.is_none() && d.block.is_none())
     }
 
     /// DetachArrayBuffer (§25.1.3.5), for hosts and `transfer`.
@@ -269,7 +428,7 @@ impl Vm {
     /// TypedArrayLength, or `None` when out of bounds or detached (§10.4.5.12–13).
     pub fn ta_length(&self, o: ObjRef) -> Option<usize> {
         let (kind, buf, off, len) = self.ta(o)?;
-        let blen = self.buffer_bytes(buf)?.len();
+        let blen = self.buffer_len(buf)?;
         if off > blen {
             return None;
         }
@@ -303,13 +462,7 @@ impl Vm {
     pub fn ta_get(&self, o: ObjRef, n: f64) -> Value {
         let Some(i) = self.valid_index(o, n) else { return Value::Undefined };
         let (kind, buf, off, _) = self.ta(o).expect("typed array");
-        match self.buffer_bytes(buf) {
-            Some(b) if kind.is_bigint() => {
-                Value::BigInt(std::rc::Rc::new(read_big(b, kind, off + i * kind.size(), false)))
-            }
-            Some(b) => Value::Number(read_elem(b, kind, off + i * kind.size(), false)),
-            None => Value::Undefined,
-        }
+        self.buffer_get(buf, kind, off + i * kind.size(), false).unwrap_or_default()
     }
 
     /// TypedArraySetElement (§10.4.5.16): convert first, then write if still valid.
@@ -317,13 +470,7 @@ impl Vm {
         let x = self.ta_coerce(o, v)?;
         if let Some(i) = self.valid_index(o, n) {
             let (kind, buf, off, _) = self.ta(o).expect("typed array");
-            if let Some(b) = self.buffer_bytes_mut(buf) {
-                match &x {
-                    Value::BigInt(big) => write_big(b, off + i * kind.size(), big, false),
-                    Value::Number(num) => write_elem(b, kind, off + i * kind.size(), *num, false),
-                    _ => {}
-                }
-            }
+            self.buffer_set(buf, kind, off + i * kind.size(), &x, false);
         }
         Ok(())
     }

@@ -202,11 +202,34 @@ impl Vm {
 
     /// Run queued jobs until the queue is empty (a microtask checkpoint).
     pub fn run_jobs(&mut self) {
+        loop {
+            self.run_job_queue();
+            // Atomics.waitAsync promises settle as their own agent's jobs.
+            match self.poll_async_waits() {
+                Ok(true) if !self.terminated => continue,
+                _ => break,
+            }
+        }
+    }
+
+    fn run_job_queue(&mut self) {
+        let mut n = 0u32;
         while let Some(job) = self.jobs.pop_front() {
             if self.terminated {
                 self.jobs.clear();
                 return;
             }
+            // A queue that keeps refilling still lets waitAsync timeouts and notifications in.
+            n = n.wrapping_add(1);
+            if n % 64 == 0 && self.has_pending_waits() {
+                let _ = self.poll_async_waits();
+            }
+            // The job is off the queue: keep what it holds alive while it runs (a GC in
+            // the handler must not free its capability's functions).
+            let base = self.roots.len();
+            let mut held = Vec::new();
+            job.trace(&mut held);
+            self.roots.extend(held.into_iter().map(Value::Object));
             let r = match job {
                 Job::Reaction { reaction, argument } => self.reaction_job(reaction, argument),
                 Job::Thenable { promise, thenable, then } => {
@@ -217,6 +240,7 @@ impl Vm {
                     }
                 }
             };
+            self.roots.truncate(base);
             if let Err(e) = r {
                 // HostReportErrors: uncaught errors in jobs go to the host's output.
                 let d = self.describe(&e);

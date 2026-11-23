@@ -5,6 +5,9 @@
 //! strict unless restricted). A test passes when every variant completes, or throws the
 //! error its `negative` metadata names in the named phase.
 //!
+//! `$262.agent` runs each agent on its own thread with its own VM; SharedArrayBuffers
+//! share their Shared Data Block across them.
+//!
 //! Not supported yet, and failing for it: Temporal and more built-ins (see PROGRESS.md).
 //! `FLOOR` only ever goes up; the goal is all of it.
 //!
@@ -17,10 +20,11 @@ use bb_js::{JsResult, Value, Vm};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 43_611;
+const FLOOR: usize = 43_777;
 
 /// Instructions per test variant before it counts as hung (TEST262_FUEL overrides it
 /// for experiments). The heaviest legitimate tests, the generated RegExp property-escape
@@ -173,6 +177,137 @@ fn resolve_specifier(spec: &str, referrer: Option<&str>) -> PathBuf {
     out
 }
 
+// ---- $262.agent (INTERPRETING.md "Host-Defined Functions") ----
+
+/// One test's agents: their mailboxes and the reports they send back.
+struct Hub {
+    agents: Mutex<Vec<mpsc::Sender<Broadcast>>>,
+    reports: Mutex<std::collections::VecDeque<String>>,
+    epoch: Instant,
+}
+
+struct Broadcast {
+    block: Arc<bb_js::vm::typed::SharedBlock>,
+    id: f64,
+    ack: mpsc::Sender<()>,
+}
+
+thread_local! {
+    /// The current test's hub (the main agent's thread).
+    static HUB: std::cell::RefCell<Option<Arc<Hub>>> = const { std::cell::RefCell::new(None) };
+    /// An agent thread's hub and its receiveBroadcast callback (a root index).
+    static AGENT: std::cell::RefCell<Option<(Arc<Hub>, Option<usize>)>> = const { std::cell::RefCell::new(None) };
+}
+
+fn hub() -> Option<Arc<Hub>> {
+    HUB.with(|h| h.borrow().clone()).or_else(|| AGENT.with(|a| a.borrow().as_ref().map(|x| x.0.clone())))
+}
+
+fn agent_common(vm: &mut Vm, a: bb_js::vm::heap::ObjRef) {
+    realm::method(vm, a, "sleep", 1, |vm: &mut Vm, c: NativeCall| -> JsResult<Value> {
+        let ms = vm.to_number(&c.arg(0))?;
+        std::thread::sleep(Duration::from_secs_f64(ms.clamp(0.0, 10_000.0) / 1000.0));
+        Ok(Value::Undefined)
+    });
+    realm::method(vm, a, "monotonicNow", 0, |_: &mut Vm, _: NativeCall| -> JsResult<Value> {
+        let ms = hub().map(|h| h.epoch.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
+        Ok(Value::Number(ms.floor()))
+    });
+}
+
+/// The main agent's `$262.agent`.
+fn install_agent_main(vm: &mut Vm, o: bb_js::vm::heap::ObjRef) {
+    let a = vm.new_object();
+    realm::value(vm, o, "agent", Value::Object(a));
+    agent_common(vm, a);
+    realm::method(vm, a, "start", 1, |vm: &mut Vm, c: NativeCall| -> JsResult<Value> {
+        let src = String::from_utf16_lossy(&vm.to_string(&c.arg(0))?);
+        let Some(h) = hub() else { return Ok(Value::Undefined) };
+        let (tx, rx) = mpsc::channel::<Broadcast>();
+        if let Ok(mut agents) = h.agents.lock() {
+            agents.push(tx);
+        }
+        let _ = std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn(move || run_agent(h, src, rx));
+        Ok(Value::Undefined)
+    });
+    realm::method(vm, a, "broadcast", 2, |vm: &mut Vm, c: NativeCall| -> JsResult<Value> {
+        let Some(block) = vm.shared_block(&c.arg(0)) else {
+            return vm.type_error("broadcast needs a SharedArrayBuffer");
+        };
+        let id = vm.to_number(&c.arg(1))?;
+        let Some(h) = hub() else { return Ok(Value::Undefined) };
+        let agents: Vec<mpsc::Sender<Broadcast>> = h.agents.lock().map(|a| a.clone()).unwrap_or_default();
+        let (ack, acks) = mpsc::channel();
+        let mut sent = 0;
+        for t in &agents {
+            let m = Broadcast { block: block.clone(), id, ack: ack.clone() };
+            if t.send(m).is_ok() {
+                sent += 1;
+            }
+        }
+        // Block until every agent has received it.
+        for _ in 0..sent {
+            if acks.recv_timeout(Duration::from_secs(10)).is_err() {
+                break;
+            }
+        }
+        Ok(Value::Undefined)
+    });
+    realm::method(vm, a, "getReport", 0, |_: &mut Vm, _: NativeCall| -> JsResult<Value> {
+        let r = hub().and_then(|h| h.reports.lock().ok().and_then(|mut q| q.pop_front()));
+        Ok(r.map(|s| Value::str(&s)).unwrap_or(Value::Null))
+    });
+}
+
+/// An agent: its own VM on this thread, then its broadcasts until the hub goes away.
+fn run_agent(h: Arc<Hub>, src: String, rx: mpsc::Receiver<Broadcast>) {
+    AGENT.with(|a| *a.borrow_mut() = Some((h, None)));
+    let mut vm = Vm::new();
+    vm.fuel = Some(fuel());
+    let o = vm.new_object();
+    let g = vm.realm.global;
+    realm::value(&mut vm, g, "$262", Value::Object(o));
+    let a = vm.new_object();
+    realm::value(&mut vm, o, "agent", Value::Object(a));
+    agent_common(&mut vm, a);
+    realm::method(&mut vm, a, "receiveBroadcast", 1, |vm: &mut Vm, c: NativeCall| -> JsResult<Value> {
+        let i = vm.roots.len();
+        vm.roots.push(c.arg(0));
+        AGENT.with(|a| {
+            if let Some(x) = a.borrow_mut().as_mut() {
+                x.1 = Some(i);
+            }
+        });
+        Ok(Value::Undefined)
+    });
+    realm::method(&mut vm, a, "report", 1, |vm: &mut Vm, c: NativeCall| -> JsResult<Value> {
+        let s = String::from_utf16_lossy(&vm.to_string(&c.arg(0))?);
+        if let Some(h) = hub() {
+            if let Ok(mut q) = h.reports.lock() {
+                q.push_back(s);
+            }
+        }
+        Ok(Value::Undefined)
+    });
+    realm::method(&mut vm, a, "leaving", 0, |_: &mut Vm, _: NativeCall| Ok(Value::Undefined));
+    if vm.run_script(&src).is_err() {
+        return;
+    }
+    vm.run_jobs();
+    while let Ok(m) = rx.recv_timeout(Duration::from_secs(30)) {
+        let _ = m.ack.send(());
+        let Some(cb) = AGENT.with(|a| a.borrow().as_ref().and_then(|x| x.1)) else { continue };
+        let f = vm.roots[cb].clone();
+        let sab = vm.new_shared_array_buffer(m.block, None);
+        let _ = vm.call(&f, Value::Undefined, vec![sab, Value::Number(m.id)]);
+        vm.run_jobs();
+        let start = Instant::now();
+        while vm.has_pending_waits() && !vm.terminated && start.elapsed() < Duration::from_secs(10) {
+            vm.wait_for_events(Duration::from_millis(20));
+        }
+    }
+}
+
 fn run_variant(
     m: &Meta,
     path: &Path,
@@ -183,11 +318,25 @@ fn run_variant(
 ) -> Result<(), String> {
     let mut vm = Vm::new();
     install_262(&mut vm);
+    HUB.with(|h| {
+        *h.borrow_mut() = Some(Arc::new(Hub {
+            agents: Mutex::new(Vec::new()),
+            reports: Mutex::new(Default::default()),
+            epoch: Instant::now(),
+        }))
+    });
+    {
+        let g = vm.realm.global;
+        if let Ok(Value::Object(o)) = vm.get(g, &bb_js::vm::PropKey::named("$262")) {
+            install_agent_main(&mut vm, o);
+        }
+    }
     vm.loader = Some(Box::new(|spec: &str, referrer: Option<&str>| {
         let p = resolve_specifier(spec, referrer);
         let src = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
         Ok((p.to_string_lossy().into_owned(), src))
     }));
+    vm.can_block = !m.flags.iter().any(|f| f == "CanBlockIsFalse");
     let raw = m.flags.iter().any(|f| f == "raw");
     let is_async = m.flags.iter().any(|f| f == "async");
     if !raw {
@@ -226,6 +375,12 @@ fn run_variant(
     if r.is_ok() && !module {
         vm.run_jobs();
     }
+    // The event loop keeps going while Atomics.waitAsync promises are pending.
+    let start = Instant::now();
+    while vm.has_pending_waits() && !vm.terminated && start.elapsed() < Duration::from_secs(10) {
+        vm.wait_for_events(Duration::from_millis(20));
+    }
+    HUB.with(|h| *h.borrow_mut() = None);
     if vm.terminated {
         return Err("out of fuel".into());
     }

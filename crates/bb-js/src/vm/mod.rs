@@ -13,6 +13,7 @@
 //! calling back) defer it.
 
 mod async_gen;
+mod atomics;
 pub mod bigint;
 pub mod builtins;
 mod class;
@@ -153,6 +154,11 @@ pub struct Vm {
     pub(crate) module_evals: Vec<Option<module::PendingEval>>,
     /// Values hosts keep alive across calls.
     pub roots: Vec<Value>,
+    /// Pending Atomics.waitAsync promises of this agent.
+    async_waits: Vec<atomics::AsyncWait>,
+    /// [[CanBlock]]: whether Atomics.wait may suspend this agent (hosts like a browser's
+    /// main thread say no).
+    pub can_block: bool,
     /// Every realm by id; the current one is moved out into `realm` (its slot is `None`).
     realms: Vec<Option<Realm>>,
     /// The id of the current realm.
@@ -183,6 +189,8 @@ impl Vm {
             registry: HashMap::default(),
             templates: HashMap::default(),
             roots: Vec::new(),
+            async_waits: Vec::new(),
+            can_block: true,
             realms: vec![None],
             cur_realm: 0,
             yield_raw: false,
@@ -351,6 +359,7 @@ impl Vm {
         }
         roots.objects.extend(self.templates.values());
         roots.values.extend(self.roots.iter().cloned());
+        roots.values.extend(self.async_waits.iter().map(|w| w.resolve.clone()));
         for j in &self.jobs {
             j.trace(&mut roots.objects);
         }
