@@ -135,6 +135,12 @@ pub enum Op {
     /// Direct `eval` candidates.
     CallEval(u32),
     CallEvalSpread,
+    /// A call in tail position (§15.10.2) of strict function code: like `Call` then `Ret`,
+    /// but the caller's frame is released first (PrepareForTailCall, §15.10.3) when it has
+    /// nothing left to do (no active handler, not a [[Construct]]).
+    TailCall(u32),
+    /// `TailCall` for an `eval(...)` that turns out not to be %eval%.
+    TailCallEval(u32),
     /// `[ctor a1..an] → [obj]`
     New(u32),
     NewSpread,
@@ -288,14 +294,19 @@ pub enum Op {
     /// `[superclass?] → [F proto]`: the constructor from template `i`; `true`: has heritage.
     ClassCreate(u32, bool),
     /// `[F proto key] → [F proto]`: method/getter/setter (0/1/2) from template; flags 1 =
-    /// static, 2 = private.
+    /// static, 2 = private, 4 = decorated (`[F proto decorators key]`).
     ClassMethod(u32, u8, u8),
-    /// `[F proto key] → [F proto]`: a field with initializer template (`u32::MAX`: none).
-    ClassField(u32, bool),
+    /// `[F proto key] → [F proto]`: a field with initializer template (`u32::MAX`: none);
+    /// flags 1 = static, 2 = auto-accessor, 4 = decorated (`[F proto decorators key]`).
+    ClassField(u32, u8),
+    /// `[decorators F proto] → [F proto C]`: apply the element decorators, then the class
+    /// decorators; `C` is the decorated class (proposal-decorators).
+    ClassDecorate,
     /// `[F proto] → [F proto]`: a static block from template `i`.
     ClassStaticBlock(u32),
     /// `[F proto] → [F]`: static private methods, then static fields and blocks in order.
-    ClassFinish,
+    /// `true` (decorated): `[F proto C] → [C]`, then the class extra initializers.
+    ClassFinish(bool),
     /// InitializeInstanceElements for `this` (base class constructors).
     InitInstance,
     /// `[fn] → [fn]`: name an anonymous function after the field being initialized.
@@ -366,8 +377,9 @@ pub struct ImportEntry {
 pub struct ModuleInfo {
     /// Module specifiers in source order, without duplicates.
     pub requests: Vec<String>,
-    /// Requests imported only with `import defer` (not evaluated with this module).
-    pub deferred: Vec<String>,
+    /// [[RequestedModules]] with their phase (true: `defer`), in source order and unique
+    /// per (request, phase) (import-defer ModuleRequests).
+    pub phased: Vec<(String, bool)>,
     pub imports: Vec<ImportEntry>,
     /// (export name, local binding name)
     pub local_exports: Vec<(JsString, Rc<str>)>,

@@ -114,3 +114,19 @@ fn binary_operator_precedence() {
     assert_eq!(number("1 << 2 + 1"), 8.0);
     assert_eq!(number("1 | 2 & 3 ^ 4 === 4 ? 1 : 0"), 1.0);
 }
+
+#[test]
+fn strict_tail_calls_run_in_constant_frames() {
+    // §15.10: a million tail-recursive calls (an 8 MB thread would overflow without it).
+    assert_eq!(
+        number("'use strict'; function s(n, a) { return n === 0 ? a : s(n - 1, a + 1) } s(1000000, 0)"),
+        1e6
+    );
+    // A call inside `try` is no tail call: the handler still catches.
+    assert_eq!(
+        number("'use strict'; function g() { throw 2 } function f() { try { return g() } catch (e) { return e } } f()"),
+        2.0
+    );
+    // Sloppy code has no tail calls.
+    assert!(run("function s(n) { return n === 0 ? 0 : s(n - 1) } s(1e6)").1.is_err());
+}

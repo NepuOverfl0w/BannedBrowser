@@ -583,6 +583,17 @@ fn new_ta(
     ))
 }
 
+/// A Uint8Array over a new immutable ArrayBuffer holding `bytes` (import-bytes proposal:
+/// the default export of a `type: "bytes"` module).
+pub(crate) fn immutable_bytes(vm: &mut Vm, bytes: &[u8]) -> JsResult<ObjRef> {
+    let abp = vm.realm.array_buffer_proto;
+    let buf = allocate_buffer(vm, abp, bytes.len() as f64, None, false)?;
+    vm.buffer_write(buf, 0, bytes);
+    set_immutable(vm, buf);
+    let proto = vm.realm.ta_protos[TaKind::Uint8.index()];
+    Ok(new_ta(vm, TaKind::Uint8, proto, buf, 0, Some(bytes.len())))
+}
+
 /// AllocateTypedArray with a new zeroed buffer of `len` elements.
 pub(super) fn alloc_ta(vm: &mut Vm, kind: TaKind, proto: ObjRef, len: f64) -> JsResult<ObjRef> {
     let bytes = len * kind.size() as f64;

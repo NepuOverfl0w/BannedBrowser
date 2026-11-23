@@ -493,7 +493,16 @@ impl Parser {
         Ok(Program { body, strict: self.strict, module: self.module })
     }
 
+    /// Eval code inside a class: a private name must be one of the enclosing classes'
+    /// (AllPrivateIdentifiersValid, §19.2.1.1 step 7.c).
     fn check_unresolved_privates_at_top(&self) -> R<()> {
+        if let Some(c) = self.classes.first() {
+            for (n, pos) in &c.used {
+                if !c.declared.contains_key(n) {
+                    return Err(ParseError { pos: *pos, msg: format!("private name #{n} outside a class") });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1310,8 +1319,9 @@ impl Parser {
         }
     }
 
-    /// `with { type: "json" }` import attributes.
-    fn import_attributes(&mut self) -> R<()> {
+    /// `with { type: "json" }` import attributes; the value of `type`, if given.
+    fn import_attributes(&mut self) -> R<Option<JsStr>> {
+        let mut ty = None;
         if self.is_kw("with") && !self.tok.nl_before || self.is_kw("with") {
             self.next()?;
             self.expect("{")?;
@@ -1323,12 +1333,15 @@ impl Parser {
                     _ => return self.err("bad import attribute"),
                 };
                 self.next()?;
-                if !keys.insert(key) {
+                if !keys.insert(key.clone()) {
                     return self.err("duplicate import attribute");
                 }
                 self.expect(":")?;
-                if !matches!(self.tok.kind, TokKind::Str(_)) {
+                let TokKind::Str(v) = &self.tok.kind else {
                     return self.err("import attribute values are strings");
+                };
+                if key == utf16("type") {
+                    ty = Some(v.clone());
                 }
                 self.next()?;
                 if !self.eat(",")? {
@@ -1337,7 +1350,7 @@ impl Parser {
             }
             self.expect("}")?;
         }
-        Ok(())
+        Ok(ty)
     }
 
     /// A ModuleExportName: an identifier name or a string (well-formed, no lone surrogates).
@@ -1365,9 +1378,9 @@ impl Parser {
         let mut specs = Vec::new();
         if let TokKind::Str(_) = self.tok.kind {
             let source = self.module_specifier_string()?;
-            self.import_attributes()?;
+            let ty = self.import_attributes()?;
             self.semicolon()?;
-            return Ok(Stmt::Import { specs, source });
+            return Ok(Stmt::Import { specs, source, ty });
         }
         let bind = |p: &mut Parser, name: String, pos: usize| -> R<String> {
             p.check_ident(&name, true, pos)?;
@@ -1463,9 +1476,9 @@ impl Parser {
             return self.err("expected from");
         }
         let source = self.module_specifier_string()?;
-        self.import_attributes()?;
+        let ty = self.import_attributes()?;
         self.semicolon()?;
-        Ok(Stmt::Import { specs, source })
+        Ok(Stmt::Import { specs, source, ty })
     }
 
     fn add_export(&mut self, name: JsStr, pos: usize) -> R<()> {
@@ -1493,9 +1506,9 @@ impl Parser {
                 return self.err("expected from");
             }
             let source = self.module_specifier_string()?;
-            self.import_attributes()?;
+            let ty = self.import_attributes()?;
             self.semicolon()?;
-            return Ok(Stmt::ExportNamed { specs, source: Some(source), star: true });
+            return Ok(Stmt::ExportNamed { specs, source: Some(source), star: true, ty });
         }
         if self.eat("{")? {
             let mut specs = Vec::new();
@@ -1512,9 +1525,10 @@ impl Parser {
                 }
             }
             self.expect("}")?;
+            let mut ty = None;
             let source = if self.eat_kw("from")? {
                 let s = self.module_specifier_string()?;
-                self.import_attributes()?;
+                ty = self.import_attributes()?;
                 Some(s)
             } else {
                 for (l, is_str, pos) in locals {
@@ -1533,7 +1547,7 @@ impl Parser {
                 None
             };
             self.semicolon()?;
-            return Ok(Stmt::ExportNamed { specs, source, star: false });
+            return Ok(Stmt::ExportNamed { specs, source, star: false, ty });
         }
         if self.is("@") {
             let d = self.decorators()?;
@@ -1982,6 +1996,7 @@ impl Parser {
                 }
             }
             // `accessor x = 1;` (auto-accessors, with decorators): a field with generated get/set.
+            let mut is_accessor = false;
             if self.is_kw("accessor") {
                 let n = self.peek()?;
                 if !n.nl_before
@@ -1991,6 +2006,7 @@ impl Parser {
                     )
                 {
                     self.next()?;
+                    is_accessor = true;
                 }
             }
             let (mut is_async, mut is_gen, mut accessor) = (false, false, None::<FuncKind>);
@@ -2107,7 +2123,7 @@ impl Parser {
             }
             let value = if self.eat("=")? { Some(self.field_initializer(start)?) } else { None };
             self.semicolon()?;
-            members.push(ClassMember::Field { key, is_static, value });
+            members.push(ClassMember::Field { key, is_static, value, accessor: is_accessor });
         }
         Ok((constructor, members))
     }
@@ -3344,7 +3360,7 @@ pub fn parse_module(src: &str) -> Result<Program, ParseError> {
 
 /// Where a direct `eval` runs, for the early errors of its code (§19.2.1.1 PerformEval
 /// steps 5–7: `new.target`, `super` and `arguments` follow the calling context).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct EvalContext {
     pub strict: bool,
     pub new_target: bool,
@@ -3352,6 +3368,8 @@ pub struct EvalContext {
     pub super_call: bool,
     /// Inside a class field initializer: `arguments` is an error.
     pub no_arguments: bool,
+    /// The Private Names of the enclosing classes (PerformEval step 7, without the `#`).
+    pub private_names: Vec<String>,
 }
 
 /// Parse eval code: a script, strict when the caller is.
@@ -3362,5 +3380,12 @@ pub fn parse_eval(src: &str, ctx: EvalContext) -> Result<Program, ParseError> {
     p.fns[0].super_prop = ctx.super_prop;
     p.fns[0].super_call = ctx.super_call;
     p.fns[0].no_arguments = ctx.no_arguments;
+    if !ctx.private_names.is_empty() {
+        let mut outer = ClassPrivates::default();
+        for n in ctx.private_names {
+            outer.declared.insert(n, "field");
+        }
+        p.classes.push(outer);
+    }
     p.parse_program()
 }

@@ -25,7 +25,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 48_630;
+const FLOOR: usize = 48_741;
 
 /// Instructions per test variant before it counts as hung (TEST262_FUEL overrides it
 /// for experiments). The heaviest legitimate tests, the generated RegExp property-escape
@@ -144,6 +144,8 @@ fn install_262(vm: &mut Vm) {
     let dda = realm::native(vm, "IsHTMLDDA", 0, |_: &mut Vm, _: NativeCall| Ok(Value::Null));
     vm.heap.obj_mut(dda).html_dda = true;
     realm::value(vm, o, "IsHTMLDDA", Value::Object(dda));
+    let ams = vm.realm.abstract_module_source;
+    realm::value(vm, o, "AbstractModuleSource", Value::Object(ams));
     realm::method(vm, o, "detachArrayBuffer", 1, |vm: &mut Vm, c: NativeCall| -> JsResult<Value> {
         match c.arg(0) {
             Value::Object(b) => vm.detach_array_buffer(b)?,
@@ -336,9 +338,14 @@ fn run_variant(
             install_agent_main(&mut vm, o);
         }
     }
+    // `<module source>`: a module with a module source (source-phase-imports tests).
+    let _ = vm.register_module_source("<module source>", "ModuleSource");
     vm.loader = Some(Box::new(|spec: &str, referrer: Option<&str>| {
+        if spec == "<module source>" {
+            return Ok((spec.to_string(), Vec::new()));
+        }
         let p = resolve_specifier(spec, referrer);
-        let src = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let src = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
         Ok((p.to_string_lossy().into_owned(), src))
     }));
     vm.can_block = !m.flags.iter().any(|f| f == "CanBlockIsFalse");

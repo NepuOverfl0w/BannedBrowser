@@ -310,7 +310,7 @@ fn internalize(
     vm.call(reviver, Value::Object(holder), vec![name.to_value(), val, Value::Object(context)])
 }
 
-fn parse(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+pub(crate) fn parse(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let text = vm.to_string(&c.arg(0))?;
     let reviver = c.arg(1);
     let track = vm.is_callable(&reviver);

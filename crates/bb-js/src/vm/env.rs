@@ -269,6 +269,16 @@ impl Vm {
     /// What eval code may contain, from the calling context (§19.2.1.1 steps 5–7).
     pub(super) fn eval_context(&self, env: EnvRef, strict: bool) -> EvalContext {
         let mut ctx = EvalContext { strict, ..Default::default() };
+        // Class scopes bind their Private Names as `#name`.
+        let mut e = Some(env);
+        while let Some(r) = e {
+            for k in self.heap.env(r).bindings.keys() {
+                if let Some(n) = k.strip_prefix('#') {
+                    ctx.private_names.push(n.to_string());
+                }
+            }
+            e = self.heap.env(r).outer;
+        }
         let mut e = Some(env);
         while let Some(r) = e {
             if let EnvKind::Function { func, .. } = &self.heap.env(r).kind {

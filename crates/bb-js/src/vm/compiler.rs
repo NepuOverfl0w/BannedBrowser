@@ -288,22 +288,25 @@ impl<'a> Compiler<'a> {
                 decls.vars.push(v.as_str().into());
             }
         }
-        let req = |info: &mut ModuleInfo, s: &[u16]| {
-            let r = String::from_utf16_lossy(s);
+        // A ModuleRequest: `type\0specifier` (no `type` attribute: `\0specifier`); type
+        // values never contain NUL, so the first one separates them.
+        let req = |info: &mut ModuleInfo, s: &[u16], ty: &Option<Vec<u16>>| {
+            let t = ty.as_deref().map(String::from_utf16_lossy).unwrap_or_default();
+            let r = format!("{t}\0{}", String::from_utf16_lossy(s));
             if !info.requests.contains(&r) {
                 info.requests.push(r.clone());
             }
             r
         };
         let mut export_list: Vec<(JsString, JsString)> = Vec::new();
-        let mut eager: Vec<String> = Vec::new();
         for s in body {
             match s {
-                Stmt::Import { specs, source } => {
-                    let r = req(&mut info, source);
-                    if specs.is_empty() || specs.iter().any(|sp| !matches!(sp, ImportSpec::DeferNamespace(_)))
-                    {
-                        eager.push(r.clone());
+                Stmt::Import { specs, source, ty } => {
+                    let r = req(&mut info, source, ty);
+                    let defer = !specs.is_empty()
+                        && specs.iter().all(|sp| matches!(sp, ImportSpec::DeferNamespace(_)));
+                    if !info.phased.contains(&(r.clone(), defer)) {
+                        info.phased.push((r.clone(), defer));
                     }
                     for sp in specs {
                         let (import_name, local) = match sp {
@@ -322,9 +325,11 @@ impl<'a> Compiler<'a> {
                         });
                     }
                 }
-                Stmt::ExportNamed { specs, source: Some(src), star } => {
-                    let r = req(&mut info, src);
-                    eager.push(r.clone());
+                Stmt::ExportNamed { specs, source: Some(src), star, ty } => {
+                    let r = req(&mut info, src, ty);
+                    if !info.phased.contains(&(r.clone(), false)) {
+                        info.phased.push((r.clone(), false));
+                    }
                     if *star && specs.is_empty() {
                         info.star_exports.push(r);
                     } else if *star {
@@ -379,8 +384,11 @@ impl<'a> Compiler<'a> {
         // `export { x }` of an imported x re-exports the import (§16.2.1.6.1 step 10).
         for (e, l) in export_list {
             let local = String::from_utf16_lossy(&l);
+            // A namespace import re-exported this way is the namespace re-export
+            // `export * as e from` (it resolves to that module's namespace, so two of them
+            // aren't ambiguous); a deferred namespace stays a local binding.
             match info.imports.iter().find(|i| &*i.local == local.as_str()).cloned() {
-                Some(ImportEntry { import_name: None, .. }) | None => {
+                Some(ImportEntry { deferred: true, .. }) | None => {
                     info.local_exports.push((e, local.as_str().into()))
                 }
                 Some(ie) => info.indirect_exports.push((e, ie.request.clone(), ie.import_name.clone())),
@@ -426,7 +434,6 @@ impl<'a> Compiler<'a> {
         }
         info.has_tla = body.iter().any(stmt_has_await);
         c.code.decls = decls;
-        info.deferred = info.requests.iter().filter(|r| !eager.contains(r)).cloned().collect();
         c.code.module = Some(Box::new(info));
         if c.code.module.as_ref().is_some_and(|m| m.has_tla) {
             c.emit(Op::AsyncStart);
@@ -624,6 +631,10 @@ impl<'a> Compiler<'a> {
         c.stmts(&f.body);
         c.emit(Op::Undef);
         c.emit(Op::Ret);
+        // Strict, non-async, non-generator function code has tail calls (§15.10.1).
+        if f.strict && !f.is_async && !f.is_generator && f.kind != FuncKind::ClassField {
+            mark_tail_calls(&mut c.code.ops);
+        }
         c.code
     }
 
@@ -2670,10 +2681,20 @@ impl<'a> Compiler<'a> {
     // ---- classes (§15.7) ----
 
     /// ClassDefinitionEvaluation (§15.7.14): `[] → [F]`.
+    /// `[decorators]`: a DecoratorList's values, in order, as an array.
+    fn decorator_list(&mut self, ds: &'a [Expr]) {
+        self.emit(Op::Array);
+        for d in ds {
+            self.expr(d);
+            self.emit(Op::ArrayPush);
+        }
+    }
+
     fn class(&mut self, c: &'a Class, given: Option<&str>) {
-        if !c.decorators.is_empty() || !c.member_decorators.is_empty() {
-            self.unsupported("decorators");
-            return;
+        let decorated = !c.decorators.is_empty() || !c.member_decorators.is_empty();
+        if decorated {
+            // Class decorators are evaluated before the class scope exists.
+            self.decorator_list(&c.decorators);
         }
         self.emit(Op::PushScope);
         self.ctl.push(Ctl::Scope);
@@ -2733,7 +2754,15 @@ impl<'a> Compiler<'a> {
         self.code.funcs.push(Rc::new(t));
         let ti = self.code.funcs.len() as u32 - 1;
         self.emit(Op::ClassCreate(ti, derived));
-        for m in &c.members {
+        for (mi, m) in c.members.iter().enumerate() {
+            // An element's decorators are evaluated before its key.
+            let decs = c.member_decorators.iter().find(|(i, _)| *i == mi).map(|(_, d)| d.as_slice());
+            let dflag = if let Some(ds) = decs {
+                self.decorator_list(ds);
+                4
+            } else {
+                0
+            };
             match m {
                 ClassMember::Method { key, is_static, kind, func } => {
                     let private = matches!(key, crate::ast::PropKey::Private(_));
@@ -2744,12 +2773,12 @@ impl<'a> Compiler<'a> {
                         FuncKind::Setter => 2,
                         _ => 0,
                     };
-                    self.emit(Op::ClassMethod(t, k, *is_static as u8 | if private { 2 } else { 0 }));
+                    self.emit(Op::ClassMethod(t, k, *is_static as u8 | if private { 2 } else { 0 } | dflag));
                 }
-                ClassMember::Field { key, is_static, value } => {
+                ClassMember::Field { key, is_static, value, accessor } => {
                     self.class_key(key);
                     let t = value.as_ref().map(|v| self.template(v, false)).unwrap_or(u32::MAX);
-                    self.emit(Op::ClassField(t, *is_static));
+                    self.emit(Op::ClassField(t, *is_static as u8 | if *accessor { 2 } else { 0 } | dflag));
                 }
                 ClassMember::StaticBlock(f) => {
                     let t = self.template(f, false);
@@ -2757,12 +2786,20 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
-        if let Some(n) = &c.name {
+        if decorated {
+            self.emit(Op::ClassDecorate);
+            // The inner binding is the decorated class.
+            if let Some(n) = &c.name {
+                self.emit(Op::Dup);
+                let i = self.name(n);
+                self.emit(Op::InitBinding(i));
+            }
+        } else if let Some(n) = &c.name {
             self.emit(Op::Pick(1));
             let i = self.name(n);
             self.emit(Op::InitBinding(i));
         }
-        self.emit(Op::ClassFinish);
+        self.emit(Op::ClassFinish(decorated));
         self.ctl.pop();
         self.emit(Op::PopScope);
     }
@@ -3125,6 +3162,30 @@ fn block_lexical(body: &[Stmt], out: &mut Vec<(String, bool)>, funcs: &mut Vec<R
         }
         if let Stmt::Function(f) = s {
             funcs.push(f.clone());
+        }
+    }
+}
+
+/// Calls whose result goes straight to `Ret` (through unconditional jumps only) are in tail
+/// position: the conditional, logical, coalesce and comma operators and the statements
+/// around a `return` compile to exactly that shape. A `return` that runs cleanup first
+/// (`finally`, iterator close, disposal) stores its value with `SetRet` and is no tail call.
+fn mark_tail_calls(ops: &mut [Op]) {
+    let leads_to_ret = |ops: &[Op], mut j: usize| {
+        for _ in 0..16 {
+            match ops.get(j) {
+                Some(Op::Ret) => return true,
+                Some(Op::Jump(t)) => j = *t as usize,
+                _ => return false,
+            }
+        }
+        false
+    };
+    for i in 0..ops.len() {
+        match ops[i] {
+            Op::Call(n) if leads_to_ret(ops, i + 1) => ops[i] = Op::TailCall(n),
+            Op::CallEval(n) if leads_to_ret(ops, i + 1) => ops[i] = Op::TailCallEval(n),
+            _ => {}
         }
     }
 }

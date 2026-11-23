@@ -149,9 +149,11 @@ pub struct Vm {
     pub(crate) module_map: HashMap<String, usize>,
     /// Host hook (HostLoadImportedModule): (specifier, referrer key) → (module key, source).
     #[allow(clippy::type_complexity)]
-    pub loader: Option<Box<dyn FnMut(&str, Option<&str>) -> Result<(String, String), String>>>,
+    /// HostLoadImportedModule: (specifier, referrer key) → (module key, source bytes).
+    pub loader: Option<Box<dyn FnMut(&str, Option<&str>) -> Result<(String, Vec<u8>), String>>>,
     /// Pending module evaluations waiting on async modules.
-    pub(crate) module_evals: Vec<Option<module::PendingEval>>,
+    /// [[ModuleAsyncEvaluationCount]] (§16.2.1.6.3 IncrementModuleAsyncEvaluationCount).
+    pub(crate) module_async_count: u64,
     /// Values hosts keep alive across calls.
     pub roots: Vec<Value>,
     /// Pending Atomics.waitAsync promises of this agent.
@@ -198,7 +200,7 @@ impl Vm {
             modules: Vec::new(),
             module_map: HashMap::default(),
             loader: None,
-            module_evals: Vec::new(),
+            module_async_count: 0,
             name_keys: HashMap::default(),
             output: Vec::new(),
             fuel: None,
@@ -365,9 +367,6 @@ impl Vm {
         }
         for m in &self.modules {
             m.trace(&mut roots);
-        }
-        for p in self.module_evals.iter().flatten() {
-            p.trace(&mut roots);
         }
         self.heap.collect(&roots);
     }
@@ -1266,6 +1265,22 @@ impl Vm {
                 let f = self.pop();
                 return self.op_call(f, this, args);
             }
+            Op::TailCall(n) => {
+                let args = self.pop_n(n as usize);
+                let this = self.pop();
+                let f = self.pop();
+                return self.op_tail_call(f, this, args);
+            }
+            Op::TailCallEval(n) => {
+                let args = self.pop_n(n as usize);
+                let this = self.pop();
+                let f = self.pop();
+                if matches!(&f, Value::Object(o) if *o == self.realm.eval) {
+                    // A direct eval needs this frame's environment: no tail call.
+                    return self.op_call_eval(f, this, args);
+                }
+                return self.op_tail_call(f, this, args);
+            }
             Op::CallSpread => {
                 let arr = self.pop();
                 let this = self.pop();
@@ -1833,9 +1848,10 @@ impl Vm {
             }
             Op::ClassCreate(t, h) => self.class_create(t, h)?,
             Op::ClassMethod(t, k, fl) => self.class_method(t, k, fl)?,
-            Op::ClassField(t, st) => self.class_field(t, st)?,
+            Op::ClassField(t, fl) => self.class_field(t, fl)?,
+            Op::ClassDecorate => self.class_decorate()?,
             Op::ClassStaticBlock(t) => self.class_static_block(t)?,
-            Op::ClassFinish => self.class_finish()?,
+            Op::ClassFinish(d) => self.class_finish(d)?,
             Op::InitInstance => {
                 let env = self.top().env;
                 let this = self.resolve_this(env)?;
@@ -1913,6 +1929,44 @@ impl Vm {
         } else {
             self.maybe_gc();
         }
+        Ok(None)
+    }
+
+    /// A call in tail position: PrepareForTailCall (§15.10.3) releases this frame before the
+    /// callee's starts, so tail-recursive code runs in constant frames. When the frame
+    /// still has work after the call (an active handler, a [[Construct]], a generator or
+    /// async function) or the callee isn't an ordinary function, it is `Call` + `Ret`.
+    fn op_tail_call(&mut self, f: Value, this: Value, args: Vec<Value>) -> JsResult<Option<Value>> {
+        let Value::Object(mut fo) = f else {
+            return self.type_error(&format!("{} is not a function", self.describe_short(&f)));
+        };
+        let (mut this, mut args) = (this, args);
+        // A bound function's target, with its bound `this` and arguments.
+        while let Kind::Bound(b) = &self.heap.obj(fo).kind {
+            let mut a = b.args.clone();
+            a.extend(args);
+            (fo, this, args) = (b.target, b.this.clone(), a);
+        }
+        let plain = match &self.heap.obj(fo).kind {
+            Kind::Function(c) => !c.class_ctor && !c.tmpl.ast.is_async && !c.tmpl.ast.is_generator,
+            _ => false,
+        };
+        let fr = self.frames.last().expect("frame");
+        let releasable = plain
+            && fr.callee.is_some()
+            && fr.generator.is_none()
+            && fr.construct.is_none()
+            && fr.handlers.is_empty()
+            && !fr.in_params;
+        if !releasable {
+            // An ordinary call; the jumps after this op still lead to `Ret`.
+            return self.op_call(Value::Object(fo), this, args);
+        }
+        // This may be a run's base frame: the callee's frame takes its place, and its
+        // return ends the run as this frame's would have.
+        self.frames.pop();
+        self.enter_closure(fo, this, args, None)?;
+        self.maybe_gc();
         Ok(None)
     }
 
@@ -2061,6 +2115,7 @@ impl Vm {
             private_methods: Vec::new(),
             static_elems: Vec::new(),
             field_name: None,
+            decor: None,
         };
         let fo = self.heap.alloc(Object::new(Some(proto), Kind::Function(Box::new(closure))));
         let o = self.heap.obj_mut(fo);

@@ -23,7 +23,9 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   `arguments`, `import defer`, ShadowRealm, immutable ArrayBuffers, Atomics.wait/waitAsync
   across `$262.agent` threads, `Error.prototype.stack`, Temporal (ISO calendar; UTC and
   offset time zones), [[IsHTMLDDA]] for `document.all` and the legacy RegExp statics
-  (`RegExp.$1`, `RegExp.lastMatch`, …): 99.65 % of test262 runs correctly so far.
+  (`RegExp.$1`, `RegExp.lastMatch`, …), proper tail calls, decorators and auto-accessors,
+  JSON, text and bytes modules (`import … with { type: "json" }`) and source-phase imports:
+  99.87 % of test262 runs correctly so far.
   The browser doesn't run page scripts with it yet (that's milestone E).
 - **HTTP/2** (RFC 9113) with our own HPACK (RFC 7541, incl. Huffman coding), negotiated with
   ALPN `h2` over TLS (also through CONNECT proxies); HTTP/1.1 otherwise. One connection per

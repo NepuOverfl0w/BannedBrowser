@@ -30,6 +30,8 @@ macro_rules! realm_objects {
             pub sym_split: Sym,
             pub sym_dispose: Sym,
             pub sym_async_dispose: Sym,
+            /// Symbol.metadata (proposal-decorator-metadata).
+            pub sym_metadata: Sym,
             /// The legacy RegExp static slots (proposal-regexp-legacy-features): input,
             /// lastMatch, lastParen, leftContext, rightContext, $1–$9. `None` = ~empty~.
             pub regexp_statics: Option<Box<[JsString; 14]>>,
@@ -63,6 +65,7 @@ macro_rules! realm_objects {
                     sym_split: s("Symbol.split"),
                     sym_dispose: s("Symbol.dispose"),
                     sym_async_dispose: s("Symbol.asyncDispose"),
+                    sym_metadata: s("Symbol.metadata"),
                     regexp_statics: Some(Box::new(std::array::from_fn(|_| js_str("")))),
                 }
             }
@@ -124,6 +127,8 @@ realm_objects!(
     suppressed_error_proto,
     disposable_stack_proto,
     async_disposable_stack_proto,
+    abstract_module_source,
+    abstract_module_source_proto,
     shadow_realm_proto,
     set_iterator_proto,
     eval,
@@ -155,6 +160,7 @@ impl Realm {
         self.sym_split = from.sym_split.clone();
         self.sym_dispose = from.sym_dispose.clone();
         self.sym_async_dispose = from.sym_async_dispose.clone();
+        self.sym_metadata = from.sym_metadata.clone();
     }
 
     pub fn well_known(&self) -> Vec<(&'static str, Sym)> {
@@ -167,6 +173,7 @@ impl Realm {
             ("iterator", self.sym_iterator.clone()),
             ("match", self.sym_match.clone()),
             ("matchAll", self.sym_match_all.clone()),
+            ("metadata", self.sym_metadata.clone()),
             ("replace", self.sym_replace.clone()),
             ("search", self.sym_search.clone()),
             ("species", self.sym_species.clone()),

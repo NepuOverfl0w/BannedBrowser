@@ -20,7 +20,17 @@ pub enum Status {
     New,
     Linked,
     Evaluating,
+    /// evaluating-async: waiting for asynchronous dependencies or its own top-level await.
+    EvaluatingAsync,
     Evaluated,
+}
+
+/// [[AsyncEvaluationOrder]] (§16.2.1.6): unset, an integer, or done.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AsyncOrder {
+    Unset,
+    Order(u64),
+    Done,
 }
 
 pub struct ModuleRecord {
@@ -35,8 +45,21 @@ pub struct ModuleRecord {
     pub meta: Option<ObjRef>,
     /// specifier → module id
     pub loaded: Vec<(String, usize)>,
-    /// The promise of this module's evaluation (shared by the graph it was evaluated in).
-    pub eval_promise: Option<Value>,
+    /// [[TopLevelCapability]]: (promise, resolve, reject), on the module Evaluate() ran for.
+    pub capability: Option<(Value, Value, Value)>,
+    /// [[DFSIndex]], [[DFSAncestorIndex]], [[CycleRoot]] (§16.2.1.6).
+    pub dfs_index: usize,
+    pub dfs_ancestor: usize,
+    pub cycle_root: Option<usize>,
+    pub async_order: AsyncOrder,
+    /// [[AsyncParentModules]] and [[PendingAsyncDependencies]].
+    pub async_parents: Vec<usize>,
+    pub pending_async: usize,
+    /// A synthetic module's default export (JSON, text and bytes modules).
+    pub synthetic: Option<Value>,
+    /// [[ModuleSource]] (source-phase-imports): `import source x` binds it. Source text
+    /// modules have none.
+    pub source_object: Option<ObjRef>,
 }
 
 impl ModuleRecord {
@@ -48,24 +71,13 @@ impl ModuleRecord {
         if let Some(e) = &self.error {
             roots.values.push(e.clone());
         }
-        if let Some(p) = &self.eval_promise {
-            roots.values.push(p.clone());
+        if let Some((p, r, j)) = &self.capability {
+            roots.values.extend([p.clone(), r.clone(), j.clone()]);
         }
-    }
-}
-
-/// An evaluation in progress: the modules in order and the graph's promise capability.
-pub struct PendingEval {
-    pub order: Vec<usize>,
-    pub next: usize,
-    pub resolve: Value,
-    pub reject: Value,
-}
-
-impl PendingEval {
-    pub fn trace(&self, roots: &mut Roots) {
-        roots.values.push(self.resolve.clone());
-        roots.values.push(self.reject.clone());
+        if let Some(v) = &self.synthetic {
+            roots.values.push(v.clone());
+        }
+        roots.objects.extend(self.source_object);
     }
 }
 
@@ -114,21 +126,118 @@ impl Vm {
             deferred_ns: None,
             meta: None,
             loaded: Vec::new(),
-            eval_promise: None,
+            capability: None,
+            dfs_index: 0,
+            dfs_ancestor: 0,
+            cycle_root: None,
+            async_order: AsyncOrder::Unset,
+            async_parents: Vec::new(),
+            pending_async: 0,
+            synthetic: None,
+            source_object: None,
         });
         self.module_map.insert(key.to_string(), id);
         Ok(id)
     }
 
-    /// HostLoadImportedModule through the host's loader.
-    fn host_load(&mut self, specifier: &str, referrer: Option<&str>) -> JsResult<usize> {
+    /// A synthetic module with one export, `default` (CreateDefaultExportSyntheticModule,
+    /// §16.2.1.8 for JSON modules; the import-text and import-bytes proposals).
+    fn load_synthetic(&mut self, key: &str, ty: &str, bytes: &[u8]) -> JsResult<usize> {
+        let mkey = format!("{ty}\0{key}");
+        if let Some(&id) = self.module_map.get(&mkey) {
+            return Ok(id);
+        }
+        // UTF-8 decode (BOM stripped, errors replaced) for the textual types.
+        let text = || {
+            let b = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+            String::from_utf8_lossy(b).into_owned()
+        };
+        let value = match ty {
+            "json" => {
+                let src = Value::str(&text());
+                let call = NativeCall {
+                    callee: self.realm.global,
+                    this: Value::Undefined,
+                    args: vec![src],
+                    new_target: None,
+                };
+                super::builtins::json::parse(self, call)?
+            }
+            "text" => Value::str(&text()),
+            "bytes" => Value::Object(super::builtins::typed::immutable_bytes(self, bytes)?),
+            _ => return self.type_error(&format!("Unsupported module type '{ty}'")),
+        };
+        let prog = match crate::parse_module("") {
+            Ok(p) => p,
+            Err(e) => return self.syntax_error(&e.msg),
+        };
+        let mut code = Compiler::compile_unit(Unit::Module(&prog), Rc::from(Vec::new()), Some(key.into()));
+        if let Some(info) = code.module.as_mut() {
+            info.local_exports.push((js_str("default"), "*default*".into()));
+        }
+        code.decls.lexical.push(("*default*".into(), true));
+        let id = self.modules.len();
+        self.modules.push(ModuleRecord {
+            key: key.to_string(),
+            code: Rc::new(code),
+            status: Status::New,
+            error: None,
+            env: None,
+            namespace: None,
+            deferred_ns: None,
+            meta: None,
+            loaded: Vec::new(),
+            capability: None,
+            dfs_index: 0,
+            dfs_ancestor: 0,
+            cycle_root: None,
+            async_order: AsyncOrder::Unset,
+            async_parents: Vec::new(),
+            pending_async: 0,
+            synthetic: Some(value),
+            source_object: None,
+        });
+        self.module_map.insert(mkey, id);
+        Ok(id)
+    }
+
+    /// GetModuleSource: the module's [[ModuleSource]]; a source text module has none
+    /// (SyntaxError, source-phase-imports).
+    fn module_source(&mut self, id: usize) -> JsResult<Value> {
+        match self.modules[id].source_object {
+            Some(o) => Ok(Value::Object(o)),
+            None => self.syntax_error("Source phase imports of source text modules are not supported"),
+        }
+    }
+
+    /// Register a host module under `key` that has a module source: an object of class
+    /// `class_name` inheriting from %AbstractModuleSource.prototype% (what a WebAssembly
+    /// module is for `import source`). The module itself has no exports.
+    pub fn register_module_source(&mut self, key: &str, class_name: &str) -> JsResult<ObjRef> {
+        let ap = self.realm.abstract_module_source_proto;
+        let proto = self.new_object_with_proto(Some(ap));
+        let src = self.heap.alloc(Object::new(Some(proto), Kind::ModuleSource(class_name.into())));
+        let id = self.load_module_source(key, "")?;
+        self.modules[id].source_object = Some(src);
+        Ok(src)
+    }
+
+    /// HostLoadImportedModule through the host's loader. `request` is a ModuleRequest as the
+    /// compiler writes it: `type\0specifier`, or a bare specifier.
+    fn host_load(&mut self, request: &str, referrer: Option<&str>) -> JsResult<usize> {
+        let (ty, specifier) = request.split_once('\0').unwrap_or(("", request));
         let Some(mut loader) = self.loader.take() else {
             return self.type_error(&format!("Cannot load module '{specifier}': no module loader"));
         };
         let r = loader(specifier, referrer);
         self.loader = Some(loader);
         match r {
-            Ok((key, src)) => self.load_module_source(&key, &src),
+            Ok((key, bytes)) if ty.is_empty() => {
+                let src = String::from_utf8_lossy(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes))
+                    .into_owned();
+                self.load_module_source(&key, &src)
+            }
+            Ok((key, bytes)) => self.load_synthetic(&key, ty, &bytes),
             Err(msg) => self.type_error(&format!("Cannot load module '{specifier}': {msg}")),
         }
     }
@@ -182,6 +291,8 @@ impl Vm {
                 let m = self.child(id, req);
                 return match imp {
                     None => Resolution::Found(m, None),
+                    // A re-exported source binding resolves to the module's ~source~.
+                    Some(i) if is_source(i) => Resolution::Found(m, Some(SOURCE.into())),
                     Some(i) => self.resolve_export(m, i, set),
                 };
             }
@@ -317,44 +428,52 @@ impl Vm {
                         },
                     );
                 }
-                Some(name) => {
-                    if name.iter().copied().eq("*source*".encode_utf16()) {
-                        return self
-                            .syntax_error("Source phase imports of source text modules are not allowed");
-                    }
-                    match self.resolve_export(m, name, &mut Vec::new()) {
-                        Resolution::Found(rm, None) => {
-                            let ns = self.module_namespace(rm)?;
-                            self.heap.env_mut(env).bindings.insert(
-                                ie.local.clone(),
-                                Binding {
-                                    value: Some(Value::Object(ns)),
-                                    mutable: false,
-                                    strict: true,
-                                    deletable: false,
-                                },
-                            );
-                        }
-                        Resolution::Found(rm, Some(bn)) => {
-                            let Some(target) = self.modules[rm].env else {
-                                return self.reference_error("module not linked");
-                            };
-                            if let EnvKind::Module { imports } = &mut self.heap.env_mut(env).kind {
-                                imports.insert(ie.local.clone(), (target, bn));
-                            }
-                        }
-                        Resolution::NotFound => {
-                            return self.syntax_error(&format!(
-                                "The requested module '{}' does not provide an export named '{}'",
-                                ie.request,
-                                to_rust(name)
-                            ))
-                        }
-                        Resolution::Ambiguous => {
-                            return self.syntax_error(&format!("The export '{}' is ambiguous", to_rust(name)))
-                        }
-                    }
+                Some(name) if is_source(name) => {
+                    let v = self.module_source(m)?;
+                    self.heap.env_mut(env).bindings.insert(
+                        ie.local.clone(),
+                        Binding { value: Some(v), mutable: false, strict: true, deletable: false },
+                    );
                 }
+                Some(name) => match self.resolve_export(m, name, &mut Vec::new()) {
+                    Resolution::Found(rm, Some(bn)) if &*bn == SOURCE => {
+                        let v = self.module_source(rm)?;
+                        self.heap.env_mut(env).bindings.insert(
+                            ie.local.clone(),
+                            Binding { value: Some(v), mutable: false, strict: true, deletable: false },
+                        );
+                    }
+                    Resolution::Found(rm, None) => {
+                        let ns = self.module_namespace(rm)?;
+                        self.heap.env_mut(env).bindings.insert(
+                            ie.local.clone(),
+                            Binding {
+                                value: Some(Value::Object(ns)),
+                                mutable: false,
+                                strict: true,
+                                deletable: false,
+                            },
+                        );
+                    }
+                    Resolution::Found(rm, Some(bn)) => {
+                        let Some(target) = self.modules[rm].env else {
+                            return self.reference_error("module not linked");
+                        };
+                        if let EnvKind::Module { imports } = &mut self.heap.env_mut(env).kind {
+                            imports.insert(ie.local.clone(), (target, bn));
+                        }
+                    }
+                    Resolution::NotFound => {
+                        return self.syntax_error(&format!(
+                            "The requested module '{}' does not provide an export named '{}'",
+                            ie.request.split_once('\0').map_or(ie.request.as_str(), |r| r.1),
+                            to_rust(name)
+                        ))
+                    }
+                    Resolution::Ambiguous => {
+                        return self.syntax_error(&format!("The export '{}' is ambiguous", to_rust(name)))
+                    }
+                },
             }
         }
         let code = self.modules[id].code.clone();
@@ -379,6 +498,12 @@ impl Vm {
                 n.clone(),
                 Binding { value: Some(Value::Object(f)), mutable: true, strict: false, deletable: false },
             );
+        }
+        // SetSyntheticModuleExport: a synthetic module has no code to run.
+        if let Some(v) = self.modules[id].synthetic.clone() {
+            if let Some(b) = self.heap.env_mut(env).bindings.get_mut("*default*") {
+                b.value = Some(v);
+            }
         }
         Ok(())
     }
@@ -457,69 +582,59 @@ impl Vm {
             return true;
         }
         seen.push(id);
-        let m = &self.modules[id];
-        if m.status == Status::Evaluated {
+        if self.scc_evaluated(id) {
             return true;
         }
-        if m.status == Status::Evaluating || m.eval_promise.is_some() {
+        let m = &self.modules[id];
+        if matches!(m.status, Status::Evaluating | Status::EvaluatingAsync | Status::Evaluated) {
             return false;
         }
         if m.code.module.as_ref().is_some_and(|i| i.has_tla) {
             return false;
         }
-        let deferred = self.module_info(id).deferred.clone();
-        m.loaded.iter().filter(|(s, _)| !deferred.contains(s)).all(|(_, c)| self.ready_for_sync(*c, seen))
+        // Every requested module, deferred ones included.
+        m.loaded.iter().all(|(_, c)| self.ready_for_sync(*c, seen))
     }
 
-    /// EvaluateSync: run the module's (synchronous) graph now; its error, if any, throws.
+    /// EvaluateModuleSync (import-defer): Evaluate() settles at once for a graph that is
+    /// ready for synchronous execution; its error throws.
     fn evaluate_sync(&mut self, id: usize) -> JsResult<()> {
-        let mut order = Vec::new();
-        self.eval_order(id, &mut Vec::new(), &mut order);
-        for m in order {
-            if self.modules[m].status == Status::Evaluated {
-                if let Some(e) = self.modules[m].error.clone() {
-                    return Err(e);
+        let p = self.evaluate(id)?;
+        match self.promise_result(&p) {
+            Some(Err(e)) => {
+                if let Some(d) = p.as_object().and_then(|po| self.promise_data(po)) {
+                    d.handled = true;
                 }
-                continue;
+                Err(e)
             }
-            let dep_error = self.modules[m].loaded.iter().find_map(|(_, c)| self.modules[*c].error.clone());
-            if let Some(e) = dep_error {
-                self.modules[m].status = Status::Evaluated;
-                self.modules[m].error = Some(e.clone());
-                return Err(e);
-            }
-            self.modules[m].status = Status::Evaluating;
-            let code = self.modules[m].code.clone();
-            let env = self.modules[m].env.expect("linked module");
-            let frame = self.frame(code, env, env);
-            let r = self.execute(frame);
-            self.modules[m].status = Status::Evaluated;
-            if let Err(e) = r {
-                if !self.terminated {
-                    self.modules[m].error = Some(e.clone());
-                }
-                return Err(e);
-            }
+            _ => Ok(()),
         }
-        Ok(())
     }
 
-    /// GatherAsynchronousTransitiveDependencies: the modules with top-level await a
-    /// deferred import still evaluates eagerly.
+    /// IsModuleSCCEvaluated (import-defer): evaluated once its whole cycle is.
+    fn scc_evaluated(&self, id: usize) -> bool {
+        let m = self.modules[id].cycle_root.unwrap_or(id);
+        self.modules[m].status == Status::Evaluated
+    }
+
+    /// GatherAsynchronousTransitiveDependencies (import-defer): the modules with top-level
+    /// await that a deferred import still evaluates eagerly.
     fn gather_async(&self, id: usize, seen: &mut Vec<usize>, out: &mut Vec<usize>) {
-        if seen.contains(&id) || self.modules[id].status == Status::Evaluated {
+        if seen.contains(&id) {
             return;
         }
         seen.push(id);
-        if self.modules[id].code.module.as_ref().is_some_and(|i| i.has_tla) {
-            out.push(id);
+        if self.modules[id].status == Status::Evaluating || self.scc_evaluated(id) {
             return;
         }
-        let deferred = self.module_info(id).deferred.clone();
-        for (s, c) in &self.modules[id].loaded {
-            if !deferred.contains(s) {
-                self.gather_async(*c, seen, out);
+        if self.modules[id].code.module.as_ref().is_some_and(|i| i.has_tla) {
+            if !out.contains(&id) {
+                out.push(id);
             }
+            return;
+        }
+        for (_, c) in &self.modules[id].loaded {
+            self.gather_async(*c, seen, out);
         }
     }
 
@@ -554,6 +669,7 @@ impl Vm {
         let Value::String(name) = k.to_value() else { return Ok(Value::Undefined) };
         match self.resolve_export(id, &name, &mut Vec::new()) {
             Resolution::Found(m, None) => Ok(Value::Object(self.module_namespace(m)?)),
+            Resolution::Found(m, Some(bn)) if &*bn == SOURCE => self.module_source(m),
             Resolution::Found(m, Some(bn)) => {
                 let Some(env) = self.modules[m].env else { return self.reference_error("module not linked") };
                 self.get_binding_value(env, &bn, true)
@@ -647,131 +763,248 @@ impl Vm {
         }
     }
 
-    /// Evaluate (§16.2.1.5.3) as a promise.
+    /// Evaluate (§16.2.1.5.3): the promise of the module's (or its cycle root's) evaluation.
     fn evaluate(&mut self, id: usize) -> JsResult<Value> {
-        if let Some(p) = &self.modules[id].eval_promise {
+        let mut id = id;
+        if matches!(self.modules[id].status, Status::EvaluatingAsync | Status::Evaluated) {
+            if let Some(r) = self.modules[id].cycle_root {
+                id = r;
+            }
+        }
+        if let Some((p, _, _)) = &self.modules[id].capability {
             return Ok(p.clone());
         }
         let p = self.new_promise(None);
         let (resolve, reject) = self.create_resolving_functions(p);
-        let mut order = Vec::new();
-        let mut seen = Vec::new();
-        self.eval_order(id, &mut seen, &mut order);
-        for m in &order {
-            self.modules[*m].eval_promise = Some(Value::Object(p));
+        self.modules[id].capability = Some((Value::Object(p), resolve.clone(), reject.clone()));
+        let mut stack = Vec::new();
+        match self.inner_module_evaluation(id, &mut stack, 0) {
+            Err(e) => {
+                if self.terminated {
+                    return Err(e);
+                }
+                for m in stack {
+                    self.modules[m].status = Status::Evaluated;
+                    self.modules[m].error = Some(e.clone());
+                }
+                self.call(&reject, Value::Undefined, vec![e])?;
+            }
+            Ok(_) => {
+                if self.modules[id].async_order == AsyncOrder::Unset {
+                    self.call(&resolve, Value::Undefined, vec![Value::Undefined])?;
+                }
+            }
         }
-        if let Some(e) = self.modules[id].error.clone() {
-            self.call(&reject, Value::Undefined, vec![e])?;
-            return Ok(Value::Object(p));
-        }
-        self.continue_eval(PendingEval { order, next: 0, resolve, reject })?;
         Ok(Value::Object(p))
     }
 
-    /// Evaluate several modules' graphs in order, as one promise.
+    /// Evaluate several modules' graphs (`import.defer()`'s asynchronous dependencies) as
+    /// one promise that fulfills when all of theirs have.
     fn evaluate_list(&mut self, ids: &[usize]) -> JsResult<Value> {
         let p = self.new_promise(None);
         let (resolve, reject) = self.create_resolving_functions(p);
-        let mut order = Vec::new();
-        let mut seen = Vec::new();
-        for &id in ids {
-            self.eval_order(id, &mut seen, &mut order);
+        let counter = self.new_array(vec![Value::Number(ids.len() as f64)]);
+        if ids.is_empty() {
+            self.call(&resolve, Value::Undefined, vec![Value::Undefined])?;
         }
-        self.continue_eval(PendingEval { order, next: 0, resolve, reject })?;
+        for &id in ids {
+            let ep = self.evaluate(id)?;
+            let ful =
+                native_with(self, "", 1, all_step, false, vec![Value::Object(counter), resolve.clone()]);
+            if let Value::Object(po) = ep {
+                self.perform_then(po, Value::Object(ful), reject.clone(), None);
+            }
+        }
         Ok(Value::Object(p))
     }
 
-    fn eval_order(&self, id: usize, seen: &mut Vec<usize>, order: &mut Vec<usize>) {
-        if seen.contains(&id) || self.modules[id].status == Status::Evaluated {
-            return;
-        }
-        seen.push(id);
-        let deferred = self.module_info(id).deferred.clone();
-        for (s, c) in &self.modules[id].loaded {
-            if deferred.contains(s) {
-                // A deferred import evaluates only its asynchronous dependencies now.
+    /// The modules InnerModuleEvaluation visits from `id`: its non-deferred requests, and for
+    /// a deferred one the asynchronous dependencies it still evaluates (import-defer).
+    fn required_modules(&self, id: usize) -> Vec<usize> {
+        let mut out: Vec<usize> = Vec::new();
+        for (r, defer) in &self.module_info(id).phased {
+            let c = self.child(id, r);
+            if *defer {
                 let mut asyncs = Vec::new();
-                self.gather_async(*c, &mut Vec::new(), &mut asyncs);
+                self.gather_async(c, &mut Vec::new(), &mut asyncs);
                 for a in asyncs {
-                    self.eval_order(a, seen, order);
+                    if !out.contains(&a) {
+                        out.push(a);
+                    }
                 }
-            } else {
-                self.eval_order(*c, seen, order);
+            } else if !out.contains(&c) {
+                out.push(c);
             }
         }
-        order.push(id);
+        out
     }
 
-    fn continue_eval(&mut self, mut pe: PendingEval) -> JsResult<()> {
-        while pe.next < pe.order.len() {
-            let m = pe.order[pe.next];
-            // A failed dependency fails its dependents (§16.2.1.5.3.1).
-            let dep_error = self.modules[m].loaded.iter().find_map(|(_, c)| self.modules[*c].error.clone());
-            if let Some(e) = dep_error.or_else(|| self.modules[m].error.clone()) {
-                self.modules[m].error = Some(e.clone());
-                self.modules[m].status = Status::Evaluated;
-                self.call(&pe.reject, Value::Undefined, vec![e])?;
-                return Ok(());
-            }
-            if self.modules[m].status == Status::Evaluated {
-                pe.next += 1;
-                continue;
-            }
-            self.modules[m].status = Status::Evaluating;
-            let code = self.modules[m].code.clone();
-            let env = self.modules[m].env.expect("linked module");
-            let frame = self.frame(code.clone(), env, env);
-            let r = self.execute(frame);
-            if self.terminated {
-                return r.map(|_| ());
-            }
-            match r {
-                Err(e) => {
-                    self.modules[m].status = Status::Evaluated;
-                    self.modules[m].error = Some(e.clone());
-                    self.call(&pe.reject, Value::Undefined, vec![e])?;
-                    return Ok(());
+    /// InnerModuleEvaluation (§16.2.1.5.3.1).
+    fn inner_module_evaluation(
+        &mut self,
+        id: usize,
+        stack: &mut Vec<usize>,
+        index: usize,
+    ) -> JsResult<usize> {
+        match self.modules[id].status {
+            Status::EvaluatingAsync | Status::Evaluated => {
+                return match self.modules[id].error.clone() {
+                    Some(e) => Err(e),
+                    None => Ok(index),
                 }
-                Ok(v) if code.module.as_ref().is_some_and(|i| i.has_tla) => {
-                    // Wait for the async module, then go on (§16.2.1.5.3.4).
-                    let slot = self.module_evals.len();
-                    self.module_evals.push(Some(pe));
-                    let ful = native_with(
-                        self,
-                        "",
-                        1,
-                        module_fulfilled,
-                        false,
-                        vec![Value::Number(slot as f64), Value::Number(m as f64)],
-                    );
-                    let rej = native_with(
-                        self,
-                        "",
-                        1,
-                        module_rejected,
-                        false,
-                        vec![Value::Number(slot as f64), Value::Number(m as f64)],
-                    );
-                    if let Value::Object(po) = v {
-                        self.perform_then(po, Value::Object(ful), Value::Object(rej), None);
-                    }
-                    return Ok(());
+            }
+            Status::Evaluating => return Ok(index),
+            _ => {}
+        }
+        let m = &mut self.modules[id];
+        m.status = Status::Evaluating;
+        m.dfs_index = index;
+        m.dfs_ancestor = index;
+        m.pending_async = 0;
+        let mut index = index + 1;
+        stack.push(id);
+        for r in self.required_modules(id) {
+            index = self.inner_module_evaluation(r, stack, index)?;
+            let mut r = r;
+            if self.modules[r].status == Status::Evaluating {
+                let a = self.modules[id].dfs_ancestor.min(self.modules[r].dfs_ancestor);
+                self.modules[id].dfs_ancestor = a;
+            } else {
+                r = self.modules[r].cycle_root.unwrap_or(r);
+                if let Some(e) = self.modules[r].error.clone() {
+                    return Err(e);
                 }
-                Ok(_) => {
-                    self.modules[m].status = Status::Evaluated;
-                    pe.next += 1;
+            }
+            if let AsyncOrder::Order(_) = self.modules[r].async_order {
+                self.modules[id].pending_async += 1;
+                self.modules[r].async_parents.push(id);
+            }
+        }
+        let has_tla = self.modules[id].code.module.as_ref().is_some_and(|i| i.has_tla);
+        if self.modules[id].pending_async > 0 || has_tla {
+            self.module_async_count += 1;
+            self.modules[id].async_order = AsyncOrder::Order(self.module_async_count);
+            if self.modules[id].pending_async == 0 {
+                self.execute_async_module(id)?;
+            }
+        } else {
+            self.execute_module(id)?;
+        }
+        if self.modules[id].dfs_ancestor == self.modules[id].dfs_index {
+            while let Some(r) = stack.pop() {
+                self.modules[r].status = if self.modules[r].async_order == AsyncOrder::Unset {
+                    Status::Evaluated
+                } else {
+                    Status::EvaluatingAsync
+                };
+                self.modules[r].cycle_root = Some(id);
+                if r == id {
+                    break;
                 }
             }
         }
-        self.call(&pe.resolve, Value::Undefined, vec![Value::Undefined])?;
+        Ok(index)
+    }
+
+    /// ExecuteModule of a module without top-level await: run its body.
+    fn execute_module(&mut self, id: usize) -> JsResult<Value> {
+        let code = self.modules[id].code.clone();
+        let env = self.modules[id].env.expect("linked module");
+        let frame = self.frame(code, env, env);
+        self.execute(frame)
+    }
+
+    /// ExecuteAsyncModule (§16.2.1.5.3.2): start the body; its promise settles the module.
+    fn execute_async_module(&mut self, id: usize) -> JsResult<()> {
+        let v = self.execute_module(id)?;
+        let slots = vec![Value::Number(id as f64)];
+        let ful = native_with(self, "", 1, module_fulfilled, false, slots.clone());
+        let rej = native_with(self, "", 1, module_rejected, false, slots);
+        if let Value::Object(po) = v {
+            self.perform_then(po, Value::Object(ful), Value::Object(rej), None);
+        }
         Ok(())
     }
 
-    fn take_pending(&mut self, f: ObjRef) -> Option<(PendingEval, usize)> {
-        let s = slots(self, f);
-        let (Value::Number(slot), Value::Number(m)) = (s[0].clone(), s[1].clone()) else { return None };
-        let pe = self.module_evals.get_mut(slot as usize)?.take()?;
-        Some((pe, m as usize))
+    /// GatherAvailableAncestors (§16.2.1.5.3.3).
+    fn gather_available_ancestors(&mut self, id: usize, list: &mut Vec<usize>) {
+        for m in self.modules[id].async_parents.clone() {
+            let root = self.modules[m].cycle_root.unwrap_or(m);
+            if list.contains(&m) || self.modules[root].error.is_some() {
+                continue;
+            }
+            self.modules[m].pending_async = self.modules[m].pending_async.saturating_sub(1);
+            if self.modules[m].pending_async == 0 {
+                list.push(m);
+                if !self.modules[m].code.module.as_ref().is_some_and(|i| i.has_tla) {
+                    self.gather_available_ancestors(m, list);
+                }
+            }
+        }
+    }
+
+    fn resolve_capability(&mut self, id: usize) -> JsResult<()> {
+        if let Some((_, res, _)) = self.modules[id].capability.clone() {
+            self.call(&res, Value::Undefined, vec![Value::Undefined])?;
+        }
+        Ok(())
+    }
+
+    /// AsyncModuleExecutionFulfilled (§16.2.1.5.3.4).
+    fn async_module_fulfilled(&mut self, id: usize) -> JsResult<()> {
+        if self.modules[id].status == Status::Evaluated {
+            return Ok(());
+        }
+        self.modules[id].async_order = AsyncOrder::Done;
+        self.modules[id].status = Status::Evaluated;
+        self.resolve_capability(id)?;
+        let mut list = Vec::new();
+        self.gather_available_ancestors(id, &mut list);
+        list.sort_by_key(|m| match self.modules[*m].async_order {
+            AsyncOrder::Order(n) => n,
+            _ => u64::MAX,
+        });
+        for m in list {
+            if self.modules[m].status == Status::Evaluated {
+                continue;
+            }
+            if self.modules[m].code.module.as_ref().is_some_and(|i| i.has_tla) {
+                self.execute_async_module(m)?;
+                continue;
+            }
+            match self.execute_module(m) {
+                Err(e) => {
+                    if self.terminated {
+                        return Err(e);
+                    }
+                    self.async_module_rejected(m, e)?;
+                }
+                Ok(_) => {
+                    self.modules[m].async_order = AsyncOrder::Done;
+                    self.modules[m].status = Status::Evaluated;
+                    self.resolve_capability(m)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// AsyncModuleExecutionRejected (§16.2.1.5.3.5).
+    fn async_module_rejected(&mut self, id: usize, e: Value) -> JsResult<()> {
+        if self.modules[id].status == Status::Evaluated {
+            return Ok(());
+        }
+        self.modules[id].error = Some(e.clone());
+        self.modules[id].status = Status::Evaluated;
+        self.modules[id].async_order = AsyncOrder::Done;
+        // The module's own capability first, then its parents' (rejection order).
+        if let Some((_, _, rej)) = self.modules[id].capability.clone() {
+            self.call(&rej, Value::Undefined, vec![e.clone()])?;
+        }
+        for m in self.modules[id].async_parents.clone() {
+            self.async_module_rejected(m, e.clone())?;
+        }
+        Ok(())
     }
 
     /// `import(specifier, options)` (§13.3.10.1): always a promise.
@@ -784,8 +1017,9 @@ impl Vm {
     pub(super) fn dynamic_import_phase(&mut self, spec: Value, opts: Value, deferred: bool) -> Value {
         let p = self.new_promise(None);
         let (resolve, reject) = self.create_resolving_functions(p);
-        let r = (|| -> JsResult<(usize, Value)> {
+        let r = (|| -> JsResult<String> {
             let s = self.to_string(&spec)?;
+            let mut ty = String::new();
             if !opts.is_undefined() {
                 let Value::Object(o) = opts else {
                     return self.type_error("The second argument of import() must be an object");
@@ -800,15 +1034,58 @@ impl Vm {
                             if let PropKey::Sym(_) = k {
                                 continue;
                             }
-                            if !matches!(self.get(w, &k)?, Value::String(_)) {
+                            let Value::String(v) = self.get(w, &k)? else {
                                 return self.type_error("Import attribute values must be strings");
+                            };
+                            if k == PropKey::lit("type") {
+                                ty = to_rust(&v);
                             }
                         }
                     }
                 }
             }
-            let referrer = self.current_referrer();
-            let id = self.host_load(&to_rust(&s), referrer.as_deref())?;
+            Ok(format!("{ty}\0{}", to_rust(&s)))
+        })();
+        match r {
+            Err(e) => {
+                if !self.terminated {
+                    let _ = self.call(&reject, Value::Undefined, vec![e]);
+                }
+            }
+            Ok(request) => {
+                // HostLoadImportedModule finishes in a later job, as in browsers: a module
+                // that is already in a graph being evaluated is not evaluated in the middle
+                // of it.
+                let referrer = self.current_referrer().map(|r| Value::str(&r)).unwrap_or_default();
+                let start = self.new_promise(None);
+                let (go, _) = self.create_resolving_functions(start);
+                let cont = native_with(
+                    self,
+                    "",
+                    1,
+                    continue_import,
+                    false,
+                    vec![Value::str(&request), referrer, resolve, reject, Value::Bool(deferred)],
+                );
+                self.perform_then(start, Value::Object(cont), Value::Undefined, None);
+                let _ = self.call(&go, Value::Undefined, vec![Value::Undefined]);
+            }
+        }
+        Value::Object(p)
+    }
+
+    /// ContinueDynamicImport (§16.2.1.10): load, link and evaluate, then resolve with the
+    /// (deferred) namespace.
+    fn continue_dynamic_import(
+        &mut self,
+        request: &str,
+        referrer: Option<&str>,
+        resolve: Value,
+        reject: Value,
+        deferred: bool,
+    ) -> JsResult<()> {
+        let r = (|| -> JsResult<(usize, Value)> {
+            let id = self.host_load(request, referrer)?;
             self.load_graph(id)?;
             self.link(id)?;
             let ep = if deferred {
@@ -822,9 +1099,10 @@ impl Vm {
         })();
         match r {
             Err(e) => {
-                if !self.terminated {
-                    let _ = self.call(&reject, Value::Undefined, vec![e]);
+                if self.terminated {
+                    return Err(e);
                 }
+                self.call(&reject, Value::Undefined, vec![e])?;
             }
             Ok((id, ep)) => {
                 let ful = native_with(
@@ -840,7 +1118,7 @@ impl Vm {
                 }
             }
         }
-        Value::Object(p)
+        Ok(())
     }
 
     /// `import.source(…)`: only modules with a source phase have one; ours don't.
@@ -875,20 +1153,45 @@ impl Vm {
 }
 
 fn module_fulfilled(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
-    if let Some((mut pe, m)) = vm.take_pending(c.callee) {
-        vm.modules[m].status = Status::Evaluated;
-        pe.next += 1;
-        vm.continue_eval(pe)?;
+    if let Value::Number(id) = slots(vm, c.callee)[0] {
+        vm.async_module_fulfilled(id as usize)?;
     }
     Ok(Value::Undefined)
 }
 
 fn module_rejected(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
-    if let Some((pe, m)) = vm.take_pending(c.callee) {
-        vm.modules[m].status = Status::Evaluated;
-        vm.modules[m].error = Some(c.arg(0));
-        vm.call(&pe.reject, Value::Undefined, vec![c.arg(0)])?;
+    if let Value::Number(id) = slots(vm, c.callee)[0] {
+        vm.async_module_rejected(id as usize, c.arg(0))?;
     }
+    Ok(Value::Undefined)
+}
+
+/// One graph of `evaluate_list` fulfilled: resolve once all have.
+fn all_step(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+    let s = slots(vm, c.callee);
+    let Value::Object(counter) = s[0] else { return Ok(Value::Undefined) };
+    let n = match vm.get(counter, &PropKey::Index(0))? {
+        Value::Number(n) => n - 1.0,
+        _ => return Ok(Value::Undefined),
+    };
+    vm.set_or_throw(counter, PropKey::Index(0), Value::Number(n))?;
+    if n == 0.0 {
+        vm.call(&s[1], Value::Undefined, vec![Value::Undefined])?;
+    }
+    Ok(Value::Undefined)
+}
+
+fn continue_import(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+    let s = slots(vm, c.callee);
+    let (Value::String(req), deferred) = (&s[0], matches!(s[4], Value::Bool(true))) else {
+        return Ok(Value::Undefined);
+    };
+    let req = to_rust(req);
+    let referrer = match &s[1] {
+        Value::String(r) => Some(to_rust(r)),
+        _ => None,
+    };
+    vm.continue_dynamic_import(&req, referrer.as_deref(), s[2].clone(), s[3].clone(), deferred)?;
     Ok(Value::Undefined)
 }
 
@@ -905,4 +1208,42 @@ fn import_fulfilled(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
         Err(e) => vm.call(&s[2], Value::Undefined, vec![e])?,
     };
     Ok(Value::Undefined)
+}
+
+/// The import name of `import source x` (~source~).
+const SOURCE: &str = "*source*";
+
+fn is_source(name: &[u16]) -> bool {
+    name.iter().copied().eq(SOURCE.encode_utf16())
+}
+
+/// %AbstractModuleSource% and its prototype (source-phase-imports §28.1.1): an abstract
+/// class (the constructor always throws) whose `@@toStringTag` getter reports a module
+/// source's [[ModuleSourceClassName]]. Not a global; hosts expose it.
+pub(super) fn install_abstract_module_source(vm: &mut Vm) {
+    let op = vm.realm.object_proto;
+    let proto = vm.new_object_with_proto(Some(op));
+    let c = super::realm::constructor(
+        vm,
+        "AbstractModuleSource",
+        0,
+        |vm, _| vm.type_error("AbstractModuleSource is an abstract class"),
+        proto,
+    );
+    let tag = PropKey::Sym(vm.realm.sym_to_string_tag.clone());
+    super::realm::accessor(
+        vm,
+        proto,
+        tag,
+        Some(|vm, c| match &c.this {
+            Value::Object(o) => match &vm.heap.obj(*o).kind {
+                Kind::ModuleSource(n) => Ok(Value::str(n)),
+                _ => Ok(Value::Undefined),
+            },
+            _ => Ok(Value::Undefined),
+        }),
+        None,
+    );
+    vm.realm.abstract_module_source = c;
+    vm.realm.abstract_module_source_proto = proto;
 }

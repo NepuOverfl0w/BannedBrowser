@@ -170,6 +170,40 @@ pub struct Closure {
     pub static_elems: Vec<StaticElem>,
     /// For field initializers: the field's name (NamedEvaluation of anonymous functions).
     pub field_name: Option<Value>,
+    /// A class with decorators (proposal-decorators): their state and extra initializers.
+    pub decor: Option<Box<ClassDecor>>,
+}
+
+/// Decorator state of a class constructor (proposal-decorators).
+#[derive(Default)]
+pub struct ClassDecor {
+    /// Decorated elements, in document order, until ClassDecorate applies them.
+    pub pending: Vec<Decoration>,
+    /// Extra initializers of non-static methods and accessors, run on each new instance
+    /// before its fields.
+    pub instance_inits: Vec<ObjRef>,
+    /// Extra initializers of static methods, run before the static fields.
+    pub static_inits: Vec<ObjRef>,
+    /// The class decorators' extra initializers, run last with the decorated class.
+    pub class_inits: Vec<ObjRef>,
+}
+
+/// One decorated class element.
+pub struct Decoration {
+    pub decorators: Vec<Value>,
+    /// The property key value, or the Private Name symbol.
+    pub key: Value,
+    pub is_static: bool,
+    pub target: DecTarget,
+}
+
+pub enum DecTarget {
+    /// A method (0), getter (1) or setter (2).
+    Method { kind: u8, func: ObjRef },
+    /// A field: its index in `fields` or `static_elems`.
+    Field { index: usize },
+    /// An auto-accessor: its storage field's index and the current getter and setter.
+    Accessor { index: usize, get: ObjRef, set: ObjRef },
 }
 
 #[derive(Clone, Debug)]
@@ -182,6 +216,10 @@ pub enum FieldKey {
 pub struct ClassField {
     pub key: FieldKey,
     pub init: Option<ObjRef>,
+    /// Decorator initializers, applied to the initial value in order.
+    pub transforms: Vec<ObjRef>,
+    /// Decorator extra initializers, run right after the field is defined.
+    pub extra: Vec<ObjRef>,
 }
 
 #[derive(Clone, Debug)]
@@ -387,6 +425,8 @@ pub enum Kind {
     Slots(u32, ObjRef),
     /// [[ShadowRealm]]: the realm's id.
     ShadowRealm(u32),
+    /// A module source object ([[ModuleSourceClassName]], source-phase-imports).
+    ModuleSource(Rc<str>),
     /// JSON.rawJSON's result ([[IsRawJSON]]).
     RawJSON,
     /// A `using` scope's DisposeCapability (on the operand stack).
@@ -697,16 +737,35 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
         Kind::Function(c) => {
             es.push(c.env);
             os.extend(c.home);
-            for f in &c.fields {
+            let field = |f: &ClassField, os: &mut Vec<ObjRef>| {
                 os.extend(f.init);
+                os.extend(&f.transforms);
+                os.extend(&f.extra);
+            };
+            for f in &c.fields {
+                field(f, os);
             }
             for (_, p) in &c.private_methods {
                 trace_priv(p, os);
             }
             for e in &c.static_elems {
                 match e {
-                    StaticElem::Field(f) => os.extend(f.init),
+                    StaticElem::Field(f) => field(f, os),
                     StaticElem::Block(b) => os.push(*b),
+                }
+            }
+            if let Some(d) = &c.decor {
+                os.extend(&d.instance_inits);
+                os.extend(&d.static_inits);
+                os.extend(&d.class_inits);
+                for p in &d.pending {
+                    p.decorators.iter().for_each(|v| push_val(v, os));
+                    push_val(&p.key, os);
+                    match p.target {
+                        DecTarget::Method { func, .. } => os.push(func),
+                        DecTarget::Field { .. } => {}
+                        DecTarget::Accessor { get, set, .. } => os.extend([get, set]),
+                    }
                 }
             }
             if let Some(v) = &c.field_name {

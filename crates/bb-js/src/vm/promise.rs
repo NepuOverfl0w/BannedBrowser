@@ -39,7 +39,7 @@ impl Vm {
         matches!(v, Value::Object(o) if matches!(self.heap.obj(*o).kind, Kind::Promise(_)))
     }
 
-    fn promise_data(&mut self, p: ObjRef) -> Option<&mut PromiseData> {
+    pub(super) fn promise_data(&mut self, p: ObjRef) -> Option<&mut PromiseData> {
         match &mut self.heap.obj_mut(p).kind {
             Kind::Promise(d) => Some(d),
             _ => None,

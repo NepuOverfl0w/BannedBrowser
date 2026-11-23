@@ -64,8 +64,19 @@ pub struct Function {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClassMember {
-    Method { key: PropKey, is_static: bool, kind: FuncKind, func: Rc<Function> },
-    Field { key: PropKey, is_static: bool, value: Option<Rc<Function>> },
+    Method {
+        key: PropKey,
+        is_static: bool,
+        kind: FuncKind,
+        func: Rc<Function>,
+    },
+    /// `accessor`: an auto-accessor (a private storage field with a getter and setter).
+    Field {
+        key: PropKey,
+        is_static: bool,
+        value: Option<Rc<Function>>,
+        accessor: bool,
+    },
     StaticBlock(Rc<Function>),
 }
 
@@ -255,15 +266,18 @@ pub enum Stmt {
     Labeled(String, Box<Stmt>),
     With(Expr, Box<Stmt>),
     Debugger,
+    /// `ty`: the `type` import attribute (`with { type: "json" }`).
     Import {
         specs: Vec<ImportSpec>,
         source: JsStr,
+        ty: Option<JsStr>,
     },
     /// `export { a as b }`, `export * from`, re-exports: (exported name, local or imported name).
     ExportNamed {
         specs: Vec<(JsStr, JsStr)>,
         source: Option<JsStr>,
         star: bool,
+        ty: Option<JsStr>,
     },
     ExportDecl(Box<Stmt>),
     ExportDefault(Box<Stmt>),

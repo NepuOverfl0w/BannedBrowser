@@ -5,13 +5,13 @@ mod base64;
 mod collections;
 mod date;
 pub(super) mod iterator;
-mod json;
+pub(crate) mod json;
 mod number;
 mod object;
 mod selfhost;
 pub(super) use selfhost::MARK as SELF_HOSTED;
 pub(super) mod regexp;
-mod typed;
+pub(crate) mod typed;
 pub(super) use object::{from_property_descriptor, to_property_descriptor};
 mod string;
 
@@ -46,6 +46,7 @@ pub(super) fn install(vm: &mut Vm) {
     install_aggregate_error(vm);
     super::dispose::install(vm);
     super::shadow::install(vm);
+    super::module::install_abstract_module_source(vm);
     regexp::install(vm);
     collections::install(vm);
     json::install(vm);
