@@ -19,3 +19,4 @@ bb-css.workspace = true
 bb-style.workspace = true
 bb-url.workspace = true
 log.workspace = true
+encoding_rs.workspace = true

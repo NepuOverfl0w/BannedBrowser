@@ -127,3 +127,43 @@ fn styles_and_geometry_from_scripts() {
     assert_eq!(text(&p, "out2"), "background-color: blue; margin-left: 10px !important; | 10px important 2");
     assert_eq!(rect(&p, "b")[0], 10.0, "the inline style applies");
 }
+
+/// Run the page's tasks until `id`'s text stops being `from` (or 5 s pass).
+fn wait_for_change(p: &mut Page, id: &str, from: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while text(p, id) == from && std::time::Instant::now() < deadline {
+        if let Some(d) = p.script_wakeup() {
+            std::thread::sleep(d.min(std::time::Duration::from_millis(20)));
+        }
+        p.run_scripts();
+    }
+}
+
+#[test]
+fn fetch_xhr_and_url_from_scripts() {
+    let mut p = page(
+        "<!doctype html><p id=f>waiting</p><p id=x>waiting</p><p id=u></p>\
+         <script>\
+         fetch('data:text/plain,hello%20fetch').then(r => r.text().then(t => {\
+           document.getElementById('f').textContent = r.status + ' ' + r.ok + ' ' + t;\
+           return fetch('data:application/json,{\"a\":[1,2]}');\
+         })).then(r => r.json()).then(j => { document.getElementById('f').textContent += ' ' + j.a.length; });\
+         var x = new XMLHttpRequest(); x.open('GET', 'data:text/plain,from%20xhr');\
+         x.onload = function () { document.getElementById('x').textContent = x.readyState + ' ' + x.status + ' ' + x.responseText; };\
+         x.send();\
+         var u = new URL('../a/b?c=1#d', 'https://example.com/x/y');\
+         u.searchParams.append('e', '2 3'); u.hostname = 'example.org';\
+         document.getElementById('u').textContent = u.href + ' ' + new TextEncoder().encode('é').length;\
+         </script>",
+    );
+    assert_eq!(text(&p, "u"), "https://example.org/a/b?c=1&e=2+3#d 2");
+    wait_for_change(&mut p, "f", "waiting");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !text(&p, "f").ends_with(" 2") && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        p.run_scripts();
+    }
+    assert_eq!(text(&p, "f"), "200 true hello fetch 2");
+    wait_for_change(&mut p, "x", "waiting");
+    assert_eq!(text(&p, "x"), "4 200 from xhr");
+}

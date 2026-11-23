@@ -16,7 +16,16 @@ use bb_url::Url;
 use bb_webapi::{Embedder, Window};
 
 /// The directories run (and counted).
-const DIRS: &[&str] = &["dom/nodes", "dom/collections", "dom/events", "dom/lists"];
+const DIRS: &[&str] = &[
+    "dom/nodes",
+    "dom/collections",
+    "dom/events",
+    "dom/lists",
+    "dom/abort",
+    "url",
+    "encoding",
+    "fetch/api/headers",
+];
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../third_party/wpt")
@@ -47,6 +56,30 @@ impl Embedder for TestEmbedder {
         }
         let file = root().join(path.trim_start_matches('/'));
         std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))
+    }
+    /// Requests are answered from the checkout (as wptserve would serve the files).
+    fn fetch_sync(&self, req: bb_webapi::net::HttpRequest) -> Result<bb_webapi::net::HttpResponse, String> {
+        let path = req.url.pathname();
+        let file = root().join(path.trim_start_matches('/'));
+        let (status, status_text, body) = match std::fs::read(&file) {
+            Ok(b) => (200, "OK", b),
+            Err(_) => (404, "Not Found", b"not found".to_vec()),
+        };
+        let ct = match file.extension().and_then(|e| e.to_str()) {
+            Some("json") => "application/json",
+            Some("js") => "text/javascript",
+            Some("html") => "text/html",
+            Some("xml") => "application/xml",
+            Some("txt") => "text/plain",
+            _ => "application/octet-stream",
+        };
+        Ok(bb_webapi::net::HttpResponse {
+            url: req.url,
+            status,
+            status_text: status_text.to_string(),
+            headers: vec![("content-type".into(), ct.into())],
+            body,
+        })
     }
     fn now_ms(&self) -> f64 {
         self.clock.get() + self.start.elapsed().as_secs_f64() * 1000.0
@@ -169,7 +202,10 @@ fn collect(dir: &Path, rel: &str, out: &mut Vec<String>) {
         let p = e.path();
         let r = format!("{rel}/{name}");
         if p.is_dir() {
-            if !matches!(name.as_str(), "resources" | "support" | "crashtests" | "tools") {
+            // Not run yet: pages in legacy encodings (the runner reads pages as UTF-8) and
+            // streams (no ReadableStream yet).
+            let skipped = name.starts_with("legacy-mb-") || (rel == "encoding" && name == "streams");
+            if !skipped && !matches!(name.as_str(), "resources" | "support" | "crashtests" | "tools") {
                 collect(&p, &r, out);
             }
         } else if (name.ends_with(".html") || name.ends_with(".window.js") || name.ends_with(".any.js"))

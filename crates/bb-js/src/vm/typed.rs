@@ -391,6 +391,55 @@ impl Vm {
         self.buffer_write(b, at, &raw[..kind.size()]);
     }
 
+    /// A typed array's buffer and byte offset.
+    pub fn ta_buffer(&self, o: ObjRef) -> Option<(ObjRef, usize)> {
+        match &self.heap.obj(o).kind {
+            Kind::TypedArray(t) => Some((t.buffer, t.offset)),
+            _ => None,
+        }
+    }
+
+    /// A new ArrayBuffer of the current realm holding `bytes`.
+    pub fn new_array_buffer(&mut self, bytes: Vec<u8>) -> ObjRef {
+        let proto = self.realm.array_buffer_proto;
+        let buf = Buffer { bytes: Some(bytes), block: None, max: None, shared: false, immutable: false };
+        self.heap.alloc(Object::new(Some(proto), Kind::ArrayBuffer(Box::new(buf))))
+    }
+
+    /// The bytes a BufferSource (an ArrayBuffer, a typed array or a DataView) views (WebIDL
+    /// "get a copy of the bytes held by the buffer source"); None for anything else.
+    pub fn buffer_source_bytes(&self, v: &Value) -> Option<Vec<u8>> {
+        let Value::Object(o) = v else { return None };
+        let (buf, off, len) = match &self.heap.obj(*o).kind {
+            Kind::ArrayBuffer(_) => {
+                let n = self.buffer_byte_len(*o)?;
+                (*o, 0, n)
+            }
+            Kind::TypedArray(t) => {
+                let n = self.ta_length(*o)? * t.kind.size();
+                (t.buffer, t.offset, n)
+            }
+            Kind::DataView(d) => {
+                let total = self.buffer_byte_len(d.buffer)?;
+                let n = d.length.unwrap_or(total.saturating_sub(d.offset));
+                (d.buffer, d.offset, n)
+            }
+            _ => return None,
+        };
+        self.buffer_read(buf, off, len)
+    }
+
+    fn buffer_byte_len(&self, b: ObjRef) -> Option<usize> {
+        match &self.heap.obj(b).kind {
+            Kind::ArrayBuffer(d) => match (&d.bytes, &d.block) {
+                (Some(v), _) => Some(v.len()),
+                (None, Some(blk)) => Some(blk.len()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub fn buffer_bytes(&self, b: ObjRef) -> Option<&Vec<u8>> {
         match &self.heap.obj(b).kind {
             Kind::ArrayBuffer(d) => d.bytes.as_ref(),

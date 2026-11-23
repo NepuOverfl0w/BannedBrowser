@@ -97,6 +97,34 @@ pub struct PageEmbedder {
     pub origin_ms: f64,
     pub viewport: Cell<(f64, f64)>,
     pub layout: Rc<RefCell<LayoutCtx>>,
+    /// Background requests' results, sent by their threads.
+    done_tx: std::sync::mpsc::Sender<(u64, Result<bb_webapi::net::HttpResponse, String>)>,
+    done_rx: std::sync::mpsc::Receiver<(u64, Result<bb_webapi::net::HttpResponse, String>)>,
+}
+
+/// Do a script's HTTP request with the page's client (its cookies and cache).
+fn http(
+    client: &Client,
+    page_url: &Url,
+    req: bb_webapi::net::HttpRequest,
+) -> Result<bb_webapi::net::HttpResponse, String> {
+    let mut r = Request::get(req.url);
+    r.method = req.method;
+    for (k, v) in &req.headers {
+        r.headers.append(k, v);
+    }
+    r.body = req.body;
+    r.timeout = Duration::from_secs(60);
+    r.cache_mode = crate::cache_mode();
+    r.cookie_context = crate::subresource_context(page_url);
+    let resp = client.fetch(r).map_err(|e| e.to_string())?;
+    Ok(bb_webapi::net::HttpResponse {
+        url: resp.url,
+        status: resp.status,
+        status_text: resp.status_text,
+        headers: resp.headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        body: resp.body,
+    })
 }
 
 impl PageEmbedder {
@@ -108,6 +136,7 @@ impl PageEmbedder {
     ) -> PageEmbedder {
         let origin_ms =
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
         PageEmbedder {
             client,
             page_url,
@@ -115,6 +144,8 @@ impl PageEmbedder {
             origin_ms,
             viewport: Cell::new((viewport.0 as f64, viewport.1 as f64)),
             layout,
+            done_tx,
+            done_rx,
         }
     }
 }
@@ -132,6 +163,22 @@ impl bb_webapi::Embedder for PageEmbedder {
         // HTML §4.12.1.1: classic scripts default to UTF-8 (a BOM wins).
         let (text, _, _) = encoding_rs::UTF_8.decode(&resp.body);
         Ok(text.into_owned())
+    }
+    fn fetch_sync(&self, req: bb_webapi::net::HttpRequest) -> Result<bb_webapi::net::HttpResponse, String> {
+        http(&self.client, &self.page_url, req)
+    }
+    fn start_fetch(&self, id: u64, req: bb_webapi::net::HttpRequest) -> bool {
+        let (client, page_url, tx) = (self.client.clone(), self.page_url.clone(), self.done_tx.clone());
+        std::thread::Builder::new()
+            .name("bb-script-fetch".into())
+            .spawn(move || {
+                let r = http(&client, &page_url, req);
+                let _ = tx.send((id, r));
+            })
+            .is_ok()
+    }
+    fn poll_fetches(&self) -> Vec<(u64, Result<bb_webapi::net::HttpResponse, String>)> {
+        self.done_rx.try_iter().collect()
     }
     fn now_ms(&self) -> f64 {
         self.start.elapsed().as_secs_f64() * 1000.0

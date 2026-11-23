@@ -200,7 +200,7 @@ fn execute_element(vm: &mut Vm, h: &Host, s: NodeRef) {
     let Ok((ty, src, text)) = info else { return };
     let (source, url) = match src {
         Some(src) => {
-            let base = h.url.borrow().clone();
+            let base = base_url(h, s.doc);
             let Ok(u) = bb_url::Url::parse_with_base(src.trim(), Some(&base)) else {
                 fire_at(vm, h, s, "error");
                 return;

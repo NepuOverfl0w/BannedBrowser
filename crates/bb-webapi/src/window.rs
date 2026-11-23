@@ -157,6 +157,7 @@ pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
     });
     crate::events::setup_window_handlers(vm, g);
     op(vm, g, "getComputedStyle", 1, crate::css::get_computed_style);
+    op(vm, g, "fetch", 1, crate::net::fetch);
     install_console(vm, g);
     install_location(vm, g);
     install_navigator(vm, g);
@@ -276,7 +277,7 @@ fn url_part(vm: &mut Vm, part: &str) -> R {
 /// Ask the embedder to navigate (HTML §7.4.2 "navigate"), resolving `to` first.
 fn navigate(vm: &mut Vm, to: &str) -> R {
     let h = host(vm)?;
-    let base = h.url.borrow().clone();
+    let base = base_url(&h, 0);
     match bb_url::Url::parse_with_base(to, Some(&base)) {
         Ok(u) => {
             *h.pending_navigation.borrow_mut() = Some(u.href());

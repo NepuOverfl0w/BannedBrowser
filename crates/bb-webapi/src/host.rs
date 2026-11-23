@@ -54,6 +54,21 @@ pub trait Embedder {
     fn user_agent(&self) -> String {
         "Mozilla/5.0".to_string()
     }
+    /// Do an HTTP request now, blocking (synchronous XMLHttpRequest, and requests when
+    /// `start_fetch` declines).
+    fn fetch_sync(&self, _req: crate::net::HttpRequest) -> Result<crate::net::HttpResponse, String> {
+        Err("no network".to_string())
+    }
+    /// Start an HTTP request in the background; its result comes back from `poll_fetches`
+    /// with this id. Returns false if the embedder can't (the request is then done with
+    /// `fetch_sync` in a task).
+    fn start_fetch(&self, _id: u64, _req: crate::net::HttpRequest) -> bool {
+        false
+    }
+    /// Background requests that finished since the last call.
+    fn poll_fetches(&self) -> Vec<(u64, Result<crate::net::HttpResponse, String>)> {
+        Vec::new()
+    }
     /// An element's computed values (CSSOM §9 getComputedStyle), as (property, CSS text).
     fn computed_style(&self, _doc: &Document, _node: NodeId) -> Vec<(String, String)> {
         Vec::new()
@@ -91,6 +106,8 @@ pub struct Listener {
     /// The listener standing for an event handler (HTML §8.1.8.1): its callback is looked
     /// up in `Host::handlers` when it runs.
     pub handler: bool,
+    /// The AbortSignal that removes it (DOM §2.7 addEventListener `signal`).
+    pub signal: Option<ObjRef>,
 }
 
 /// A timer (HTML §8.6): when it is due, and its callback.
@@ -111,6 +128,8 @@ pub enum Task {
     Call(Value, Value, Vec<Value>),
     /// Fire a simple event named `.1` at target `.0` (bubbles, cancelable).
     Event(Value, String, bool, bool),
+    /// A request the embedder can only do synchronously: do it now (`fetch_sync`).
+    Fetch(u64, Box<crate::net::HttpRequest>),
 }
 
 /// What a live (or static) collection object lists.
@@ -231,6 +250,11 @@ pub struct Host {
     /// Set while an error is being reported, so an error in an error handler isn't again.
     pub reporting: Cell<bool>,
     pub strings: RefCell<HashMap<&'static str, String>>,
+    /// Requests in flight, by id.
+    pub pending: RefCell<HashMap<u64, crate::net::Pending>>,
+    pub next_fetch: Cell<u64>,
+    /// XMLHttpRequest states, by the objects' payloads.
+    pub xhrs: RefCell<Vec<crate::net::XhrState>>,
     /// Nodes of document 0 up to this index have had their `on…` attributes registered.
     pub scanned: Cell<u32>,
 }
@@ -271,6 +295,9 @@ impl Host {
             misc: RefCell::default(),
             reporting: Cell::new(false),
             strings: RefCell::default(),
+            pending: RefCell::default(),
+            next_fetch: Cell::new(1),
+            xhrs: RefCell::default(),
             scanned: Cell::new(0),
         }
     }
@@ -291,6 +318,9 @@ impl Host {
             out.push(*k);
             for l in ls {
                 push(&l.callback, out);
+                if let Some(s) = l.signal {
+                    out.push(s);
+                }
             }
         }
         for ((k, _), v) in self.handlers.borrow().iter() {
@@ -313,6 +343,7 @@ impl Host {
                     }
                 }
                 Task::Event(t, ..) => push(t, out),
+                Task::Fetch(..) => {}
             }
         }
         for (_, f) in self.frame_callbacks.borrow().iter() {
@@ -321,6 +352,16 @@ impl Host {
         push(&self.current_script.borrow(), out);
         if let Some(w) = self.window.get() {
             out.push(w);
+        }
+        for p in self.pending.borrow().values() {
+            match p {
+                crate::net::Pending::Fetch { resolve, reject, signal } => {
+                    push(resolve, out);
+                    push(reject, out);
+                    push(signal, out);
+                }
+                crate::net::Pending::Xhr(o) => out.push(*o),
+            }
         }
     }
 
@@ -344,6 +385,28 @@ impl Host {
 
     pub fn mark_dirty(&self) {
         self.dirty.set(true);
+    }
+}
+
+/// The document base URL of document `doc` (HTML §2.4.1): the first `<base href>`'s URL
+/// resolved against the document's URL, else the document's URL.
+pub fn base_url(h: &Host, doc: u32) -> Url {
+    let doc_url = {
+        let docs = h.docs.borrow();
+        docs.get(doc as usize).and_then(|d| Url::parse(&d.url).ok())
+    }
+    .unwrap_or_else(|| h.url.borrow().clone());
+    let href = {
+        let docs = h.docs.borrow();
+        docs.get(doc as usize).and_then(|d| {
+            d.descendants(bb_dom::Document::ROOT)
+                .find(|&n| d.is_html(n, "base") && d.attr(n, "href").is_some())
+                .and_then(|n| d.attr(n, "href").map(str::to_string))
+        })
+    };
+    match href {
+        Some(href) => Url::parse_with_base(&href, Some(&doc_url)).unwrap_or(doc_url),
+        None => doc_url,
     }
 }
 

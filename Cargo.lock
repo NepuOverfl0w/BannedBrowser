@@ -361,6 +361,7 @@ dependencies = [
  "bb-js",
  "bb-style",
  "bb-url",
+ "encoding_rs",
  "log",
 ]
 

@@ -21,7 +21,9 @@ pub mod host;
 pub mod html;
 pub mod idl;
 pub mod loader;
+pub mod net;
 pub mod tree;
+pub mod url;
 pub mod window;
 
 use std::rc::Rc;
@@ -90,7 +92,9 @@ impl Window {
 
     /// Whether tasks are waiting (queued tasks or animation frame callbacks).
     pub fn has_tasks(&self) -> bool {
-        !self.host.tasks.borrow().is_empty() || !self.host.frame_callbacks.borrow().is_empty()
+        !self.host.tasks.borrow().is_empty()
+            || !self.host.frame_callbacks.borrow().is_empty()
+            || !self.host.pending.borrow().is_empty()
     }
 
     /// Run queued tasks and the timers due now; returns whether anything ran.
@@ -107,7 +111,18 @@ impl Window {
                 host::Task::Event(t, ty, bubbles, cancelable) => {
                     events::fire(&mut self.vm, &h, t, &ty, bubbles, cancelable).map(|_| ())
                 }
+                host::Task::Fetch(id, req) => {
+                    let r = h.embedder.fetch_sync(*req);
+                    net::complete(&mut self.vm, &h, id, r)
+                }
             };
+            self.end_task(r);
+        }
+        // Background requests that finished.
+        for (id, r) in h.embedder.poll_fetches() {
+            ran = true;
+            self.begin_task();
+            let r = net::complete(&mut self.vm, &h, id, r);
             self.end_task(r);
         }
         // Timers in due order (HTML §8.6 step 12: by due time, then by when they were set).

@@ -32,6 +32,8 @@ pub enum ParseError {
     InvalidPort,
     /// Credentials but no host (`http://user@/`).
     InvalidCredentials,
+    /// A setter's scheme isn't a valid scheme.
+    InvalidScheme,
 }
 
 impl fmt::Display for ParseError {
@@ -42,6 +44,7 @@ impl fmt::Display for ParseError {
             ParseError::InvalidHost => "invalid host",
             ParseError::InvalidPort => "invalid port",
             ParseError::InvalidCredentials => "credentials without host",
+            ParseError::InvalidScheme => "invalid scheme",
         };
         f.write_str(s)
     }
@@ -143,6 +146,8 @@ enum State {
     SpecialAuthorityIgnoreSlashes,
     Authority,
     Host,
+    /// The `hostname` setter's override (otherwise the host state).
+    Hostname,
     Port,
     File,
     FileSlash,
@@ -194,7 +199,9 @@ impl Url {
         // Strip leading/trailing C0 control or space, remove ASCII tab/newline.
         let trimmed = input.trim_matches(|c: char| c <= ' ');
         let chars: Vec<char> = trimmed.chars().filter(|&c| c != '\t' && c != '\n' && c != '\r').collect();
-        Parser::new(&chars, base).run()
+        let mut p = Parser::new(&chars, base);
+        p.run()?;
+        Ok(p.url)
     }
 
     // ----- getters (URL §6.1 API-ish) -----
@@ -429,6 +436,122 @@ impl Url {
         out
     }
 
+    /// URL §4.1 "includes credentials".
+    fn includes_credentials(&self) -> bool {
+        !self.username.is_empty() || !self.password.is_empty()
+    }
+
+    /// URL §4.2 "cannot have a username/password/port".
+    fn cannot_have_credentials_or_port(&self) -> bool {
+        self.host.as_ref().is_none_or(|h| h.serialize().is_empty()) || self.scheme == "file"
+    }
+
+    /// The basic URL parser with a state override over this URL (URL §4.4), as the
+    /// setters use it: the URL changes only if parsing succeeds.
+    fn parse_override(&mut self, input: &str, state: State) -> bool {
+        let chars: Vec<char> = input.chars().filter(|&c| c != '\t' && c != '\n' && c != '\r').collect();
+        let mut p = Parser::new(&chars, None);
+        p.url = self.clone();
+        p.over = Some(state);
+        // Changes made before a failure stay (the parser works on the URL in place).
+        let ok = p.run().is_ok();
+        *self = p.url;
+        ok
+    }
+
+    // ----- setters (URL §6.1) -----
+
+    /// `href` setter: the whole URL (Err if it doesn't parse).
+    pub fn set_href(&mut self, v: &str) -> Result<(), ParseError> {
+        *self = Url::parse(v)?;
+        Ok(())
+    }
+
+    pub fn set_protocol(&mut self, v: &str) {
+        self.parse_override(&format!("{v}:"), State::SchemeStart);
+    }
+
+    pub fn set_username(&mut self, v: &str) {
+        if self.cannot_have_credentials_or_port() {
+            return;
+        }
+        self.username = percent::utf8_percent_encode(v, EncodeSet::Userinfo);
+    }
+
+    pub fn set_password(&mut self, v: &str) {
+        if self.cannot_have_credentials_or_port() {
+            return;
+        }
+        self.password = percent::utf8_percent_encode(v, EncodeSet::Userinfo);
+    }
+
+    pub fn set_host(&mut self, v: &str) {
+        if self.has_opaque_path() {
+            return;
+        }
+        self.parse_override(v, State::Host);
+    }
+
+    pub fn set_hostname(&mut self, v: &str) {
+        if self.has_opaque_path() {
+            return;
+        }
+        self.parse_override(v, State::Hostname);
+    }
+
+    pub fn set_port(&mut self, v: &str) {
+        if self.cannot_have_credentials_or_port() {
+            return;
+        }
+        if v.is_empty() {
+            self.port = None;
+        } else {
+            self.parse_override(v, State::Port);
+        }
+    }
+
+    pub fn set_pathname(&mut self, v: &str) {
+        if self.has_opaque_path() {
+            return;
+        }
+        self.path = Path::List(Vec::new());
+        self.parse_override(v, State::PathStart);
+    }
+
+    pub fn set_search(&mut self, v: &str) {
+        if v.is_empty() {
+            self.query = None;
+            self.strip_trailing_spaces_from_opaque_path();
+            return;
+        }
+        let v = v.strip_prefix('?').unwrap_or(v);
+        self.query = Some(String::new());
+        self.parse_override(v, State::Query);
+    }
+
+    pub fn set_hash(&mut self, v: &str) {
+        if v.is_empty() {
+            self.fragment = None;
+            self.strip_trailing_spaces_from_opaque_path();
+            return;
+        }
+        let v = v.strip_prefix('#').unwrap_or(v);
+        self.fragment = Some(String::new());
+        self.parse_override(v, State::Fragment);
+    }
+
+    /// URL §6.1 "potentially strip trailing spaces from an opaque path".
+    fn strip_trailing_spaces_from_opaque_path(&mut self) {
+        if self.fragment.is_some() || self.query.is_some() {
+            return;
+        }
+        if let Path::Opaque(p) = &mut self.path {
+            while p.ends_with(' ') {
+                p.pop();
+            }
+        }
+    }
+
     fn shorten_path(&mut self) {
         if let Path::List(segs) = &mut self.path {
             if self.scheme == "file" && segs.len() == 1 && is_normalized_windows_drive_letter(&segs[0]) {
@@ -460,6 +583,8 @@ struct Parser<'a> {
     input: &'a [char],
     base: Option<&'a Url>,
     url: Url,
+    /// The state override of the URL setters (URL §4.4 "state override").
+    over: Option<State>,
     buffer: String,
     at_sign_seen: bool,
     inside_brackets: bool,
@@ -485,6 +610,7 @@ impl<'a> Parser<'a> {
             at_sign_seen: false,
             inside_brackets: false,
             password_token_seen: false,
+            over: None,
         }
     }
 
@@ -493,9 +619,10 @@ impl<'a> Parser<'a> {
         self.input.get(start..).unwrap_or(&[])
     }
 
-    // URL §4.4 basic URL parser (no state override, UTF-8 encoding).
-    fn run(mut self) -> Result<Url, ParseError> {
-        let mut state = State::SchemeStart;
+    // URL §4.4 basic URL parser (UTF-8 encoding), with the setters' state override.
+    fn run(&mut self) -> Result<(), ParseError> {
+        let mut state = self.over.unwrap_or(State::SchemeStart);
+        let over = self.over.is_some();
         let len = self.input.len() as isize;
         let mut p: isize = 0;
         loop {
@@ -507,6 +634,7 @@ impl<'a> Parser<'a> {
                         self.buffer.push(ch.to_ascii_lowercase());
                         state = State::Scheme;
                     }
+                    _ if over => return Err(ParseError::InvalidScheme),
                     _ => {
                         state = State::NoScheme;
                         p -= 1;
@@ -517,7 +645,25 @@ impl<'a> Parser<'a> {
                         self.buffer.push(ch.to_ascii_lowercase());
                     }
                     Some(':') => {
+                        if over {
+                            // URL §4.4 scheme state step 2.1: changes the setter can't make.
+                            let (was, now) =
+                                (is_special_scheme(&self.url.scheme), is_special_scheme(&self.buffer));
+                            if was != now
+                                || ((self.url.includes_credentials() || self.url.port.is_some())
+                                    && self.buffer == "file")
+                                || (self.url.scheme == "file" && self.url.host == Some(Host::Empty))
+                            {
+                                return Ok(());
+                            }
+                        }
                         self.url.scheme = std::mem::take(&mut self.buffer);
+                        if over {
+                            if self.url.port.is_some() && self.url.port == default_port(&self.url.scheme) {
+                                self.url.port = None;
+                            }
+                            return Ok(());
+                        }
                         let special = is_special_scheme(&self.url.scheme);
                         if self.url.scheme == "file" {
                             state = State::File;
@@ -533,6 +679,7 @@ impl<'a> Parser<'a> {
                             state = State::OpaquePath;
                         }
                     }
+                    _ if over => return Err(ParseError::InvalidScheme),
                     _ => {
                         self.buffer.clear();
                         state = State::NoScheme;
@@ -672,9 +819,16 @@ impl<'a> Parser<'a> {
                         self.buffer.push(ch);
                     }
                 }
-                State::Host => {
+                State::Host | State::Hostname if over && self.url.scheme == "file" => {
+                    p -= 1;
+                    state = State::FileHost;
+                }
+                State::Host | State::Hostname => {
                     if c == Some(':') && !self.inside_brackets {
                         if self.buffer.is_empty() {
+                            return Err(ParseError::HostMissing);
+                        }
+                        if self.over == Some(State::Hostname) {
                             return Err(ParseError::HostMissing);
                         }
                         let host = host::parse_host(&self.buffer, !special)?;
@@ -688,10 +842,19 @@ impl<'a> Parser<'a> {
                         if special && self.buffer.is_empty() {
                             return Err(ParseError::HostMissing);
                         }
+                        if over
+                            && self.buffer.is_empty()
+                            && (self.url.includes_credentials() || self.url.port.is_some())
+                        {
+                            return Ok(());
+                        }
                         let host = host::parse_host(&self.buffer, !special)?;
                         self.url.host = Some(host);
                         self.buffer.clear();
                         state = State::PathStart;
+                        if over {
+                            return Ok(());
+                        }
                     } else if let Some(ch) = c {
                         if ch == '[' {
                             self.inside_brackets = true;
@@ -704,7 +867,8 @@ impl<'a> Parser<'a> {
                 State::Port => match c {
                     Some(ch) if ch.is_ascii_digit() => self.buffer.push(ch),
                     _ if matches!(c, None | Some('/') | Some('?') | Some('#'))
-                        || (special && c == Some('\\')) =>
+                        || (special && c == Some('\\'))
+                        || over =>
                     {
                         if !self.buffer.is_empty() {
                             let mut port: u32 = 0;
@@ -718,6 +882,12 @@ impl<'a> Parser<'a> {
                             self.url.port =
                                 if default_port(&self.url.scheme) == Some(port) { None } else { Some(port) };
                             self.buffer.clear();
+                            if over {
+                                return Ok(());
+                            }
+                        }
+                        if over {
+                            return Ok(());
                         }
                         state = State::PathStart;
                         p -= 1;
@@ -786,10 +956,13 @@ impl<'a> Parser<'a> {
                     if matches!(c, None | Some('/') | Some('\\') | Some('?') | Some('#')) {
                         p -= 1;
                         let buf: Vec<char> = self.buffer.chars().collect();
-                        if is_windows_drive_letter(&buf) {
+                        if !over && is_windows_drive_letter(&buf) {
                             state = State::Path;
                         } else if self.buffer.is_empty() {
                             self.url.host = Some(Host::Empty);
+                            if over {
+                                return Ok(());
+                            }
                             state = State::PathStart;
                         } else {
                             let mut host = host::parse_host(&self.buffer, false)?;
@@ -799,6 +972,9 @@ impl<'a> Parser<'a> {
                                 }
                             }
                             self.url.host = Some(host);
+                            if over {
+                                return Ok(());
+                            }
                             self.buffer.clear();
                             state = State::PathStart;
                         }
@@ -812,10 +988,10 @@ impl<'a> Parser<'a> {
                         if c != Some('/') && c != Some('\\') {
                             p -= 1;
                         }
-                    } else if c == Some('?') {
+                    } else if !over && c == Some('?') {
                         self.url.query = Some(String::new());
                         state = State::Query;
-                    } else if c == Some('#') {
+                    } else if !over && c == Some('#') {
                         self.url.fragment = Some(String::new());
                         state = State::Fragment;
                     } else if c.is_some() {
@@ -823,11 +999,13 @@ impl<'a> Parser<'a> {
                         if c != Some('/') {
                             p -= 1;
                         }
+                    } else if over && self.url.host.is_none() {
+                        self.url.path_list().push(String::new());
                     }
                 }
                 State::Path => {
                     let slashlike = c == Some('/') || (special && c == Some('\\'));
-                    if c.is_none() || slashlike || c == Some('?') || c == Some('#') {
+                    if c.is_none() || slashlike || (!over && (c == Some('?') || c == Some('#'))) {
                         let buf = std::mem::take(&mut self.buffer);
                         if is_double_dot(&buf) {
                             self.url.shorten_path();
@@ -848,10 +1026,10 @@ impl<'a> Parser<'a> {
                             }
                             list.push(seg);
                         }
-                        if c == Some('?') {
+                        if !over && c == Some('?') {
                             self.url.query = Some(String::new());
                             state = State::Query;
-                        } else if c == Some('#') {
+                        } else if !over && c == Some('#') {
                             self.url.fragment = Some(String::new());
                             state = State::Fragment;
                         }
@@ -883,7 +1061,7 @@ impl<'a> Parser<'a> {
                     None => {}
                 },
                 State::Query => {
-                    if c == Some('#') || c.is_none() {
+                    if (!over && c == Some('#')) || c.is_none() {
                         let set = if special { EncodeSet::SpecialQuery } else { EncodeSet::Query };
                         let buf = std::mem::take(&mut self.buffer);
                         let q = self.url.query.get_or_insert_with(String::new);
@@ -913,7 +1091,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(self.url)
+        Ok(())
     }
 }
 

@@ -23,7 +23,7 @@ if [ ! -d html5lib-tests/.git ]; then
 fi
 
 WPT_COMMIT="9986bb32c9e97707eff870ab284ebc5cc7ae8d21" # 2026-11-21
-WPT_PATHS="html/syntax/parsing/resources/ resources/ dom/"
+WPT_PATHS="html/syntax/parsing/resources/ resources/ dom/ url/ encoding/ fetch/api/ common/"
 if [ "$(git -C wpt rev-parse HEAD 2>/dev/null || true)" != "$WPT_COMMIT" ]; then
   rm -rf wpt
   git init -q wpt
@@ -36,13 +36,15 @@ if [ "$(git -C wpt rev-parse HEAD 2>/dev/null || true)" != "$WPT_COMMIT" ]; then
    git -c advice.detachedHead=false checkout -q FETCH_HEAD)
 fi
 # A checkout from before the DOM tests were added: widen it.
-[ -d wpt/dom/nodes ] || (cd wpt && git sparse-checkout set --no-cone $WPT_PATHS)
+[ -f wpt/dom/nodes/Node-appendChild.html ] && [ -f wpt/url/url-constructor.any.js ] || (cd wpt && git sparse-checkout set --no-cone $WPT_PATHS)
 [ -f wpt/resources/testharness.js ] || { echo "WPT resources missing after fetch" >&2; exit 1; }
 [ -d wpt/html/syntax/parsing/resources ] || { echo "WPT parsing tests missing after fetch" >&2; exit 1; }
 
 mkdir -p wpt-url
 [ -s wpt-url/urltestdata.json ] || curl -fsSL -o wpt-url/urltestdata.json \
   https://raw.githubusercontent.com/web-platform-tests/wpt/master/url/resources/urltestdata.json
+[ -s wpt-url/setters_tests.json ] || curl -fsSL -o wpt-url/setters_tests.json \
+  https://raw.githubusercontent.com/web-platform-tests/wpt/master/url/resources/setters_tests.json
 [ -s entities.json ] || curl -fsSL -o entities.json https://html.spec.whatwg.org/entities.json
 TEST262_COMMIT="ebf6ae620a0f292b4845cd4099cb9096735e64ae" # 2026-11-23
 if [ "$(git -C test262 rev-parse HEAD 2>/dev/null || true)" != "$TEST262_COMMIT" ]; then

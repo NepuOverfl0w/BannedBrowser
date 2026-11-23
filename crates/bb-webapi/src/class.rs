@@ -138,6 +138,19 @@ interfaces! {
     DOMRectReadOnly: None;
     DOMRect: DOMRectReadOnly;
     DOMRectList: None;
+    URL: None;
+    URLSearchParams: None;
+    Headers: None;
+    Request: None;
+    Response: None;
+    AbortController: None;
+    AbortSignal: EventTarget;
+    XMLHttpRequestEventTarget: EventTarget;
+    XMLHttpRequest: XMLHttpRequestEventTarget;
+    XMLHttpRequestUpload: XMLHttpRequestEventTarget;
+    ProgressEvent: Event;
+    TextEncoder: None;
+    TextDecoder: None;
 }
 
 pub fn name(c: C) -> &'static str {
@@ -303,6 +316,16 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::Document => (crate::dom::document_ctor, 0),
         C::DOMException => (crate::exception::ctor, 0),
         C::DOMRect | C::DOMRectReadOnly => (crate::css::rect_ctor, 0),
+        C::URL => (crate::url::url_ctor, 1),
+        C::Headers => (crate::net::headers_ctor, 0),
+        C::Request => (crate::net::request_ctor, 1),
+        C::Response => (crate::net::response_ctor, 0),
+        C::AbortController => (crate::net::abort_controller_ctor, 0),
+        C::XMLHttpRequest => (crate::net::xhr_ctor, 0),
+        C::ProgressEvent => (crate::events::event_ctor, 1),
+        C::TextEncoder => (crate::net::text_encoder_ctor, 0),
+        C::TextDecoder => (crate::net::text_decoder_ctor, 0),
+        C::URLSearchParams => (crate::url::params_ctor, 0),
         _ => return None,
     })
 }
@@ -379,6 +402,18 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::DOMRectReadOnly => crate::css::setup_rect_readonly(vm, proto),
         C::DOMRect => crate::css::setup_rect(vm, proto),
         C::DOMRectList => crate::css::setup_rect_list(vm, proto),
+        C::URL => crate::url::setup_url(vm, proto, ctor),
+        C::URLSearchParams => crate::url::setup_params(vm, proto),
+        C::Headers => crate::net::setup_headers(vm, proto),
+        C::Request => crate::net::setup_request(vm, proto),
+        C::Response => crate::net::setup_response(vm, proto, ctor),
+        C::AbortController => crate::net::setup_abort_controller(vm, proto),
+        C::AbortSignal => crate::net::setup_abort_signal(vm, proto, ctor),
+        C::XMLHttpRequestEventTarget => crate::net::setup_xhr_target(vm, proto),
+        C::XMLHttpRequest => crate::net::setup_xhr(vm, proto, ctor),
+        C::ProgressEvent => crate::net::setup_progress_event(vm, proto),
+        C::TextEncoder => crate::net::setup_text_encoder(vm, proto),
+        C::TextDecoder => crate::net::setup_text_decoder(vm, proto),
         _ => crate::html::setup_element_interface(vm, c, proto),
     }
 }

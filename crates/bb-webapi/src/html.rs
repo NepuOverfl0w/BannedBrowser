@@ -86,7 +86,7 @@ fn reflect_get(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
         Reflect::Url => match v {
             None => js(""),
             Some(s) => {
-                let base = h.url.borrow().clone();
+                let base = base_url(&h, n.doc);
                 match bb_url::Url::parse_with_base(&s, Some(&base)) {
                     Ok(u) => js(&u.href()),
                     Err(_) => js(&s),
@@ -506,6 +506,97 @@ pub fn dataset_delete(vm: &mut Vm, h: &Host, kind: &CollKind, k: &PropKey) -> Js
     Ok(Some(true))
 }
 
+// ---- HTMLHyperlinkElementUtils (HTML §4.6.4) ----
+
+/// The element's URL: its href parsed against the document's base (None if it has none or
+/// it doesn't parse).
+fn hyperlink_url(
+    vm: &mut Vm,
+    c: &NativeCall,
+) -> JsResult<(std::rc::Rc<Host>, NodeRef, Option<bb_url::Url>, Option<String>)> {
+    let (h, n) = this_node(vm, &c.this, C::HTMLElement)?;
+    let href = with_doc(vm, &h, n.doc, |d| d.attr(n.id, "href").map(str::to_string))?;
+    let base = base_url(&h, n.doc);
+    let url = href.as_deref().and_then(|v| bb_url::Url::parse_with_base(v, Some(&base)).ok());
+    Ok((h, n, url, href))
+}
+
+fn hyperlink_get(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+    let part = match callee_slots(vm, c.callee).first() {
+        Some(v) => rstr(vm, v)?,
+        None => String::new(),
+    };
+    let (_, _, url, href) = hyperlink_url(vm, &c)?;
+    let Some(u) = url else {
+        // No URL: href is the attribute as is, origin and the parts are empty.
+        return Ok(js(if part == "href" { href.as_deref().unwrap_or("") } else { "" }));
+    };
+    let s = match part.as_str() {
+        "href" => u.href(),
+        "origin" => u.origin().serialize(),
+        "protocol" => u.protocol(),
+        "username" => u.username().to_string(),
+        "password" => u.password().to_string(),
+        "host" => u.host_with_port(),
+        "hostname" => u.hostname(),
+        "port" => u.port().map(|p| p.to_string()).unwrap_or_default(),
+        "pathname" => u.pathname(),
+        "search" => u.search(),
+        "hash" => u.hash(),
+        _ => String::new(),
+    };
+    Ok(js(&s))
+}
+
+fn hyperlink_set(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+    let part = match callee_slots(vm, c.callee).first() {
+        Some(v) => rstr(vm, v)?,
+        None => String::new(),
+    };
+    let v = rstr(vm, &c.arg(0))?;
+    let (h, n, url, _) = hyperlink_url(vm, &c)?;
+    if part == "href" {
+        with_doc_mut(vm, &h, n.doc, |d| d.set_attr(n.id, "href", &v))?;
+        return Ok(Value::Undefined);
+    }
+    // Without a URL (or with an opaque path, for most parts) nothing changes.
+    let Some(mut u) = url else { return Ok(Value::Undefined) };
+    match part.as_str() {
+        "protocol" => u.set_protocol(&v),
+        "username" => u.set_username(&v),
+        "password" => u.set_password(&v),
+        "host" => u.set_host(&v),
+        "hostname" => u.set_hostname(&v),
+        "port" => u.set_port(&v),
+        "pathname" => u.set_pathname(&v),
+        "search" => u.set_search(&v),
+        "hash" => u.set_hash(&v),
+        _ => return Ok(Value::Undefined),
+    }
+    let href = u.href();
+    with_doc_mut(vm, &h, n.doc, |d| d.set_attr(n.id, "href", &href))?;
+    Ok(Value::Undefined)
+}
+
+fn setup_hyperlink_utils(vm: &mut Vm, proto: ObjRef) {
+    for part in
+        ["href", "protocol", "username", "password", "host", "hostname", "port", "pathname", "search", "hash"]
+    {
+        attr_with(vm, proto, part, hyperlink_get, Some(hyperlink_set), vec![js(part)]);
+    }
+    attr_with(vm, proto, "origin", hyperlink_get, None, vec![js("origin")]);
+    let f = bb_js::vm::realm::native_with(vm, "toString", 0, hyperlink_get, false, vec![js("href")]);
+    vm.heap.obj_mut(proto).props.insert(
+        PropKey::lit("toString"),
+        bb_js::vm::heap::Prop {
+            slot: bb_js::vm::heap::Slot::Data(Value::Object(f)),
+            writable: true,
+            enumerable: true,
+            configurable: true,
+        },
+    );
+}
+
 // ---- element interfaces ----
 
 pub fn setup_element_interface(vm: &mut Vm, c: C, proto: ObjRef) {
@@ -517,7 +608,7 @@ pub fn setup_element_interface(vm: &mut Vm, c: C, proto: ObjRef) {
     };
     match c {
         C::HTMLAnchorElement | C::HTMLAreaElement => {
-            reflect(vm, proto, "href", "href", Url);
+            setup_hyperlink_utils(vm, proto);
             s(vm, &["target", "download", "ping", "rel", "hreflang", "type", "referrerPolicy"]);
             if c == C::HTMLAreaElement {
                 s(vm, &["alt", "coords", "shape"]);

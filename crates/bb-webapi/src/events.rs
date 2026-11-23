@@ -166,6 +166,11 @@ fn init_fields(c: C) -> Vec<(&'static str, char, Value)> {
             ],
         ]
         .concat(),
+        C::ProgressEvent => vec![
+            ("lengthComputable", 'b', Value::Bool(false)),
+            ("loaded", 'd', Value::Number(0.0)),
+            ("total", 'd', Value::Number(0.0)),
+        ],
         C::ErrorEvent => vec![
             ("colno", 'l', Value::Number(0.0)),
             ("error", 'a', Value::Undefined),
@@ -201,6 +206,7 @@ pub fn event_ctor(vm: &mut Vm, c: NativeCall) -> R {
             (_, Value::Undefined) => def,
             ('b', _) => Value::Bool(vm.to_boolean(&v)),
             ('l', _) => Value::Number(vm.to_int32(&v)? as f64),
+            ('d', _) => Value::Number(vm.to_number(&v)?),
             ('s', _) => js(&rstr(vm, &v)?),
             ('n', Value::Null) => Value::Null,
             ('n', _) => {
@@ -436,7 +442,7 @@ fn cancel(vm: &mut Vm, o: ObjRef) {
 }
 
 /// A subclass field getter (its name and default in the callee's slots).
-fn field_getter(vm: &mut Vm, c: NativeCall) -> R {
+pub fn field_getter(vm: &mut Vm, c: NativeCall) -> R {
     let o = event_obj(vm, &c.this)?;
     let s = callee_slots(vm, c.callee);
     let name = match s.first() {
@@ -564,21 +570,29 @@ fn target_of(vm: &mut Vm, h: &Host, this: &Value) -> JsResult<ObjRef> {
     }
 }
 
-/// DOM §2.7 "flatten more" of the options argument: (capture, once, passive).
-fn listener_options(vm: &mut Vm, v: &Value, full: bool) -> JsResult<(bool, bool, bool)> {
+/// DOM §2.7 "flatten more" of the options argument: (capture, once, passive, signal).
+type ListenerOptions = (bool, bool, bool, Option<ObjRef>);
+
+fn listener_options(vm: &mut Vm, v: &Value, full: bool) -> JsResult<ListenerOptions> {
     match v {
         Value::Object(_) => {
             let cap = dict_get(vm, v, "capture")?;
             let cap = vm.to_boolean(&cap);
             if !full {
-                return Ok((cap, false, false));
+                return Ok((cap, false, false, None));
             }
             let once = dict_get(vm, v, "once")?;
             let passive = dict_get(vm, v, "passive")?;
-            let _signal = dict_get(vm, v, "signal")?;
-            Ok((cap, vm.to_boolean(&once), vm.to_boolean(&passive)))
+            let signal = match dict_get(vm, v, "signal")? {
+                Value::Undefined => None,
+                s => match (&s, vm.host_data(&s)) {
+                    (Value::Object(o), Some((c, _))) if c == C::AbortSignal as u32 => Some(*o),
+                    _ => return vm.type_error("signal is not an AbortSignal"),
+                },
+            };
+            Ok((cap, vm.to_boolean(&once), vm.to_boolean(&passive), signal))
         }
-        v => Ok((vm.to_boolean(v), false, false)),
+        v => Ok((vm.to_boolean(v), false, false, None)),
     }
 }
 
@@ -595,7 +609,10 @@ pub fn setup_event_target(vm: &mut Vm, proto: ObjRef) {
         let t = target_of(vm, &h, &c.this)?;
         let ty = rstr(vm, &c.arg(0))?;
         let cb = c.arg(1);
-        let (capture, once, passive) = listener_options(vm, &c.arg(2), true)?;
+        let (capture, once, passive, signal) = listener_options(vm, &c.arg(2), true)?;
+        if signal.is_some_and(|s| crate::net::signal_aborted(vm, s)) {
+            return Ok(Value::Undefined);
+        }
         if !matches!(cb, Value::Object(_)) {
             if cb.is_nullish() {
                 return Ok(Value::Undefined);
@@ -618,6 +635,7 @@ pub fn setup_event_target(vm: &mut Vm, proto: ObjRef) {
             passive,
             removed: Rc::new(Cell::new(false)),
             handler: false,
+            signal,
         });
         Ok(Value::Undefined)
     });
@@ -626,7 +644,7 @@ pub fn setup_event_target(vm: &mut Vm, proto: ObjRef) {
         let t = target_of(vm, &h, &c.this)?;
         let ty = rstr(vm, &c.arg(0))?;
         let cb = c.arg(1);
-        let (capture, _, _) = listener_options(vm, &c.arg(2), false)?;
+        let (capture, ..) = listener_options(vm, &c.arg(2), false)?;
         if let Some(list) = h.listeners.borrow_mut().get_mut(&t) {
             if let Some(i) = list.iter().position(|l| {
                 !l.handler && l.ty == ty && l.capture == capture && same_value(&l.callback, &cb)
@@ -887,6 +905,13 @@ const WINDOW_HANDLERS: &[&str] = &[
 /// element event handler set").
 const BODY_TO_WINDOW: &[&str] = &["onblur", "onerror", "onfocus", "onload", "onresize", "onscroll"];
 
+/// Event handler IDL attributes `names` (e.g. XMLHttpRequest's `onload`).
+pub fn setup_named_handlers(vm: &mut Vm, proto: ObjRef, names: &[&str]) {
+    for &name in names {
+        attr_with(vm, proto, name, handler_get, Some(handler_set), vec![js(name)]);
+    }
+}
+
 pub fn setup_event_handlers(vm: &mut Vm, proto: ObjRef) {
     for &name in HANDLERS {
         attr_with(vm, proto, name, handler_get, Some(handler_set), vec![js(name)]);
@@ -953,6 +978,7 @@ fn set_handler(h: &Host, t: ObjRef, name: &str, v: Value) {
             passive: false,
             removed: Rc::new(Cell::new(false)),
             handler: true,
+            signal: None,
         });
     }
 }
