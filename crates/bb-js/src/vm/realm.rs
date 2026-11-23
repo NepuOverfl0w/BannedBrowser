@@ -129,6 +129,7 @@ realm_objects!(
     async_disposable_stack_proto,
     abstract_module_source,
     abstract_module_source_proto,
+    legacy_caller,
     shadow_realm_proto,
     set_iterator_proto,
     eval,
@@ -238,6 +239,7 @@ pub fn init(vm: &mut Vm) {
     let tte = native(vm, "", 0, builtins::throw_type_error);
     let _ = vm.set_integrity(tte, true);
     vm.realm.throw_type_error = tte;
+    vm.realm.legacy_caller = native(vm, "get caller", 0, builtins::legacy_caller);
     builtins::install(vm);
 }
 

@@ -316,9 +316,12 @@ pub enum Op {
     SuperCallSpread,
     /// The implicit derived constructor: `super(...arguments)` without iterating them.
     SuperCallForward,
-    /// `[this key] → [v]`
+    /// `[this key] → [this ref]`: MakeSuperPropertyReference (GetSuperBase now; the key is
+    /// converted later, by GetValue or PutValue).
+    SuperRef,
+    /// `[this ref] → [v]`
     SuperGet,
-    /// `[this key v] → [v]`
+    /// `[this ref v] → [v]`
     SuperSet,
     /// `[obj name] → [v]`
     PrivateGet,

@@ -760,18 +760,39 @@ impl Vm {
         }
     }
 
-    pub(super) fn super_get(&mut self, this: Value, key: &Value) -> JsResult<Value> {
-        let k = self.to_property_key(key)?;
-        match self.super_base()? {
+    /// MakeSuperPropertyReference (§13.3.7.3): GetSuperBase now, the key as given.
+    pub(super) fn super_ref(&mut self, key: Value) -> JsResult<Value> {
+        let base = self.super_base()?;
+        Ok(Value::Object(self.heap.alloc(Object::new(None, Kind::SuperRef(base, key)))))
+    }
+
+    /// A Super Reference's base and its name as a property key (GetValue/PutValue step 3.c,
+    /// which stores the converted key back into the reference).
+    fn super_parts(&mut self, r: &Value) -> JsResult<(Option<ObjRef>, PropKey)> {
+        let Value::Object(ro) = r else { return self.type_error("bad super reference") };
+        let (base, key) = match &self.heap.obj(*ro).kind {
+            Kind::SuperRef(b, k) => (*b, k.clone()),
+            _ => return self.type_error("bad super reference"),
+        };
+        let k = self.to_property_key(&key)?;
+        if let Kind::SuperRef(_, slot) = &mut self.heap.obj_mut(*ro).kind {
+            *slot = k.to_value();
+        }
+        Ok((base, k))
+    }
+
+    pub(super) fn super_get(&mut self, this: Value, r: &Value) -> JsResult<Value> {
+        let (base, k) = self.super_parts(r)?;
+        match base {
             Some(b) => self.get_with_receiver(b, &k, this),
             None => self.type_error(&format!("Cannot read properties of null (reading '{}')", k.display())),
         }
     }
 
-    pub(super) fn super_set(&mut self, this: Value, key: &Value, v: Value) -> JsResult<()> {
-        let k = self.to_property_key(key)?;
+    pub(super) fn super_set(&mut self, this: Value, r: &Value, v: Value) -> JsResult<()> {
+        let (base, k) = self.super_parts(r)?;
         let name = k.display();
-        let Some(b) = self.super_base()? else {
+        let Some(b) = base else {
             return self.type_error(&format!("Cannot set properties of null (setting '{name}')"));
         };
         if !self.set(b, k, v, this)? && self.strict() {

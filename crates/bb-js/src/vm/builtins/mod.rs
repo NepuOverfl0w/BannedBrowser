@@ -28,6 +28,26 @@ pub(super) fn throw_type_error(vm: &mut Vm, _: NativeCall) -> JsResult<Value> {
     vm.type_error("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them")
 }
 
+/// The legacy `caller` of sloppy functions (an implementation extension; §17.1 Forbidden
+/// Extensions): the function that called the receiver's most recent active invocation, but
+/// only a sloppy ordinary function, never a strict one; otherwise null.
+pub(super) fn legacy_caller(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+    let Value::Object(f) = c.this else { return Ok(Value::Null) };
+    let Some(i) = vm.frames.iter().rposition(|fr| fr.callee == Some(f)) else { return Ok(Value::Null) };
+    let caller = i.checked_sub(1).and_then(|j| vm.frames[j].callee);
+    let sloppy_plain = |vm: &Vm, g: ObjRef| match &vm.heap.obj(g).kind {
+        Kind::Function(cl) => {
+            let a = &cl.tmpl.ast;
+            !a.strict && a.kind == crate::ast::FuncKind::Normal && !a.is_async && !a.is_generator
+        }
+        _ => false,
+    };
+    Ok(match caller {
+        Some(g) if sloppy_plain(vm, g) => Value::Object(g),
+        _ => Value::Null,
+    })
+}
+
 pub(super) fn install(vm: &mut Vm) {
     object::install(vm);
     install_errors(vm);

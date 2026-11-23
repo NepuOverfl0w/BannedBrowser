@@ -427,6 +427,10 @@ pub enum Kind {
     ShadowRealm(u32),
     /// A module source object ([[ModuleSourceClassName]], source-phase-imports).
     ModuleSource(Rc<str>),
+    /// A Super Reference on the operand stack (§13.3.7.3 MakeSuperPropertyReference): the
+    /// base taken when it was made, and the name (a property key once GetValue/PutValue
+    /// converted it).
+    SuperRef(Option<ObjRef>, Value),
     /// JSON.rawJSON's result ([[IsRawJSON]]).
     RawJSON,
     /// A `using` scope's DisposeCapability (on the operand stack).
@@ -773,6 +777,10 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
             }
         }
         Kind::Native(n) => n.slots.iter().for_each(|v| push_val(v, os)),
+        Kind::SuperRef(b, k) => {
+            os.extend(*b);
+            push_val(k, os);
+        }
         Kind::Bound(b) => {
             os.push(b.target);
             push_val(&b.this, os);

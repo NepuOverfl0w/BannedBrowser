@@ -1815,10 +1815,10 @@ impl<'a> Compiler<'a> {
         self.emit(Op::GetVar(i));
     }
 
+    /// `[this] → [this ref]`: the Super Reference for `super[prop]` / `super.prop`.
     fn super_key(&mut self, prop: &'a Expr, computed: bool) {
         if computed {
             self.expr(prop);
-            self.emit(Op::ToKey);
         } else {
             let k = self.member_key(prop);
             if let super::value::Value::String(st) = self.code.keys[k as usize].to_value() {
@@ -1826,6 +1826,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Str(i));
             }
         }
+        self.emit(Op::SuperRef);
     }
 
     fn ref_dup(&mut self, r: MRef) {

@@ -1880,6 +1880,11 @@ impl Vm {
                 let r = self.super_call(args)?;
                 self.push(r);
             }
+            Op::SuperRef => {
+                let k = self.pop();
+                let r = self.super_ref(k)?;
+                self.push(r);
+            }
             Op::SuperGet => {
                 let k = self.pop();
                 let this = self.pop();
@@ -2023,12 +2028,27 @@ impl Vm {
         let source: Rc<[char]> = src.chars().collect::<Vec<_>>().into();
         let referrer = self.current_referrer();
         let code = Rc::new(Compiler::compile_unit(Unit::Eval(&prog), source, referrer));
-        // Only when the parameter scope binds `arguments` (a parameter or the object).
-        let params_bind_arguments = self.heap.env(var_env).bindings.contains_key("arguments");
-        if self.top().in_params && !prog.strict && params_bind_arguments {
+        // Eval in parameter initializers declares its vars outside the parameter scope
+        // (FunctionDeclarationInstantiation step 20), so a parameter's name, or `arguments`
+        // when that scope binds it, is a redeclaration (EvalDeclarationInstantiation 3.d).
+        if self.top().in_params && !prog.strict {
+            let mut params: Vec<String> = Vec::new();
+            if let Some(Kind::Function(c)) = self.top().callee.map(|f| &self.heap.obj(f).kind) {
+                for p in c.tmpl.ast.params.iter().chain(c.tmpl.ast.rest.iter()) {
+                    compiler::pat_names(p, &mut params);
+                }
+            }
+            if self.heap.env(var_env).bindings.contains_key("arguments") {
+                params.push("arguments".into());
+            }
             let d = &code.decls;
-            if d.vars.iter().chain(d.functions.iter().map(|f| &f.0)).any(|n| &**n == "arguments") {
-                return self.syntax_error("'arguments' can't be declared by eval in parameter initializers");
+            if let Some(n) = d
+                .vars
+                .iter()
+                .chain(d.functions.iter().map(|f| &f.0))
+                .find(|n| params.iter().any(|p| p == &***n))
+            {
+                return self.syntax_error(&format!("Identifier '{n}' has already been declared"));
             }
         }
         let lex = self.heap.alloc_env(Env {
@@ -2087,7 +2107,7 @@ impl Vm {
         let constructor =
             may_construct && f.kind == crate::ast::FuncKind::Normal && !f.is_generator && !f.is_async;
         let length = tmpl.length;
-        let (f_gen, f_async) = (f.is_generator, f.is_async);
+        let (f_gen, f_async, f_strict) = (f.is_generator, f.is_async, f.strict);
         let name: JsString = match (&f.name, &tmpl.given_name) {
             (Some(n), _) => js_str(n),
             (None, Some(g)) => js_str(g),
@@ -2121,6 +2141,20 @@ impl Vm {
         let o = self.heap.obj_mut(fo);
         o.props.insert(PropKey::lit("length"), Prop::data(Value::Number(length as f64), false, false, true));
         o.props.insert(PropKey::lit("name"), Prop::data(Value::String(name), false, false, true));
+        if constructor && !f_strict {
+            // The legacy `caller` extension, for sloppy ordinary functions only.
+            let g = self.realm.legacy_caller;
+            let o = self.heap.obj_mut(fo);
+            o.props.insert(
+                PropKey::lit("caller"),
+                Prop {
+                    slot: Slot::Accessor(Some(g), None),
+                    writable: false,
+                    enumerable: false,
+                    configurable: true,
+                },
+            );
+        }
         if constructor {
             let p = self.new_object();
             self.heap.obj_mut(p).props.insert(PropKey::lit("constructor"), Prop::method(Value::Object(fo)));
@@ -2172,8 +2206,6 @@ impl Vm {
     /// CreateUnmappedArgumentsObject (§10.4.4.6). Mapped arguments come later.
     fn create_arguments(&mut self) -> JsResult<ObjRef> {
         let args = self.top().args.clone();
-        let strict = self.strict();
-        let callee = self.top().callee;
         let proto = self.realm.object_proto;
         let a = self.heap.alloc(Object::new(Some(proto), Kind::Arguments));
         let n = args.len();
@@ -2186,19 +2218,17 @@ impl Vm {
             o.props.insert(PropKey::from_u32(i as u32), Prop::data(v, true, true, true));
         }
         o.props.insert(iter_key, Prop::method(Value::Object(values_fn)));
-        if strict {
-            o.props.insert(
-                PropKey::lit("callee"),
-                Prop {
-                    slot: Slot::Accessor(Some(thrower), Some(thrower)),
-                    writable: false,
-                    enumerable: false,
-                    configurable: false,
-                },
-            );
-        } else if let Some(c) = callee {
-            o.props.insert(PropKey::lit("callee"), Prop::method(Value::Object(c)));
-        }
+        // CreateUnmappedArgumentsObject (§10.4.4.6) step 8: `callee` throws, also for sloppy
+        // functions with non-simple parameters (the mapped object replaces it).
+        o.props.insert(
+            PropKey::lit("callee"),
+            Prop {
+                slot: Slot::Accessor(Some(thrower), Some(thrower)),
+                writable: false,
+                enumerable: false,
+                configurable: false,
+            },
+        );
         Ok(a)
     }
 
