@@ -103,7 +103,8 @@ impl Helper {
 fn step(vm: &mut Vm, it: &Value, next: &Value) -> JsResult<Option<Value>> {
     let r = vm.call(next, it.clone(), Vec::new())?;
     let Value::Object(ro) = r else { return vm.type_error("Iterator result is not an object") };
-    if vm.get(ro, &PropKey::lit("done"))?.truthy() {
+    let cond = vm.get(ro, &PropKey::lit("done"))?;
+    if vm.to_boolean(&cond) {
         return Ok(None);
     }
     Ok(Some(vm.get(ro, &PropKey::lit("value"))?))
@@ -335,7 +336,7 @@ fn helper_step(vm: &mut Vm, o: ObjRef) -> JsResult<Option<Value>> {
                 if kind_tag == 0 {
                     return Ok(Some(r));
                 }
-                if r.truthy() {
+                if vm.to_boolean(&r) {
                     return Ok(Some(v));
                 }
             }
@@ -745,25 +746,30 @@ pub(super) fn install(vm: &mut Vm) {
     method(vm, ip, "some", 1, |vm, c| {
         let f = c.arg(0);
         let r = each(vm, &c, |vm, v, k| {
-            Ok(vm
-                .call(&f, Value::Undefined, vec![v, Value::Number(k)])?
-                .truthy()
-                .then_some(Value::Bool(true)))
+            let b = vm.call(&f, Value::Undefined, vec![v, Value::Number(k)])?;
+            Ok(vm.to_boolean(&b).then_some(Value::Bool(true)))
         })?;
         Ok(r.unwrap_or(Value::Bool(false)))
     });
     method(vm, ip, "every", 1, |vm, c| {
         let f = c.arg(0);
         let r = each(vm, &c, |vm, v, k| {
-            Ok((!vm.call(&f, Value::Undefined, vec![v, Value::Number(k)])?.truthy())
-                .then_some(Value::Bool(false)))
+            Ok((!{
+                let b = vm.call(&f, Value::Undefined, vec![v, Value::Number(k)])?;
+                vm.to_boolean(&b)
+            })
+            .then_some(Value::Bool(false)))
         })?;
         Ok(r.unwrap_or(Value::Bool(true)))
     });
     method(vm, ip, "find", 1, |vm, c| {
         let f = c.arg(0);
         let r = each(vm, &c, |vm, v, k| {
-            Ok(vm.call(&f, Value::Undefined, vec![v.clone(), Value::Number(k)])?.truthy().then_some(v))
+            Ok({
+                let b = vm.call(&f, Value::Undefined, vec![v.clone(), Value::Number(k)])?;
+                vm.to_boolean(&b)
+            }
+            .then_some(v))
         })?;
         Ok(r.unwrap_or_default())
     });
@@ -814,7 +820,10 @@ fn close_all(vm: &mut Vm, iters: &[Value], completion: JsResult<()>) -> JsResult
 fn step_done(vm: &mut Vm, it: &Value, next: &Value) -> JsResult<bool> {
     let r = vm.call(next, it.clone(), Vec::new())?;
     let Value::Object(ro) = r else { return vm.type_error("Iterator result is not an object") };
-    Ok(vm.get(ro, &PropKey::lit("done"))?.truthy())
+    Ok({
+        let b = vm.get(ro, &PropKey::lit("done"))?;
+        vm.to_boolean(&b)
+    })
 }
 
 /// IfAbruptCloseIterators.

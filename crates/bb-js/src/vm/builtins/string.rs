@@ -148,7 +148,8 @@ fn replace(vm: &mut Vm, c: NativeCall, all: bool) -> JsResult<Value> {
     }
     let pat = c.arg(0);
     let repl = c.arg(1);
-    if !pat.is_nullish() {
+    // ES2025: only an Object is asked for its @@method (primitives are not).
+    if matches!(pat, Value::Object(_)) {
         if all && is_regexp(vm, &pat)? {
             let fk = PropKey::lit("flags");
             let flags = vm.get_value_key(&pat, &fk)?;
@@ -440,7 +441,8 @@ pub(super) fn install(vm: &mut Vm) {
             return vm.type_error("String.prototype.split called on null or undefined");
         }
         let sep = c.arg(0);
-        if !sep.is_nullish() {
+        // ES2025: only an Object is asked for its @@method (primitives are not).
+        if matches!(sep, Value::Object(_)) {
             let sk = PropKey::Sym(vm.realm.sym_split.clone());
             if let Some(f) = vm.get_method(&sep, &sk)? {
                 return vm.call(&f, sep, vec![c.this.clone(), c.arg(1)]);
@@ -601,7 +603,8 @@ fn regexp_dispatch(vm: &mut Vm, c: NativeCall, which: u8) -> JsResult<Value> {
         1 => vm.realm.sym_match_all.clone(),
         _ => vm.realm.sym_search.clone(),
     };
-    if !r.is_nullish() {
+    // ES2025: only an Object is asked for its @@method (primitives are not).
+    if matches!(r, Value::Object(_)) {
         if which == 1 && is_regexp(vm, &r)? {
             let flags = vm.get_value_key(&r, &PropKey::lit("flags"))?;
             if flags.is_nullish() {

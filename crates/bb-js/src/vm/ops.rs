@@ -39,7 +39,17 @@ impl Vm {
         }
     }
 
-    /// `typeof` (§13.5.3).
+    /// Whether `v` has an [[IsHTMLDDA]] internal slot (§B.3.6).
+    pub fn is_html_dda(&self, v: &Value) -> bool {
+        matches!(v, Value::Object(o) if self.heap.obj(*o).html_dda)
+    }
+
+    /// ToBoolean (§7.1.2, with §B.3.6.1).
+    pub fn to_boolean(&self, v: &Value) -> bool {
+        v.truthy() && !self.is_html_dda(v)
+    }
+
+    /// `typeof` (§13.5.3, with §B.3.6.3).
     pub fn type_of(&self, v: &Value) -> JsString {
         js_str(match v {
             Value::Undefined => "undefined",
@@ -49,6 +59,7 @@ impl Vm {
             Value::String(_) => "string",
             Value::Symbol(_) => "symbol",
             Value::BigInt(_) => "bigint",
+            Value::Object(o) if self.heap.obj(*o).html_dda => "undefined",
             Value::Object(o) => {
                 if self.heap.obj(*o).is_callable() {
                     "function"
@@ -432,6 +443,9 @@ impl Vm {
         use Value::*;
         Ok(match (a, b) {
             (Undefined | Null, Undefined | Null) => true,
+            // §B.3.6.2: an [[IsHTMLDDA]] object is loosely equal to undefined and null.
+            (Object(_), Undefined | Null) if self.is_html_dda(a) => true,
+            (Undefined | Null, Object(_)) if self.is_html_dda(b) => true,
             (Undefined | Null, _) | (_, Undefined | Null) => false,
             (Number(_), String(s)) => {
                 let n = string_to_number(s);
@@ -470,7 +484,7 @@ impl Vm {
         let hi = PropKey::Sym(self.realm.sym_has_instance.clone());
         if let Some(h) = self.get_method(target, &hi)? {
             let r = self.call(&h, target.clone(), vec![v.clone()])?;
-            return Ok(r.truthy());
+            return Ok(self.to_boolean(&r));
         }
         if !self.is_callable(target) {
             return self.type_error("Right-hand side of 'instanceof' is not callable");

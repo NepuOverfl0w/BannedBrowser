@@ -192,6 +192,17 @@ impl Vm {
         if self.is_proxy(o) {
             return self.proxy_prevent_extensions(o);
         }
+        // TypedArray [[PreventExtensions]] (§10.4.5.5): only if IsTypedArrayFixedLength.
+        if let Kind::TypedArray(ta) = &self.heap.obj(o).kind {
+            let fixed = ta.length.is_some()
+                && match &self.heap.obj(ta.buffer).kind {
+                    Kind::ArrayBuffer(b) => b.max.is_none() || b.shared,
+                    _ => true,
+                };
+            if !fixed {
+                return Ok(false);
+            }
+        }
         self.heap.obj_mut(o).extensible = false;
         Ok(true)
     }
@@ -800,7 +811,7 @@ impl Vm {
             return self.type_error("Iterator result is not an object");
         };
         let done = match self.get(ro, &PropKey::lit("done")) {
-            Ok(v) => v.truthy(),
+            Ok(v) => self.to_boolean(&v),
             Err(e) => {
                 self.set_iter_done(r);
                 return Err(e);

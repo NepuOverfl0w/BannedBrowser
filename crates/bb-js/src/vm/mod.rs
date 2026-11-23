@@ -959,14 +959,16 @@ impl Vm {
                 let env = self.top().env;
                 self.init_binding(env, &name, v)?;
             }
-            Op::DeclareLet(i) | Op::DeclareConst(i) => {
+            Op::DeclareLet(i) | Op::DeclareConst(i) | Op::DeclareCatch(i) => {
                 let name = self.name(i);
                 let env = self.top().env;
-                let mutable = matches!(op, Op::DeclareLet(_));
+                let mutable = !matches!(op, Op::DeclareConst(_));
+                // `strict: false` marks a simple catch parameter (see eval instantiation).
+                let strict = !matches!(op, Op::DeclareCatch(_));
                 self.heap.env_mut(env).bindings.entry(name).or_insert(Binding {
                     value: None,
                     mutable,
-                    strict: true,
+                    strict,
                     deletable: false,
                 });
             }
@@ -1501,7 +1503,7 @@ impl Vm {
             }
             Op::Not => {
                 let a = self.pop();
-                self.push(Value::Bool(!a.truthy()));
+                self.push(Value::Bool(!self.to_boolean(&a)));
             }
             Op::BitNot => {
                 let a = self.pop();
@@ -1554,24 +1556,26 @@ impl Vm {
             }
             Op::Jump(t) => self.jump(t),
             Op::JumpIfFalse(t) => {
-                if !self.pop().truthy() {
+                let v = self.pop();
+                if !self.to_boolean(&v) {
                     self.jump(t);
                 }
             }
             Op::JumpIfTrue(t) => {
-                if self.pop().truthy() {
+                let v = self.pop();
+                if self.to_boolean(&v) {
                     self.jump(t);
                 }
             }
             Op::JumpIfFalseKeep(t) => {
-                if !self.peek(0).truthy() {
+                if !self.to_boolean(&self.peek(0)) {
                     self.jump(t);
                 } else {
                     self.pop();
                 }
             }
             Op::JumpIfTrueKeep(t) => {
-                if self.peek(0).truthy() {
+                if self.to_boolean(&self.peek(0)) {
                     self.jump(t);
                 } else {
                     self.pop();
@@ -1748,7 +1752,8 @@ impl Vm {
                 let Value::Object(ro) = res else {
                     return self.type_error("Iterator result is not an object");
                 };
-                if self.get(ro, &PropKey::lit("done"))?.truthy() {
+                let cond = self.get(ro, &PropKey::lit("done"))?;
+                if self.to_boolean(&cond) {
                     self.pop();
                     self.jump(t);
                 } else {

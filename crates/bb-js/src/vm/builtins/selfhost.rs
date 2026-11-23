@@ -97,7 +97,12 @@ pub(super) fn install(vm: &mut Vm) {
     helper(vm, i, "defineValue", |vm, c| {
         let o = obj_arg(vm, &c, 0)?;
         let k = vm.to_property_key(&c.arg(1))?;
-        let p = Prop::data(c.arg(2), c.arg(3).truthy(), c.arg(4).truthy(), c.arg(5).truthy());
+        let p = Prop::data(
+            c.arg(2),
+            vm.to_boolean(&c.arg(3)),
+            vm.to_boolean(&c.arg(4)),
+            vm.to_boolean(&c.arg(5)),
+        );
         vm.heap.obj_mut(o).props.insert(k, p);
         Ok(Value::Undefined)
     });
@@ -109,6 +114,7 @@ pub(super) fn install(vm: &mut Vm) {
             .add(&BigInt::from_u64(d.subsec_nanos() as u64));
         Ok(Value::BigInt(Rc::new(ns)))
     });
+    helper(vm, i, "thisTimeValue", |vm, c| Ok(Value::Number(super::date::this_time(vm, &c.arg(0))?)));
     helper(vm, i, "codeUnit", |vm, c| {
         let s = vm.to_string(&c.arg(0))?;
         let k = vm.to_number(&c.arg(1))?;
@@ -236,6 +242,7 @@ pub(super) fn install(vm: &mut Vm) {
         ("ObjectPrototype", Value::Object(vm.realm.object_proto)),
         ("FunctionPrototype", Value::Object(vm.realm.function_proto)),
         ("global", Value::Object(vm.realm.global)),
+        ("DatePrototype", Value::Object(vm.realm.date_proto)),
         ("AsyncDisposableStackPrototype", Value::Object(vm.realm.async_disposable_stack_proto)),
         ("AsyncIteratorPrototype", Value::Object(vm.realm.async_iterator_proto)),
     ];

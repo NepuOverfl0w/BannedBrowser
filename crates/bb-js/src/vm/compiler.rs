@@ -584,7 +584,11 @@ impl<'a> Compiler<'a> {
             annex_b_functions(&f.body, &lex_names, &pn, &mut found);
             for bf in found {
                 let n = bf.name.clone().unwrap_or_default();
-                if !fnames.contains(&n) && !(n == "arguments" && arguments_needed) {
+                // B.3.2.1: a block function named "arguments" never gets var semantics.
+                if n == "arguments" {
+                    continue;
+                }
+                if !fnames.contains(&n) {
                     if instantiated.insert(n.clone()) {
                         let i = c.name(&n);
                         c.emit(Op::DeclareVar(i));
@@ -1384,9 +1388,10 @@ impl<'a> Compiler<'a> {
                     pat_names(p, &mut names);
                     self.emit(Op::PushScope);
                     self.ctl.push(Ctl::Scope);
+                    let simple = matches!(p, Pat::Ident(_));
                     for n in &names {
                         let i = self.name(n);
-                        self.emit(Op::DeclareLet(i));
+                        self.emit(if simple { Op::DeclareCatch(i) } else { Op::DeclareLet(i) });
                     }
                     self.bind(p, Bind::Init);
                     let had = self.block_scope(h);
@@ -3161,11 +3166,9 @@ fn annex_b_block(
     for f in &funcs {
         here.insert(f.name.clone().unwrap_or_default());
     }
-    // Inner blocks see this block's functions as lexical too, except the same name hoists
-    // through (it would be the same var).
-    stack.push(
-        here.into_iter().filter(|n| !funcs.iter().any(|f| f.name.as_deref() == Some(n.as_str()))).collect(),
-    );
+    // Inner blocks see this block's functions as lexical too: a `var f` in a nested block
+    // would clash with this block's `function f`.
+    stack.push(here);
     for s in body {
         annex_b_stmt(s, stack, params, out, false);
     }

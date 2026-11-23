@@ -98,7 +98,8 @@ impl Vm {
                     let Value::Object(ro) = res else {
                         return self.type_error("Iterator result is not an object");
                     };
-                    if self.get(ro, &PropKey::lit("done"))?.truthy() {
+                    let cond = self.get(ro, &PropKey::lit("done"))?;
+                    if self.to_boolean(&cond) {
                         let v = self.get(ro, &PropKey::lit("value"))?;
                         self.pop();
                         self.push(v);
@@ -112,7 +113,8 @@ impl Vm {
         let Value::Object(io) = inner else {
             return self.type_error("Iterator result is not an object");
         };
-        if self.get(io, &PropKey::lit("done"))?.truthy() {
+        let cond = self.get(io, &PropKey::lit("done"))?;
+        if self.to_boolean(&cond) {
             let v = self.get(io, &PropKey::lit("value"))?;
             self.pop();
             self.push(v);

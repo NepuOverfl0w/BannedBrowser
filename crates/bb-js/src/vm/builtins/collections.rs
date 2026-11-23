@@ -243,7 +243,10 @@ fn set_op(vm: &mut Vm, c: NativeCall, op: SetOp) -> JsResult<Value> {
     let this_size = data(vm, &c.this, Coll::Set).map(|d| d.size()).unwrap_or(0) as f64;
     let has_this = |vm: &mut Vm, k: &Value| data(vm, &c.this, Coll::Set).is_some_and(|d| d.has(k));
     let other_has = |vm: &mut Vm, k: &Value| -> JsResult<bool> {
-        Ok(vm.call(&rec.2, rec.0.clone(), vec![k.clone()])?.truthy())
+        Ok({
+            let b = vm.call(&rec.2, rec.0.clone(), vec![k.clone()])?;
+            vm.to_boolean(&b)
+        })
     };
     match op {
         SetOp::Union | SetOp::SymDiff => {

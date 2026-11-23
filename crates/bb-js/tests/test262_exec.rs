@@ -25,7 +25,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 48_516;
+const FLOOR: usize = 48_630;
 
 /// Instructions per test variant before it counts as hung (TEST262_FUEL overrides it
 /// for experiments). The heaviest legitimate tests, the generated RegExp property-escape
@@ -140,6 +140,10 @@ fn install_262(vm: &mut Vm) {
             vm.get(g, &bb_js::vm::PropKey::named("$262"))
         })
     });
+    // IsHTMLDDA: returns null when called with no arguments or with "".
+    let dda = realm::native(vm, "IsHTMLDDA", 0, |_: &mut Vm, _: NativeCall| Ok(Value::Null));
+    vm.heap.obj_mut(dda).html_dda = true;
+    realm::value(vm, o, "IsHTMLDDA", Value::Object(dda));
     realm::method(vm, o, "detachArrayBuffer", 1, |vm: &mut Vm, c: NativeCall| -> JsResult<Value> {
         match c.arg(0) {
             Value::Object(b) => vm.detach_array_buffer(b)?,

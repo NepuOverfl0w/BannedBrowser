@@ -487,11 +487,21 @@ pub struct Object {
     pub kind: Kind,
     /// Private elements (§7.3.27): fields, methods and accessors.
     pub private: Vec<(Sym, PrivElem)>,
+    /// [[IsHTMLDDA]] (§B.3.6): `typeof` is "undefined", ToBoolean is false, and it is
+    /// loosely equal to undefined and null. Hosts set it on `document.all`.
+    pub html_dda: bool,
 }
 
 impl Object {
     pub fn new(proto: Option<ObjRef>, kind: Kind) -> Object {
-        Object { proto, extensible: true, props: Props::default(), kind, private: Vec::new() }
+        Object {
+            proto,
+            extensible: true,
+            props: Props::default(),
+            kind,
+            private: Vec::new(),
+            html_dda: false,
+        }
     }
     pub fn is_callable(&self) -> bool {
         match &self.kind {
@@ -535,7 +545,6 @@ pub enum EnvKind {
     Global {
         object: ObjRef,
         this: Value,
-        var_names: crate::vm::fx::HashSet<Rc<str>>,
     },
 }
 

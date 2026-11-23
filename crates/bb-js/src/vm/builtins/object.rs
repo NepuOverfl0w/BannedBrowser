@@ -22,16 +22,16 @@ pub fn to_property_descriptor(vm: &mut Vm, v: &Value) -> JsResult<PropDesc> {
         }
     };
     if let Some(v) = field(vm, "enumerable")? {
-        d.enumerable = Some(v.truthy());
+        d.enumerable = Some(vm.to_boolean(&v));
     }
     if let Some(v) = field(vm, "configurable")? {
-        d.configurable = Some(v.truthy());
+        d.configurable = Some(vm.to_boolean(&v));
     }
     if let Some(v) = field(vm, "value")? {
         d.value = Some(v);
     }
     if let Some(v) = field(vm, "writable")? {
-        d.writable = Some(v.truthy());
+        d.writable = Some(vm.to_boolean(&v));
     }
     if let Some(g) = field(vm, "get")? {
         if !g.is_undefined() && !vm.is_callable(&g) {
@@ -150,7 +150,7 @@ pub(super) fn is_array(vm: &mut Vm, v: &Value) -> JsResult<bool> {
 }
 
 /// Object.prototype.toString (§20.1.3.6).
-fn object_to_string(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+pub(super) fn object_to_string(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let tag = match &c.this {
         Value::Undefined => return Ok(Value::str("[object Undefined]")),
         Value::Null => return Ok(Value::str("[object Null]")),
@@ -559,6 +559,31 @@ fn function_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     Ok(Value::Object(fo))
 }
 
+/// A built-in's name as NativeFunction's `NativeFunctionAccessor? PropertyName` (§20.2.3.5):
+/// a name that is not an IdentifierName or computed key (`$&`) becomes `["$&"]`.
+fn native_name(name: &str) -> String {
+    let (prefix, key) = match name.strip_prefix("get ").or_else(|| name.strip_prefix("set ")) {
+        Some(k) => (&name[..4], k),
+        None => ("", name),
+    };
+    let mut cs = key.chars();
+    let ident = cs.next().is_some_and(crate::lexer::is_id_start) && cs.all(crate::lexer::is_id_continue);
+    if key.is_empty() || ident || (key.starts_with('[') && key.ends_with(']')) {
+        return name.to_string();
+    }
+    let mut out = String::from(prefix);
+    out.push_str("[\"");
+    for ch in key.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c => out.push(c),
+        }
+    }
+    out.push_str("\"]");
+    out
+}
+
 fn function_to_string(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let Value::Object(o) = c.this else {
         return vm.type_error("Function.prototype.toString requires that 'this' be a Function");
@@ -579,7 +604,7 @@ fn function_to_string(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
                 }
                 _ => String::new(),
             };
-            format!("function {name}() {{ [native code] }}")
+            format!("function {}() {{ [native code] }}", native_name(&name))
         }
         // A callable proxy: NativeFunction syntax (§20.2.3.5 step 4).
         Kind::Proxy(p) if p.callable => "function () { [native code] }".to_string(),

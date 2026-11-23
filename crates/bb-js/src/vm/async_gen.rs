@@ -284,7 +284,10 @@ impl Vm {
         let res = self.pop();
         let mode = self.pop();
         let Value::Object(ro) = res else { return self.type_error("Iterator result is not an object") };
-        let done = self.get(ro, &PropKey::lit("done"))?.truthy();
+        let done = {
+            let b = self.get(ro, &PropKey::lit("done"))?;
+            self.to_boolean(&b)
+        };
         let v = self.get(ro, &PropKey::lit("value"))?;
         if done {
             self.pop();
@@ -343,7 +346,10 @@ fn continuation(
     let (p, res, rej) = cap;
     let r = (|| -> JsResult<()> {
         let Value::Object(ro) = result else { return vm.type_error("Iterator result is not an object") };
-        let done = vm.get(ro, &PropKey::lit("done"))?.truthy();
+        let done = {
+            let b = vm.get(ro, &PropKey::lit("done"))?;
+            vm.to_boolean(&b)
+        };
         let value = vm.get(ro, &PropKey::lit("value"))?;
         let pc = Value::Object(vm.realm.promise_ctor);
         let wrapper = match vm.promise_resolve(&pc, value) {
@@ -362,7 +368,10 @@ fn continuation(
             "",
             1,
             |vm, c| {
-                let done = slot0(vm, c.callee).truthy();
+                let done = {
+                    let b = slot0(vm, c.callee);
+                    vm.to_boolean(&b)
+                };
                 Ok(vm.iter_result(c.arg(0), done))
             },
             false,

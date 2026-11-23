@@ -2,7 +2,7 @@
 //! helpers the built-ins use to define themselves.
 
 use super::heap::*;
-use super::value::{js_str, PropKey, Sym, Value};
+use super::value::{js_str, JsString, PropKey, Sym, Value};
 use super::{builtins, ErrorKind, Vm};
 use crate::vm::fx::HashMap;
 
@@ -30,6 +30,9 @@ macro_rules! realm_objects {
             pub sym_split: Sym,
             pub sym_dispose: Sym,
             pub sym_async_dispose: Sym,
+            /// The legacy RegExp static slots (proposal-regexp-legacy-features): input,
+            /// lastMatch, lastParen, leftContext, rightContext, $1–$9. `None` = ~empty~.
+            pub regexp_statics: Option<Box<[JsString; 14]>>,
         }
 
         impl Realm {
@@ -60,6 +63,7 @@ macro_rules! realm_objects {
                     sym_split: s("Symbol.split"),
                     sym_dispose: s("Symbol.dispose"),
                     sym_async_dispose: s("Symbol.asyncDispose"),
+                    regexp_statics: Some(Box::new(std::array::from_fn(|_| js_str("")))),
                 }
             }
 
@@ -194,7 +198,7 @@ pub fn init(vm: &mut Vm) {
     vm.realm.global_this = Value::Object(global);
     vm.realm.global_env = vm.heap.alloc_env(Env {
         outer: None,
-        kind: EnvKind::Global { object: global, this: Value::Object(global), var_names: Default::default() },
+        kind: EnvKind::Global { object: global, this: Value::Object(global) },
         bindings: HashMap::default(),
     });
     for f in [

@@ -12,6 +12,9 @@ pub struct RegExpData {
     pub source: JsString,
     pub flags: JsString,
     pub matcher: Rc<Regex>,
+    /// [[Realm]] and [[LegacyFeaturesEnabled]] (proposal-regexp-legacy-features).
+    pub realm: u32,
+    pub legacy: bool,
 }
 
 fn data(vm: &Vm, v: &Value) -> Option<(JsString, JsString, Rc<Regex>)> {
@@ -57,20 +60,70 @@ impl Vm {
     /// RegExpCreate (§22.2.3.1) for literals and internal uses.
     pub fn regexp_create(&mut self, source: JsString, flags: JsString) -> JsResult<ObjRef> {
         let proto = self.realm.regexp_proto;
-        self.regexp_alloc_init(proto, source, flags)
+        self.regexp_alloc_init(proto, source, flags, true)
     }
 
-    fn regexp_alloc_init(&mut self, proto: ObjRef, source: JsString, flags: JsString) -> JsResult<ObjRef> {
+    /// RegExpAlloc + RegExpInitialize; `legacy` is SameValue(newTarget, %RegExp%).
+    fn regexp_alloc_init(
+        &mut self,
+        proto: ObjRef,
+        source: JsString,
+        flags: JsString,
+        legacy: bool,
+    ) -> JsResult<ObjRef> {
         let m = compile(self, &source, &flags)?;
+        let realm = self.cur_realm;
         let o = self.heap.alloc(Object::new(
             Some(proto),
-            Kind::RegExp(Box::new(RegExpData { source, flags, matcher: Rc::new(m) })),
+            Kind::RegExp(Box::new(RegExpData { source, flags, matcher: Rc::new(m), realm, legacy })),
         ));
         self.heap
             .obj_mut(o)
             .props
             .insert(PropKey::lit("lastIndex"), Prop::data(Value::Number(0.0), true, false, false));
         Ok(o)
+    }
+
+    /// RegExpBuiltinExec's legacy step: UpdateLegacyRegExpStaticProperties when `r` is a
+    /// plain RegExp of the current realm, else InvalidateLegacyRegExpStaticProperties.
+    fn update_legacy_statics(
+        &mut self,
+        r: ObjRef,
+        s: &JsString,
+        start: usize,
+        end: usize,
+        caps: &[Option<(usize, usize)>],
+    ) {
+        let (realm, legacy) = match &self.heap.obj(r).kind {
+            Kind::RegExp(d) => (d.realm, d.legacy),
+            _ => return,
+        };
+        if realm != self.cur_realm {
+            return;
+        }
+        if !legacy {
+            self.realm.regexp_statics = None;
+            return;
+        }
+        let cap = |c: &Option<(usize, usize)>| -> JsString {
+            match c {
+                Some((x, y)) => s[*x..*y].into(),
+                None => js_str(""),
+            }
+        };
+        let last_paren = if caps.len() > 1 { cap(&caps[caps.len() - 1]) } else { js_str("") };
+        let mut st: [JsString; 14] = std::array::from_fn(|_| js_str(""));
+        st[0] = s.clone();
+        st[1] = s[start..end].into();
+        st[2] = last_paren;
+        st[3] = s[..start].into();
+        st[4] = s[end..].into();
+        for i in 1..=9 {
+            if let Some(c) = caps.get(i) {
+                st[4 + i] = cap(c);
+            }
+        }
+        self.realm.regexp_statics = Some(Box::new(st));
     }
 
     /// RegExpBuiltinExec (§22.2.7.2).
@@ -117,6 +170,7 @@ impl Vm {
         if global || sticky {
             self.set_or_throw(r, PropKey::lit("lastIndex"), Value::Number(end as f64))?;
         }
+        self.update_legacy_statics(r, s, start, end, &caps);
         let a = self.new_array(Vec::new());
         self.create_data_property_or_throw(a, PropKey::lit("index"), Value::Number(start as f64))?;
         self.create_data_property_or_throw(a, PropKey::lit("input"), Value::String(s.clone()))?;
@@ -236,7 +290,7 @@ pub(super) fn is_regexp(vm: &mut Vm, v: &Value) -> JsResult<bool> {
     let mk = PropKey::Sym(vm.realm.sym_match.clone());
     let m = vm.get(*o, &mk)?;
     if !m.is_undefined() {
-        return Ok(m.truthy());
+        return Ok(vm.to_boolean(&m));
     }
     Ok(matches!(vm.heap.obj(*o).kind, Kind::RegExp(_)))
 }
@@ -272,7 +326,8 @@ fn ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let proto = vm.prototype_from_ctor(nt, |r| r.regexp_proto)?;
     let ps = if p.is_undefined() { js_str("") } else { vm.to_string(&p)? };
     let fs = if f.is_undefined() { js_str("") } else { vm.to_string(&f)? };
-    let o = vm.regexp_alloc_init(proto, ps, fs)?;
+    let legacy = nt == vm.realm.regexp_ctor;
+    let o = vm.regexp_alloc_init(proto, ps, fs, legacy)?;
     Ok(Value::Object(o))
 }
 
@@ -570,6 +625,7 @@ pub(super) fn install(vm: &mut Vm) {
     vm.realm.regexp_proto = rp;
     let rc = realm::constructor(vm, "RegExp", 2, ctor, rp);
     vm.realm.regexp_ctor = rc;
+    legacy_accessors(vm, rc);
     let species = PropKey::Sym(vm.realm.sym_species.clone());
     accessor(vm, rc, species, Some(|_, c| Ok(c.this)), None);
     method(vm, rc, "escape", 1, |vm, c| {
@@ -646,8 +702,13 @@ pub(super) fn install(vm: &mut Vm) {
     method(vm, rp, "compile", 2, |vm, c| {
         // Annex B.2.4.1.
         let Value::Object(o) = c.this else { return vm.type_error("not a RegExp") };
-        if data(vm, &c.this).is_none() {
-            return vm.type_error("not a RegExp");
+        let (realm, legacy) = match &vm.heap.obj(o).kind {
+            Kind::RegExp(d) => (d.realm, d.legacy),
+            _ => return vm.type_error("not a RegExp"),
+        };
+        // proposal-regexp-legacy-features: only plain RegExps of this realm.
+        if realm != vm.cur_realm || !legacy {
+            return vm.type_error("RegExp.prototype.compile called on a subclass or cross-realm RegExp");
         }
         let (p, f) = match data(vm, &c.arg(0)) {
             Some((src, fl, _)) => {
@@ -704,7 +765,8 @@ pub(super) fn install(vm: &mut Vm) {
                 ("unicodeSets", 'v'),
                 ("sticky", 'y'),
             ] {
-                if vm.get(o, &PropKey::named(name))?.truthy() {
+                let cond = vm.get(o, &PropKey::named(name))?;
+                if vm.to_boolean(&cond) {
                     out.push(ch);
                 }
             }
@@ -839,4 +901,48 @@ pub struct RegExpStringIter {
     pub global: bool,
     pub unicode: bool,
     pub done: bool,
+}
+
+/// GetLegacyRegExpStaticProperty (proposal-regexp-legacy-features): slot `i`.
+fn legacy_get(vm: &mut Vm, c: &NativeCall, i: usize) -> JsResult<Value> {
+    if !matches!(c.this, Value::Object(o) if o == vm.realm.regexp_ctor) {
+        return vm.type_error("RegExp legacy static accessed on a value other than RegExp");
+    }
+    match &vm.realm.regexp_statics {
+        Some(st) => Ok(Value::String(st[i].clone())),
+        None => vm.type_error("RegExp legacy statics are not available after a subclass match"),
+    }
+}
+
+/// The legacy static accessors on %RegExp%: input/$_ (with a setter), lastMatch/$&,
+/// lastParen/$+, leftContext/$`, rightContext/$', $1–$9.
+fn legacy_accessors(vm: &mut Vm, rc: ObjRef) {
+    macro_rules! getters {
+        ($($i:literal: $($name:literal),+);* $(;)?) => {
+            $($(
+                realm::accessor(vm, rc, PropKey::lit($name), Some(|vm, c| legacy_get(vm, &c, $i)),
+                    if $i == 0 { Some(legacy_set_input as NativeFn) } else { None });
+            )+)*
+        };
+    }
+    getters!(
+        0: "input", "$_";
+        1: "lastMatch", "$&";
+        2: "lastParen", "$+";
+        3: "leftContext", "$`";
+        4: "rightContext", "$'";
+        5: "$1"; 6: "$2"; 7: "$3"; 8: "$4"; 9: "$5"; 10: "$6"; 11: "$7"; 12: "$8"; 13: "$9";
+    );
+}
+
+/// SetLegacyRegExpStaticProperty for [[RegExpInput]].
+fn legacy_set_input(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+    if !matches!(c.this, Value::Object(o) if o == vm.realm.regexp_ctor) {
+        return vm.type_error("RegExp.input set on a value other than RegExp");
+    }
+    let v = vm.to_string(&c.arg(0))?;
+    if let Some(st) = &mut vm.realm.regexp_statics {
+        st[0] = v;
+    }
+    Ok(Value::Undefined)
 }

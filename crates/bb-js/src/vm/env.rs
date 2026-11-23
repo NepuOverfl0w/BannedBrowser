@@ -51,7 +51,8 @@ impl Vm {
         // @@unscopables (§9.1.1.2.1 steps 4–7).
         let us = PropKey::Sym(self.realm.sym_unscopables.clone());
         if let Value::Object(u) = self.get(obj, &us)? {
-            if self.get(u, &key)?.truthy() {
+            let cond = self.get(u, &key)?;
+            if self.to_boolean(&cond) {
                 return Ok(false);
             }
         }
@@ -220,13 +221,7 @@ impl Vm {
         };
         if let Some(o) = obj {
             let k = self.name_key(name);
-            let ok = self.delete(o, &k)?;
-            if ok {
-                if let EnvKind::Global { var_names, .. } = &mut self.heap.env_mut(r).kind {
-                    var_names.remove(name);
-                }
-            }
-            return Ok(ok);
+            return self.delete(o, &k);
         }
         let e = self.heap.env_mut(r);
         match e.bindings.get(name) {
@@ -301,10 +296,6 @@ impl Vm {
         self.heap.env(genv).bindings.contains_key(n)
     }
 
-    fn has_var_declaration(&self, genv: EnvRef, n: &Rc<str>) -> bool {
-        matches!(&self.heap.env(genv).kind, EnvKind::Global { var_names, .. } if var_names.contains(n))
-    }
-
     /// HasRestrictedGlobalProperty (§9.1.1.4.14).
     fn has_restricted_global(&mut self, g: ObjRef, n: &str) -> JsResult<bool> {
         Ok(match self.get_own_property(g, &PropKey::named(n))? {
@@ -341,9 +332,6 @@ impl Vm {
                 PropDesc::data(Value::Undefined, true, true, deletable),
             )?;
         }
-        if let EnvKind::Global { var_names, .. } = &mut self.heap.env_mut(genv).kind {
-            var_names.insert(n.clone());
-        }
         Ok(())
     }
 
@@ -365,9 +353,6 @@ impl Vm {
         };
         self.define_own_property_or_throw(g, key.clone(), desc)?;
         self.set(g, key, f, Value::Object(g))?;
-        if let EnvKind::Global { var_names, .. } = &mut self.heap.env_mut(genv).kind {
-            var_names.insert(n.clone());
-        }
         Ok(())
     }
 
@@ -378,7 +363,9 @@ impl Vm {
         let g = self.global_parts(genv);
         let d = &code.decls;
         for (n, _) in &d.lexical {
-            if self.has_var_declaration(genv, n) || self.has_lexical_declaration(genv, n) {
+            // Global vars and functions are non-configurable, so HasRestrictedGlobalProperty
+            // catches them; eval-introduced ones are configurable and don't clash.
+            if self.has_lexical_declaration(genv, n) {
                 return self.syntax_error(&format!("Identifier '{n}' has already been declared"));
             }
             if self.has_restricted_global(g, n)? {
@@ -452,11 +439,11 @@ impl Vm {
                 if !matches!(self.heap.env(r).kind, EnvKind::Object { .. }) {
                     for n in &names {
                         if let Some(b) = self.heap.env(r).bindings.get(*n) {
-                            // B.3.4: a catch parameter may be redeclared by var (not by
-                            // functions); simple catch bindings are mutable and non-strict.
+                            // B.3.4: a catch parameter may be redeclared by eval's var
+                            // and function declarations; simple catch bindings are mutable
+                            // and non-strict.
                             let catch_param = b.mutable && !b.strict;
-                            let is_fn = d.functions.iter().any(|f| &&f.0 == n);
-                            if !catch_param || is_fn {
+                            if !catch_param {
                                 return self
                                     .syntax_error(&format!("Identifier '{n}' has already been declared"));
                             }

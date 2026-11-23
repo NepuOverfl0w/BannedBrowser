@@ -124,7 +124,7 @@ struct Parser<'a> {
     flags: Flags,
     sets: Vec<Set>,
     ngroups: usize,
-    names: Vec<(Vec<u32>, usize)>,
+    names: Vec<(Vec<u16>, usize)>,
     /// The pattern has named groups (enables `\k` outside u mode, B.1.2).
     has_names: bool,
 }
@@ -287,13 +287,13 @@ impl Parser<'_> {
             '.' => Node::Any,
             '(' => self.group(),
             '[' => {
-                let s = self.class();
+                let (s, negate) = self.class();
                 let has_strings = !s.strings.is_empty();
                 let idx = self.add_set(s);
                 if has_strings {
                     self.string_alternatives(idx)
                 } else {
-                    Node::Set(idx, false)
+                    Node::Set(idx, negate)
                 }
             }
             '\\' => self.atom_escape(),
@@ -330,18 +330,7 @@ impl Parser<'_> {
                 return Node::Look { node: Box::new(n), ahead: false, negate };
             }
             if self.eat('<') {
-                let mut name = Vec::new();
-                while let Some(c) = self.peek() {
-                    self.i += 1;
-                    if c == '>' as u32 {
-                        break;
-                    }
-                    if c == '\\' as u32 && self.eat('u') {
-                        name.extend(self.unicode_escape_in_name());
-                        continue;
-                    }
-                    name.push(c);
-                }
+                let name = self.group_name();
                 self.ngroups += 1;
                 let idx = self.ngroups;
                 self.names.push((name, idx));
@@ -376,9 +365,15 @@ impl Parser<'_> {
         Node::Group(Box::new(n), Some(idx))
     }
 
-    fn unicode_escape_in_name(&mut self) -> Vec<u32> {
-        let v = self.unicode_escape_value().unwrap_or(0);
-        vec![v]
+    /// A GroupName after `<`, through `>`, as UTF-16.
+    fn group_name(&mut self) -> Vec<u16> {
+        let st = self.i;
+        while self.peek().is_some_and(|c| c != '>' as u32) {
+            self.i += 1;
+        }
+        let name = decode_group_name(&self.p[st..self.i]);
+        self.eat('>');
+        name
     }
 
     fn hex(&mut self, n: usize) -> Option<u32> {
@@ -451,18 +446,7 @@ impl Parser<'_> {
         if ch == 'k' && (self.flags.unicode || self.has_names) {
             self.i += 1;
             if self.eat('<') {
-                let mut name = Vec::new();
-                while let Some(c) = self.peek() {
-                    self.i += 1;
-                    if c == '>' as u32 {
-                        break;
-                    }
-                    if c == '\\' as u32 && self.eat('u') {
-                        name.extend(self.unicode_escape_in_name());
-                        continue;
-                    }
-                    name.push(c);
-                }
+                let name = self.group_name();
                 return Node::BackRef(self.group_indices_of(&name));
             }
             return Node::Char('k' as u32);
@@ -513,7 +497,7 @@ impl Parser<'_> {
         count_groups(self.p)
     }
 
-    fn group_indices_of(&self, name: &[u32]) -> Vec<usize> {
+    fn group_indices_of(&self, name: &[u16]) -> Vec<usize> {
         // Names may be declared later in the pattern: scan the whole pattern.
         all_group_names(self.p).into_iter().filter(|(n, _)| n == name).map(|(_, i)| i).collect()
     }
@@ -625,10 +609,12 @@ impl Parser<'_> {
         }
     }
 
-    /// `[…]` after the `[`.
-    fn class(&mut self) -> Set {
+    /// `[…]` after the `[`, and whether it is negated. A negated class is matched as its
+    /// positive set inverted after case folding (CharacterSetMatcher's `invert`, §22.2.2.7.3):
+    /// `/[^o]/i` must not match "O".
+    fn class(&mut self) -> (Set, bool) {
         if self.flags.sets {
-            return self.class_v();
+            return (self.class_v(), false);
         }
         let negate = self.eat('^');
         let mut ranges = Vec::new();
@@ -660,8 +646,7 @@ impl Parser<'_> {
                 Escape::Set(s) => ranges.extend(s.ranges),
             }
         }
-        let r = normalize(ranges);
-        Set { ranges: if negate { complement(&r, self.max_char()) } else { r }, strings: Vec::new() }
+        (Set { ranges: normalize(ranges), strings: Vec::new() }, negate)
     }
 
     fn class_atom(&mut self) -> Escape {
@@ -810,12 +795,66 @@ fn count_groups(p: &[u32]) -> usize {
     all_group_names_and_count(p).1
 }
 
-fn all_group_names(p: &[u32]) -> Vec<(Vec<u32>, usize)> {
+/// RegExpIdentifierName's value as UTF-16 (§22.2.1.9): `\u{X}` and `\uXXXX` escapes (a
+/// `\uLead\uTrail` pair is one code point) in every mode. `raw` holds code units outside
+/// u mode and code points in it; both come out as UTF-16.
+fn decode_group_name(raw: &[u32]) -> Vec<u16> {
+    let hex = |s: &[u32]| -> Option<u32> {
+        let mut v: u32 = 0;
+        for &c in s {
+            v = v.checked_mul(16)?.checked_add(char::from_u32(c)?.to_digit(16)?)?;
+        }
+        Some(v)
+    };
+    // `\uXXXX` or `\u{X…}` at `i`: (value, length).
+    let esc = |i: usize| -> Option<(u32, usize)> {
+        if raw.get(i) != Some(&('\\' as u32)) || raw.get(i + 1) != Some(&('u' as u32)) {
+            return None;
+        }
+        if raw.get(i + 2) == Some(&('{' as u32)) {
+            let close = raw[i + 3..].iter().position(|&c| c == '}' as u32)?;
+            let v = hex(&raw[i + 3..i + 3 + close])?;
+            return (close > 0 && v <= 0x10FFFF).then_some((v, close + 4));
+        }
+        Some((hex(raw.get(i + 2..i + 6)?)?, 6))
+    };
+    let mut cps: Vec<u32> = Vec::new();
+    let mut i = 0;
+    while i < raw.len() {
+        match esc(i) {
+            Some((v, n)) => {
+                i += n;
+                if (0xD800..0xDC00).contains(&v) {
+                    if let Some((t, m)) = esc(i).filter(|(t, _)| (0xDC00..0xE000).contains(t)) {
+                        cps.push(0x10000 + ((v - 0xD800) << 10) + (t - 0xDC00));
+                        i += m;
+                        continue;
+                    }
+                }
+                cps.push(v);
+            }
+            None => {
+                cps.push(raw[i]);
+                i += 1;
+            }
+        }
+    }
+    let mut u = Vec::with_capacity(cps.len());
+    for c in cps {
+        match char::from_u32(c) {
+            Some(ch) if c > 0xFFFF => u.extend(ch.encode_utf16(&mut [0; 2]).iter()),
+            _ => u.push(c as u16),
+        }
+    }
+    u
+}
+
+fn all_group_names(p: &[u32]) -> Vec<(Vec<u16>, usize)> {
     all_group_names_and_count(p).0
 }
 
 /// A quick scan for capturing groups (skipping escapes and classes).
-fn all_group_names_and_count(p: &[u32]) -> (Vec<(Vec<u32>, usize)>, usize) {
+fn all_group_names_and_count(p: &[u32]) -> (Vec<(Vec<u16>, usize)>, usize) {
     let mut i = 0;
     let mut n = 0;
     let mut names = Vec::new();
@@ -842,12 +881,10 @@ fn all_group_names_and_count(p: &[u32]) -> (Vec<(Vec<u32>, usize)>, usize) {
             {
                 n += 1;
                 let mut j = i + 3;
-                let mut name = Vec::new();
                 while j < p.len() && p[j] != '>' as u32 {
-                    name.push(p[j]);
                     j += 1;
                 }
-                names.push((name, n));
+                names.push((decode_group_name(&p[i + 3..j]), n));
             }
         }
         i += 1;
@@ -1061,14 +1098,7 @@ impl Regex {
         let mut c = Compiler { prog: Vec::new(), regs: 0 };
         c.node(&node, false, flags);
         c.emit(Inst::Match);
-        let names = parser
-            .names
-            .iter()
-            .map(|(n, i)| {
-                let s: String = n.iter().filter_map(|&c| char::from_u32(c)).collect();
-                (s.encode_utf16().collect(), *i)
-            })
-            .collect();
+        let names = parser.names.iter().map(|(n, i)| (n.clone(), *i)).collect();
         Regex { prog: c.prog, sets: parser.sets, flags, groups: parser.ngroups, names, regs: c.regs }
     }
 

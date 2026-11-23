@@ -358,7 +358,7 @@ fn parse_to_string_form(s: &str) -> Option<f64> {
     (!c.is_nan()).then_some(c)
 }
 
-fn this_time(vm: &mut Vm, v: &Value) -> JsResult<f64> {
+pub(super) fn this_time(vm: &mut Vm, v: &Value) -> JsResult<f64> {
     match v {
         Value::Object(o) => match vm.heap.obj(*o).kind {
             Kind::Date(t) => Ok(t),

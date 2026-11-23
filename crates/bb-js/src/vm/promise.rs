@@ -523,7 +523,8 @@ fn combinator(vm: &mut Vm, c: NativeCall, kind: Combinator) -> JsResult<Value> {
                 return Ok(());
             };
             if kind != Combinator::Race {
-                vm.set_or_throw(
+                // Append undefined to the values List: an own property, never a setter.
+                vm.create_data_property_or_throw(
                     values.as_object().expect("array"),
                     PropKey::from_u32(index),
                     Value::Undefined,
@@ -793,18 +794,20 @@ pub(super) fn install(vm: &mut Vm) {
         if !matches!(c.this, Value::Object(_)) {
             return vm.type_error("Promise.try called on non-object");
         }
-        let (p, res, rej) = vm.new_promise_capability(&c.this)?;
+        // §27.2.4.8 as amended in 2026 (test262 Promise/try/avoids-wrap): a normal result goes
+        // through PromiseResolve, so a promise of the receiver's type comes back unwrapped.
         let args = c.args.iter().skip(1).cloned().collect();
         match vm.call(&c.arg(0), Value::Undefined, args) {
-            Ok(v) => vm.call(&res, Value::Undefined, vec![v])?,
+            Ok(v) => vm.promise_resolve(&c.this, v),
             Err(e) => {
                 if vm.terminated {
                     return Err(e);
                 }
-                vm.call(&rej, Value::Undefined, vec![e])?
+                let (p, _, rej) = vm.new_promise_capability(&c.this)?;
+                vm.call(&rej, Value::Undefined, vec![e])?;
+                Ok(p)
             }
-        };
-        Ok(p)
+        }
     });
     method(vm, ctor, "all", 1, |vm, c| combinator(vm, c, Combinator::All));
     method(vm, ctor, "allSettled", 1, |vm, c| combinator(vm, c, Combinator::AllSettled));

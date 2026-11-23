@@ -3336,5 +3336,15 @@
   I.defineValue(Temporal, "Now", Now, true, false, true);
   I.defineValue(Temporal, I.toStringTag, "Temporal", false, false, true);
   I.defineValue(G, "Temporal", Temporal, true, false, true);
+
+  // Date.prototype.toTemporalInstant (Temporal proposal §14.1.1).
+  const DATE_METHODS = {
+    toTemporalInstant() {
+      const t = I.thisTimeValue(this);
+      if (t !== t) throw new RangeError("Invalid Date");
+      return makeInstant(BigIntF(t) * 1000000n);
+    },
+  };
+  I.defineMethod(I.DatePrototype, "toTemporalInstant", DATE_METHODS.toTemporalInstant);
   void protoFrom;
 });

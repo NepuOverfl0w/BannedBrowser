@@ -687,6 +687,8 @@ fn install_math(vm: &mut Vm) {
         "expm1" => |x| if x == 0.0 { x } else { x.exp_m1() },
         "floor" => f64::floor,
         "fround" => |x| x as f32 as f64,
+        // §21.3.2.17 Math.f16round: round to the nearest binary16 value.
+        "f16round" => |x| crate::vm::typed::f16_bits_to_f64(crate::vm::typed::f64_to_f16_bits(x)),
         "log" => f64::ln,
         "log1p" => |x| if x == 0.0 { x } else { x.ln_1p() },
         "log10" => f64::log10,

@@ -480,7 +480,7 @@ pub(super) fn install(vm: &mut Vm) {
                     if s.is_undefined() {
                         is_array(vm, &e)?
                     } else {
-                        s.truthy()
+                        vm.to_boolean(&s)
                     }
                 }
                 _ => false,
@@ -538,9 +538,11 @@ pub(super) fn install(vm: &mut Vm) {
         if vm.is_callable(&f) {
             return vm.call(&f, Value::Object(o), Vec::new());
         }
-        let op = vm.realm.object_proto;
-        let ts = vm.get(op, &PropKey::lit("toString"))?;
-        vm.call(&ts, Value::Object(o), Vec::new())
+        // %Object.prototype.toString% itself, not a lookup (§23.1.3.36 step 3).
+        super::object::object_to_string(
+            vm,
+            NativeCall { callee: c.callee, this: Value::Object(o), args: Vec::new(), new_target: None },
+        )
     });
     method(vm, ap, "toLocaleString", 0, |vm, c| {
         let (o, len) = this_obj(vm, &c)?;
@@ -697,7 +699,8 @@ pub(super) fn install(vm: &mut Vm) {
             let pk = key(k);
             if vm.has_property(o, &pk)? {
                 let v = vm.get(o, &pk)?;
-                if vm.call(&f, c.arg(1), vec![v.clone(), Value::Number(k), Value::Object(o)])?.truthy() {
+                let cond = vm.call(&f, c.arg(1), vec![v.clone(), Value::Number(k), Value::Object(o)])?;
+                if vm.to_boolean(&cond) {
                     vm.create_data_property_or_throw(a, key(to), v)?;
                     to += 1.0;
                 }
@@ -919,7 +922,10 @@ fn some_every(vm: &mut Vm, c: NativeCall, some: bool) -> JsResult<Value> {
         let pk = key(k);
         if vm.has_property(o, &pk)? {
             let v = vm.get(o, &pk)?;
-            let r = vm.call(&f, c.arg(1), vec![v, Value::Number(k), Value::Object(o)])?.truthy();
+            let r = {
+                let b = vm.call(&f, c.arg(1), vec![v, Value::Number(k), Value::Object(o)])?;
+                vm.to_boolean(&b)
+            };
             if r == some {
                 return Ok(Value::Bool(some));
             }
@@ -967,7 +973,8 @@ fn find(vm: &mut Vm, c: NativeCall, last: bool, index: bool) -> JsResult<Value> 
     while i < len {
         let k = if last { len - 1.0 - i } else { i };
         let v = vm.get(o, &key(k))?;
-        if vm.call(&f, c.arg(1), vec![v.clone(), Value::Number(k), Value::Object(o)])?.truthy() {
+        let cond = vm.call(&f, c.arg(1), vec![v.clone(), Value::Number(k), Value::Object(o)])?;
+        if vm.to_boolean(&cond) {
             return Ok(if index { Value::Number(k) } else { v });
         }
         i += 1.0;

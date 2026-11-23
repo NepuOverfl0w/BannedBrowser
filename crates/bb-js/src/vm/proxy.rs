@@ -69,7 +69,8 @@ impl Vm {
         let (t, h) = self.proxy_parts(o)?;
         let Some(trap) = self.trap(h, "setPrototypeOf")? else { return self.set_prototype_of(t, v) };
         let arg = v.map(Value::Object).unwrap_or(Value::Null);
-        if !self.call(&trap, Value::Object(h), vec![Value::Object(t), arg])?.truthy() {
+        let cond = self.call(&trap, Value::Object(h), vec![Value::Object(t), arg])?;
+        if !self.to_boolean(&cond) {
             return Ok(false);
         }
         if self.is_extensible(t)? {
@@ -84,7 +85,10 @@ impl Vm {
     pub(super) fn proxy_is_extensible(&mut self, o: ObjRef) -> JsResult<bool> {
         let (t, h) = self.proxy_parts(o)?;
         let Some(trap) = self.trap(h, "isExtensible")? else { return self.is_extensible(t) };
-        let r = self.call(&trap, Value::Object(h), vec![Value::Object(t)])?.truthy();
+        let r = {
+            let b = self.call(&trap, Value::Object(h), vec![Value::Object(t)])?;
+            self.to_boolean(&b)
+        };
         if r != self.is_extensible(t)? {
             return self.type_error(
                 "'isExtensible' on proxy: trap result does not reflect extensibility of proxy target",
@@ -96,7 +100,10 @@ impl Vm {
     pub(super) fn proxy_prevent_extensions(&mut self, o: ObjRef) -> JsResult<bool> {
         let (t, h) = self.proxy_parts(o)?;
         let Some(trap) = self.trap(h, "preventExtensions")? else { return self.prevent_extensions(t) };
-        let r = self.call(&trap, Value::Object(h), vec![Value::Object(t)])?.truthy();
+        let r = {
+            let b = self.call(&trap, Value::Object(h), vec![Value::Object(t)])?;
+            self.to_boolean(&b)
+        };
         if r && self.is_extensible(t)? {
             return self.type_error(
                 "'preventExtensions' on proxy: trap returned truish but the proxy target is extensible",
@@ -152,7 +159,8 @@ impl Vm {
         let (t, h) = self.proxy_parts(o)?;
         let Some(trap) = self.trap(h, "defineProperty")? else { return self.define_own_property(t, k, d) };
         let dobj = super::builtins::from_property_descriptor(self, Some(d.clone()));
-        if !self.call(&trap, Value::Object(h), vec![Value::Object(t), k.to_value(), dobj])?.truthy() {
+        let cond = self.call(&trap, Value::Object(h), vec![Value::Object(t), k.to_value(), dobj])?;
+        if !self.to_boolean(&cond) {
             return Ok(false);
         }
         let td = self.get_own_property(t, &k)?;
@@ -189,7 +197,10 @@ impl Vm {
     pub(super) fn proxy_has(&mut self, o: ObjRef, k: &PropKey) -> JsResult<bool> {
         let (t, h) = self.proxy_parts(o)?;
         let Some(trap) = self.trap(h, "has")? else { return self.has_property(t, k) };
-        let r = self.call(&trap, Value::Object(h), vec![Value::Object(t), k.to_value()])?.truthy();
+        let r = {
+            let b = self.call(&trap, Value::Object(h), vec![Value::Object(t), k.to_value()])?;
+            self.to_boolean(&b)
+        };
         if !r {
             if let Some(td) = self.get_own_property(t, k)? {
                 if td.configurable == Some(false) {
@@ -229,10 +240,9 @@ impl Vm {
     pub(super) fn proxy_set(&mut self, o: ObjRef, k: PropKey, v: Value, receiver: Value) -> JsResult<bool> {
         let (t, h) = self.proxy_parts(o)?;
         let Some(trap) = self.trap(h, "set")? else { return self.set(t, k, v, receiver) };
-        if !self
-            .call(&trap, Value::Object(h), vec![Value::Object(t), k.to_value(), v.clone(), receiver])?
-            .truthy()
-        {
+        let ok =
+            self.call(&trap, Value::Object(h), vec![Value::Object(t), k.to_value(), v.clone(), receiver])?;
+        if !self.to_boolean(&ok) {
             return Ok(false);
         }
         if let Some(td) = self.get_own_property(t, &k)? {
@@ -254,7 +264,8 @@ impl Vm {
     pub(super) fn proxy_delete(&mut self, o: ObjRef, k: &PropKey) -> JsResult<bool> {
         let (t, h) = self.proxy_parts(o)?;
         let Some(trap) = self.trap(h, "deleteProperty")? else { return self.delete(t, k) };
-        if !self.call(&trap, Value::Object(h), vec![Value::Object(t), k.to_value()])?.truthy() {
+        let cond = self.call(&trap, Value::Object(h), vec![Value::Object(t), k.to_value()])?;
+        if !self.to_boolean(&cond) {
             return Ok(false);
         }
         let Some(td) = self.get_own_property(t, k)? else { return Ok(true) };

@@ -84,6 +84,10 @@ fn buffer_ctor(vm: &mut Vm, c: NativeCall, shared: bool) -> JsResult<Value> {
     let Some(nt) = c.new_target else { return vm.type_error("Constructor requires 'new'") };
     let len = vm.to_index(&c.arg(0))?;
     let max = max_option(vm, &c.arg(1))?;
+    // AllocateArrayBuffer step 3: the RangeError comes before OrdinaryCreateFromConstructor.
+    if max.is_some_and(|m| len > m) {
+        return vm.range_error("byteLength exceeds maxByteLength");
+    }
     let proto = if shared {
         vm.prototype_from_ctor(nt, |r| r.shared_array_buffer_proto)?
     } else {
@@ -121,6 +125,9 @@ fn buffer_slice(vm: &mut Vm, c: NativeCall, shared: bool) -> JsResult<Value> {
     if vm.is_detached(n) {
         return vm.type_error("species constructor returned a detached ArrayBuffer");
     }
+    if vm.is_immutable(n) {
+        return vm.type_error("species constructor returned an immutable ArrayBuffer");
+    }
     if n == o {
         return vm.type_error("species constructor returned the same ArrayBuffer");
     }
@@ -150,7 +157,10 @@ fn transfer_mode(vm: &mut Vm, c: NativeCall, fixed: bool, immutable: bool) -> Js
     let o = buffer_of(vm, &c.this, false)?;
     let (cur, max) = buf_data(vm, o);
     let new_len = if c.arg(0).is_undefined() { cur.unwrap_or(0) as f64 } else { vm.to_index(&c.arg(0))? };
-    let Some(_) = cur else { return vm.type_error("ArrayBuffer is detached") };
+    // The length is read first; ToIndex may detach the buffer (immutable-arraybuffer).
+    if vm.is_detached(o) {
+        return vm.type_error("ArrayBuffer is detached");
+    }
     if vm.is_immutable(o) {
         return vm.type_error("an immutable ArrayBuffer can't be transferred");
     }
@@ -376,7 +386,7 @@ fn view_length(vm: &Vm, buf: ObjRef, off: usize, len: Option<usize>) -> Option<u
 fn view_get(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
     let (buf, off, len) = view_parts(vm, &c.this)?;
     let idx = vm.to_index(&c.arg(0))?;
-    let little = c.arg(1).truthy();
+    let little = vm.to_boolean(&c.arg(1));
     let Some(size) = view_length(vm, buf, off, len) else {
         return vm.type_error("DataView is detached or out of bounds");
     };
@@ -394,7 +404,7 @@ fn view_set(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
     }
     let idx = vm.to_index(&c.arg(0))?;
     let x = vm.to_number(&c.arg(1))?;
-    let little = c.arg(2).truthy();
+    let little = vm.to_boolean(&c.arg(2));
     let Some(size) = view_length(vm, buf, off, len) else {
         return vm.type_error("DataView is detached or out of bounds");
     };
@@ -409,7 +419,7 @@ fn view_set(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
 fn view_get_big(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
     let (buf, off, len) = view_parts(vm, &c.this)?;
     let idx = vm.to_index(&c.arg(0))?;
-    let little = c.arg(1).truthy();
+    let little = vm.to_boolean(&c.arg(1));
     let Some(size) = view_length(vm, buf, off, len) else {
         return vm.type_error("DataView is detached or out of bounds");
     };
@@ -427,7 +437,7 @@ fn view_set_big(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     }
     let idx = vm.to_index(&c.arg(0))?;
     let x = vm.to_bigint(&c.arg(1))?;
-    let little = c.arg(2).truthy();
+    let little = vm.to_boolean(&c.arg(2));
     let Some(size) = view_length(vm, buf, off, len) else {
         return vm.type_error("DataView is detached or out of bounds");
     };
@@ -511,7 +521,8 @@ fn install_dataview(vm: &mut Vm) {
             let (b, o, l) = view_parts(vm, &c.this)?;
             match view_length(vm, b, o, l) {
                 Some(n) => Ok(Value::Number(n as f64)),
-                None => vm.type_error("DataView is detached or out of bounds"),
+                // §25.3.4.2 step 5: an out-of-bounds view reports +0.
+                None => Ok(Value::Number(0.0)),
             }
         }),
         None,
@@ -524,7 +535,8 @@ fn install_dataview(vm: &mut Vm) {
             let (b, o, l) = view_parts(vm, &c.this)?;
             match view_length(vm, b, o, l) {
                 Some(_) => Ok(Value::Number(o as f64)),
-                None => vm.type_error("DataView is detached or out of bounds"),
+                // §25.3.4.3 step 5: an out-of-bounds view reports +0.
+                None => Ok(Value::Number(0.0)),
             }
         }),
         None,
@@ -823,7 +835,8 @@ fn find(vm: &mut Vm, c: NativeCall, last: bool, index: bool) -> JsResult<Value> 
     for j in 0..len {
         let i = if last { len - 1 - j } else { j };
         let v = vm.ta_get(o, i as f64);
-        if vm.call(&f, c.arg(1), vec![v.clone(), Value::Number(i as f64), Value::Object(o)])?.truthy() {
+        let cond = vm.call(&f, c.arg(1), vec![v.clone(), Value::Number(i as f64), Value::Object(o)])?;
+        if vm.to_boolean(&cond) {
             return Ok(if index { Value::Number(i as f64) } else { v });
         }
     }
@@ -1048,7 +1061,8 @@ fn install_typed_arrays(vm: &mut Vm) {
         let mut kept = Vec::new();
         for i in 0..len {
             let v = vm.ta_get(o, i as f64);
-            if vm.call(&f, c.arg(1), vec![v.clone(), Value::Number(i as f64), Value::Object(o)])?.truthy() {
+            let cond = vm.call(&f, c.arg(1), vec![v.clone(), Value::Number(i as f64), Value::Object(o)])?;
+            if vm.to_boolean(&cond) {
                 kept.push(v);
             }
         }
@@ -1288,7 +1302,11 @@ fn some_every(vm: &mut Vm, c: NativeCall, some: bool) -> JsResult<Value> {
     callback(vm, &f)?;
     for i in 0..len {
         let v = vm.ta_get(o, i as f64);
-        if vm.call(&f, c.arg(1), vec![v, Value::Number(i as f64), Value::Object(o)])?.truthy() == some {
+        if {
+            let b = vm.call(&f, c.arg(1), vec![v, Value::Number(i as f64), Value::Object(o)])?;
+            vm.to_boolean(&b)
+        } == some
+        {
             return Ok(Value::Bool(some));
         }
     }

@@ -1102,7 +1102,13 @@ impl Parser {
                         }
                     }
                     self.next()?;
-                    let right = if of { self.assign(false)? } else { self.expression(false)? };
+                    let mut right = if of { self.assign(false)? } else { self.expression(false)? };
+                    if let Some(v) = initv {
+                        // B.3.5 runtime semantics: PutValue(a, Initializer) runs before the
+                        // head expression, so evaluate `(a = Initializer, Expression)`.
+                        let a = Expr::Assign { op: "=", target: Box::new(p.clone()), value: Box::new(v) };
+                        right = Expr::Seq(vec![a, right]);
+                    }
                     self.expect(")")?;
                     let body = self.loop_body()?;
                     self.check_for_body_redeclarations(&p, kind, pos)?;

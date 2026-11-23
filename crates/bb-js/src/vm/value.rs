@@ -164,7 +164,8 @@ impl PropKey {
         }
     }
     pub fn from_f64(n: f64) -> PropKey {
-        if n >= 0.0 && n < 4294967295.0 && n.fract() == 0.0 && !(n == 0.0 && n.is_sign_negative()) {
+        // ToString(-0) is "0" (§6.1.6.1.20), so -0 is index 0 too.
+        if n >= 0.0 && n < 4294967295.0 && n.fract() == 0.0 {
             PropKey::Index(n as u32)
         } else {
             PropKey::Str(js_str(&number_to_string(n)))

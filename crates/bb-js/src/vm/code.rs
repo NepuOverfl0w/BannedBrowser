@@ -70,6 +70,8 @@ pub enum Op {
     InitBinding(u32),
     DeclareLet(u32),
     DeclareConst(u32),
+    /// A simple catch parameter: mutable, and B.3.4 lets eval's vars redeclare it.
+    DeclareCatch(u32),
     /// A `var` binding in the variable environment, `undefined` unless it exists.
     DeclareVar(u32),
     /// `[v] → []`: SetMutableBinding in the variable environment (hoisted functions).

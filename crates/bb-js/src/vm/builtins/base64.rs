@@ -331,7 +331,10 @@ pub(super) fn install(vm: &mut Vm) {
         let o = validate(vm, &c.this)?;
         let opts = options(vm, &c.arg(0))?;
         let url = alphabet(vm, opts)?;
-        let omit = opt_get(vm, opts, "omitPadding")?.truthy();
+        let omit = {
+            let b = opt_get(vm, opts, "omitPadding")?;
+            vm.to_boolean(&b)
+        };
         let bytes = ta_bytes(vm, o)?;
         Ok(Value::str(&encode_base64(&bytes, url, omit)))
     });

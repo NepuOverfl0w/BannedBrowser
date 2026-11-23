@@ -389,7 +389,7 @@ fn install_boolean(vm: &mut Vm) {
         "Boolean",
         1,
         |vm, c| {
-            let b = c.arg(0).truthy();
+            let b = vm.to_boolean(&c.arg(0));
             let Some(nt) = c.new_target else { return Ok(Value::Bool(b)) };
             let proto = vm.prototype_from_ctor(nt, |r| r.boolean_proto)?;
             Ok(Value::Object(vm.heap.alloc(Object::new(Some(proto), Kind::Boolean(b)))))
