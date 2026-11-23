@@ -2,7 +2,7 @@
 
 use super::value::JsString;
 use crate::ast;
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 /// One instruction. Stack effects are written `[before] → [after]` (top on the right).
@@ -352,9 +352,46 @@ pub struct Decls {
     pub annex_b: Vec<Rc<str>>,
 }
 
+/// A scope the compiler knows statically, for slot-resolved identifiers: the names its
+/// Environment Record receives, in the order it receives them (`Bindings` keeps that
+/// order, so a name's position is its slot).
+#[derive(Debug, Default)]
+pub struct ScopeInfo {
+    pub names: RefCell<Vec<Rc<str>>>,
+    pub parent: Option<Rc<ScopeInfo>>,
+    /// Bindings can appear here at run time (the global scope, `with`, a sloppy function
+    /// with a direct eval): static resolution stops at this scope.
+    pub dynamic: bool,
+}
+
+impl ScopeInfo {
+    pub fn child(parent: Option<Rc<ScopeInfo>>, dynamic: bool) -> Rc<ScopeInfo> {
+        Rc::new(ScopeInfo { names: RefCell::new(Vec::new()), parent, dynamic })
+    }
+
+    pub fn add(&self, n: &Rc<str>) {
+        let mut v = self.names.borrow_mut();
+        if !v.iter().any(|x| **x == **n) {
+            v.push(n.clone());
+        }
+    }
+}
+
+/// `Code::slots` entry for an identifier op without a static resolution.
+pub const NO_SLOT: u32 = u32::MAX;
+
 #[derive(Default)]
 pub struct Code {
     pub ops: Vec<Op>,
+    /// For each op naming an identifier: `hops << 16 | slot` when the compiler resolved it
+    /// to a binding `hops` environments out at position `slot` (checked at run time: a
+    /// mismatch falls back to lookup by name), else `NO_SLOT`.
+    pub slots: Vec<u32>,
+    /// Inline caches of `GetNamed`/`SetNamed`: the property entry index last found on the
+    /// receiver (`Props::at` verifies the key), `u32::MAX` for none.
+    pub ic: Vec<std::cell::Cell<u32>>,
+    /// How many bindings a function's own environment gets (its static scope's names).
+    pub env_size: u32,
     pub strings: Vec<JsString>,
     pub names: Vec<Rc<str>>,
     pub keys: Vec<super::value::PropKey>,
@@ -419,6 +456,8 @@ pub struct FuncTemplate {
     /// Defined inside `with`: identifier references in assignments are resolved once
     /// (`Op::ResolveVar`); a function with its own direct eval does that too.
     pub dynamic: bool,
+    /// The static scope of the environment the closure captures (identifier resolution).
+    pub scope: Option<Rc<ScopeInfo>>,
 }
 
 impl FuncTemplate {

@@ -4,7 +4,6 @@
 use super::heap::*;
 use super::value::{js_str, JsString, PropKey, Sym, Value};
 use super::{builtins, ErrorKind, Vm};
-use crate::vm::fx::HashMap;
 
 macro_rules! realm_objects {
     ($($f:ident),* $(,)?) => {
@@ -41,7 +40,7 @@ macro_rules! realm_objects {
             /// Every field points at a dummy until `init` fills it in.
             pub fn placeholder(heap: &mut Heap) -> Realm {
                 let d = heap.alloc(Object::new(None, Kind::Ordinary));
-                let genv = heap.alloc_env(Env { outer: None, kind: EnvKind::Declarative, bindings: HashMap::default() });
+                let genv = heap.alloc_env(Env { outer: None, kind: EnvKind::Declarative, bindings: Default::default() });
                 let s = |n: &str| Sym::new(Some(js_str(n)));
                 Realm {
                     $($f: d,)*
@@ -207,7 +206,7 @@ pub fn init(vm: &mut Vm) {
     vm.realm.global_env = vm.heap.alloc_env(Env {
         outer: None,
         kind: EnvKind::Global { object: global, this: Value::Object(global) },
-        bindings: HashMap::default(),
+        bindings: Default::default(),
     });
     for f in [
         &mut vm.realm.array_proto,

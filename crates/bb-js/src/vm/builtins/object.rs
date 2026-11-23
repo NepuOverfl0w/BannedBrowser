@@ -539,6 +539,7 @@ fn function_ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
         default_ctor: false,
         text_span: None,
         dynamic: false,
+        scope: None,
     });
     let genv = vm.realm.global_env;
     let fo = vm.make_function(tmpl, genv, None, true);

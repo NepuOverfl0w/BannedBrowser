@@ -24,6 +24,7 @@ mod env;
 pub mod fx;
 mod generator;
 pub mod heap;
+pub mod jsstring;
 pub mod module;
 pub mod normalize;
 pub mod object;
@@ -155,6 +156,8 @@ pub struct Vm {
     /// Pending module evaluations waiting on async modules.
     /// [[ModuleAsyncEvaluationCount]] (§16.2.1.6.3 IncrementModuleAsyncEvaluationCount).
     pub(crate) module_async_count: u64,
+    /// Emptied operand stacks of returned frames, for the next calls.
+    stack_pool: Vec<Vec<Value>>,
     /// Values hosts keep alive across calls.
     pub roots: Vec<Value>,
     /// Pending Atomics.waitAsync promises of this agent.
@@ -202,6 +205,7 @@ impl Vm {
             module_map: HashMap::default(),
             loader: None,
             module_async_count: 0,
+            stack_pool: Vec::new(),
             name_keys: HashMap::default(),
             output: Vec::new(),
             fuel: None,
@@ -625,12 +629,9 @@ impl Vm {
                 }),
             },
         };
+        let bindings = Bindings::with_capacity(code.env_size as usize);
         let env = if this_mode == ThisMode::Lexical {
-            self.heap.alloc_env(Env {
-                outer: Some(scope),
-                kind: EnvKind::Declarative,
-                bindings: HashMap::default(),
-            })
+            self.heap.alloc_env(Env { outer: Some(scope), kind: EnvKind::Declarative, bindings })
         } else {
             self.heap.alloc_env(Env {
                 outer: Some(scope),
@@ -639,10 +640,13 @@ impl Vm {
                     func: f,
                     new_target: new_target.map(Value::Object).unwrap_or(Value::Undefined),
                 },
-                bindings: HashMap::default(),
+                bindings,
             })
         };
         let mut frame = self.frame(code, env, env);
+        if let Some(st) = self.stack_pool.pop() {
+            frame.stack = st;
+        }
         frame.callee = Some(f);
         frame.args = args;
         frame.fenv = (this_mode != ThisMode::Lexical).then_some(env);
@@ -751,6 +755,34 @@ impl Vm {
     fn strict(&self) -> bool {
         self.frames.last().is_some_and(|f| f.code.strict)
     }
+    /// Remember where `o` holds `k` for the inline cache of the op at `pc`: an own data
+    /// property of an ordinary object (writable, for a store; never an array's length).
+    fn ic_record(&self, pc: usize, o: &Value, k: &PropKey, store: bool) {
+        let Value::Object(o) = o else { return };
+        let obj = self.heap.obj(*o);
+        if !object::ordinary_get_own(&obj.kind)
+            || (store && matches!(obj.kind, Kind::Array) && k.is_str("length"))
+        {
+            return;
+        }
+        if let Some(ix) = obj.props.index_of(k) {
+            if let Some(Prop { slot: Slot::Data(_), writable, .. }) = obj.props.at(ix, k) {
+                if !store || *writable {
+                    if let Some(c) = self.frames.last().and_then(|f| f.code.ic.get(pc)) {
+                        c.set(ix as u32);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The current environment and the static slot of the op being executed.
+    #[inline]
+    fn slot_here(&self) -> (EnvRef, u32) {
+        let f = self.frames.last().expect("frame");
+        (f.env, f.code.slots.get(f.pc.wrapping_sub(1)).copied().unwrap_or(code::NO_SLOT))
+    }
+
     fn name(&self, i: u32) -> Rc<str> {
         self.frames.last().expect("frame").code.names[i as usize].clone()
     }
@@ -769,7 +801,13 @@ impl Vm {
 
     /// Return from the top frame; `Some` when it was this run's base frame.
     fn do_return(&mut self, v: Value, base: usize) -> JsResult<Option<Value>> {
-        let f = self.frames.pop().expect("frame");
+        let mut f = self.frames.pop().expect("frame");
+        // Reuse the operand stack's allocation for the next call.
+        if self.stack_pool.len() < 32 && f.stack.capacity() <= 256 {
+            let mut st = std::mem::take(&mut f.stack);
+            st.clear();
+            self.stack_pool.push(st);
+        }
         if let Some(g) = f.generator {
             self.generator_completed(g);
         }
@@ -803,1141 +841,1243 @@ impl Vm {
     }
 
     /// One instruction. `Ok(Some(v))`: the base frame returned `v`.
+    /// Run instructions until one needs `run`: an error, the base frame's return, or an op
+    /// that returns `Ok(None)` (calls, frame switches) to be called again.
     fn step(&mut self, base: usize) -> JsResult<Option<Value>> {
-        if self.terminated {
-            return Err(Value::Undefined);
-        }
-        if let Some(f) = &mut self.fuel {
-            if *f == 0 {
-                self.terminated = true;
-                return Err(Value::str("execution terminated: out of fuel"));
+        loop {
+            if self.terminated {
+                return Err(Value::Undefined);
             }
-            *f -= 1;
-        }
-        let f = self.frames.last_mut().expect("frame");
-        let Some(&op) = f.code.ops.get(f.pc) else {
-            return self.do_return(Value::Undefined, base);
-        };
-        f.pc += 1;
-        match op {
-            Op::Undef => self.push(Value::Undefined),
-            Op::Null => self.push(Value::Null),
-            Op::True => self.push(Value::Bool(true)),
-            Op::False => self.push(Value::Bool(false)),
-            Op::Num(n) => self.push(Value::Number(n)),
-            Op::Str(i) => {
-                let s = self.top().code.strings[i as usize].clone();
-                self.push(Value::String(s));
-            }
-            Op::Pop => {
-                self.pop();
-            }
-            Op::Dup => {
-                let v = self.peek(0);
-                self.push(v);
-            }
-            Op::Dup2 => {
-                let a = self.peek(1);
-                let b = self.peek(0);
-                self.push(a);
-                self.push(b);
-            }
-            Op::Swap => {
-                let s = &mut self.top().stack;
-                let n = s.len();
-                if n >= 2 {
-                    s.swap(n - 1, n - 2);
+            if let Some(f) = &mut self.fuel {
+                if *f == 0 {
+                    self.terminated = true;
+                    return Err(Value::str("execution terminated: out of fuel"));
                 }
+                *f -= 1;
             }
-            Op::Bury(n) => {
-                let s = &mut self.top().stack;
-                if let Some(v) = s.pop() {
-                    let at = s.len().saturating_sub(n as usize);
-                    s.insert(at, v);
+            let f = self.frames.last_mut().expect("frame");
+            let Some(&op) = f.code.ops.get(f.pc) else {
+                return self.do_return(Value::Undefined, base);
+            };
+            f.pc += 1;
+            match op {
+                Op::Undef => self.push(Value::Undefined),
+                Op::Null => self.push(Value::Null),
+                Op::True => self.push(Value::Bool(true)),
+                Op::False => self.push(Value::Bool(false)),
+                Op::Num(n) => self.push(Value::Number(n)),
+                Op::Str(i) => {
+                    let s = self.top().code.strings[i as usize].clone();
+                    self.push(Value::String(s));
                 }
-            }
-            Op::Pick(n) => {
-                let v = self.peek(n as usize);
-                self.push(v);
-            }
-            Op::Roll(n) => {
-                let s = &mut self.top().stack;
-                let at = s.len().saturating_sub(n as usize + 1);
-                if at < s.len() {
-                    let v = s.remove(at);
-                    s.push(v);
+                Op::Pop => {
+                    self.pop();
                 }
-            }
-            Op::GetVar(i) => {
-                let name = self.name(i);
-                let env = self.top().env;
-                let v = self.get_var(env, &name)?;
-                self.push(v);
-            }
-            Op::TypeofVar(i) => {
-                let name = self.name(i);
-                let env = self.top().env;
-                let v = match self.resolve(env, &name)? {
-                    None => Value::str("undefined"),
-                    Some(r) => {
-                        let strict = self.strict();
-                        let v = self.get_binding_value(r, &name, strict)?;
-                        Value::String(self.type_of(&v))
+                Op::Dup => {
+                    let v = self.peek(0);
+                    self.push(v);
+                }
+                Op::Dup2 => {
+                    let a = self.peek(1);
+                    let b = self.peek(0);
+                    self.push(a);
+                    self.push(b);
+                }
+                Op::Swap => {
+                    let s = &mut self.top().stack;
+                    let n = s.len();
+                    if n >= 2 {
+                        s.swap(n - 1, n - 2);
                     }
-                };
-                self.push(v);
-            }
-            Op::GetVarThis(i) => {
-                let name = self.name(i);
-                let env = self.top().env;
-                let (v, this) = match self.resolve(env, &name)? {
-                    None => return self.reference_error(&format!("{name} is not defined")),
-                    Some(r) => {
-                        let strict = self.strict();
-                        let v = self.get_binding_value(r, &name, strict)?;
-                        let this = match &self.heap.env(r).kind {
-                            EnvKind::Object { object, with: true } => Value::Object(*object),
-                            _ => Value::Undefined,
-                        };
-                        (v, this)
+                }
+                Op::Bury(n) => {
+                    let s = &mut self.top().stack;
+                    if let Some(v) = s.pop() {
+                        let at = s.len().saturating_sub(n as usize);
+                        s.insert(at, v);
                     }
-                };
-                self.push(v);
-                self.push(this);
-            }
-            Op::ResolveVar(i) => {
-                let name = self.name(i);
-                let env = self.top().env;
-                let r = self.resolve(env, &name)?;
-                self.top().refs.push(r);
-            }
-            Op::GetResolved(i) => {
-                let name = self.name(i);
-                let v = match self.top().refs.last().copied().flatten() {
-                    None => return self.reference_error(&format!("{name} is not defined")),
-                    Some(r) => {
-                        let strict = self.strict();
-                        self.get_binding_value(r, &name, strict)?
+                }
+                Op::Pick(n) => {
+                    let v = self.peek(n as usize);
+                    self.push(v);
+                }
+                Op::Roll(n) => {
+                    let s = &mut self.top().stack;
+                    let at = s.len().saturating_sub(n as usize + 1);
+                    if at < s.len() {
+                        let v = s.remove(at);
+                        s.push(v);
                     }
-                };
-                self.push(v);
-            }
-            Op::SetResolved(i) => {
-                let name = self.name(i);
-                let v = self.peek(0);
-                let strict = self.strict();
-                match self.top().refs.pop().flatten() {
-                    None => {
-                        if strict {
-                            return self.reference_error(&format!("{name} is not defined"));
+                }
+                Op::GetVar(i) => {
+                    let (env, slot) = self.slot_here();
+                    if slot != code::NO_SLOT {
+                        let f = self.frames.last().expect("frame");
+                        if let Some(v) = self.read_slot(env, slot, &f.code.names[i as usize]) {
+                            self.push(v);
+                            continue;
                         }
-                        let g = self.realm.global;
-                        let k = self.name_key(&name);
-                        self.set(g, k, v, Value::Object(g))?;
                     }
-                    Some(r) => self.set_mutable_binding(r, &name, v, strict)?,
+                    let name = self.name(i);
+                    let v = self.get_var(env, &name)?;
+                    self.push(v);
                 }
-            }
-            Op::DropRef => {
-                self.top().refs.pop();
-            }
-            Op::SetVar(i) => {
-                let name = self.name(i);
-                let v = self.peek(0);
-                let env = self.top().env;
-                self.set_var(env, &name, v)?;
-            }
-            Op::SetVarPop(i) => {
-                let name = self.name(i);
-                let v = self.pop();
-                let env = self.top().env;
-                self.set_var(env, &name, v)?;
-            }
-            Op::InitBinding(i) => {
-                let name = self.name(i);
-                let v = self.pop();
-                let env = self.top().env;
-                self.init_binding(env, &name, v)?;
-            }
-            Op::DeclareLet(i) | Op::DeclareConst(i) | Op::DeclareCatch(i) => {
-                let name = self.name(i);
-                let env = self.top().env;
-                let mutable = !matches!(op, Op::DeclareConst(_));
-                // `strict: false` marks a simple catch parameter (see eval instantiation).
-                let strict = !matches!(op, Op::DeclareCatch(_));
-                self.heap.env_mut(env).bindings.entry(name).or_insert(Binding {
-                    value: None,
-                    mutable,
-                    strict,
-                    deletable: false,
-                });
-            }
-            Op::DeclareVar(i) => {
-                let name = self.name(i);
-                let env = self.top().var_env;
-                self.heap.env_mut(env).bindings.entry(name).or_insert(Binding {
-                    value: Some(Value::Undefined),
-                    mutable: true,
-                    strict: false,
-                    deletable: false,
-                });
-            }
-            Op::SetVarEnv(i) => {
-                let name = self.name(i);
-                let v = self.pop();
-                let env = self.top().var_env;
-                let strict = self.strict();
-                if matches!(self.heap.env(env).kind, EnvKind::Global { .. })
-                    || self.heap.env(env).bindings.contains_key(&name)
-                {
-                    self.set_mutable_binding(env, &name, v, strict)?;
-                } else {
-                    self.heap.env_mut(env).bindings.insert(
-                        name,
-                        Binding { value: Some(v), mutable: true, strict: false, deletable: false },
-                    );
-                }
-            }
-            Op::DeleteVar(i) => {
-                let name = self.name(i);
-                let env = self.top().env;
-                let r = self.delete_var(env, &name)?;
-                self.push(Value::Bool(r));
-            }
-            Op::PushScope => {
-                let outer = self.top().env;
-                let e = self.heap.alloc_env(Env {
-                    outer: Some(outer),
-                    kind: EnvKind::Declarative,
-                    bindings: HashMap::default(),
-                });
-                self.top().env = e;
-            }
-            Op::PopScope => {
-                let e = self.top().env;
-                if let Some(o) = self.heap.env(e).outer {
-                    self.top().env = o;
-                }
-            }
-            Op::CopyScope => {
-                let e = self.top().env;
-                let (outer, bindings) = {
-                    let env = self.heap.env(e);
-                    (env.outer, env.bindings.clone())
-                };
-                let n = self.heap.alloc_env(Env { outer, kind: EnvKind::Declarative, bindings });
-                self.top().env = n;
-            }
-            Op::PushWith => {
-                let v = self.pop();
-                let o = self.to_object(&v)?;
-                let outer = self.top().env;
-                let e = self.heap.alloc_env(Env {
-                    outer: Some(outer),
-                    kind: EnvKind::Object { object: o, with: true },
-                    bindings: HashMap::default(),
-                });
-                self.top().env = e;
-            }
-            Op::PushVarScope => {
-                let outer = self.top().env;
-                let e = self.heap.alloc_env(Env {
-                    outer: Some(outer),
-                    kind: EnvKind::Declarative,
-                    bindings: HashMap::default(),
-                });
-                let f = self.top();
-                f.env = e;
-                f.var_env = e;
-            }
-            Op::GlobalInit => self.global_declaration_instantiation()?,
-            Op::EvalInit => self.eval_declaration_instantiation()?,
-            Op::This => {
-                let env = self.top().env;
-                let v = self.resolve_this(env)?;
-                self.push(v);
-            }
-            Op::NewTarget => {
-                let env = self.top().env;
-                let v = self.new_target_of(env);
-                self.push(v);
-            }
-            Op::Object => {
-                let o = self.new_object();
-                self.push(Value::Object(o));
-            }
-            Op::Array => {
-                let a = self.new_array(Vec::new());
-                self.push(Value::Object(a));
-            }
-            Op::ArrayPush => {
-                let v = self.pop();
-                if let Value::Object(a) = self.peek(0) {
-                    self.array_push(a, v)?;
-                }
-            }
-            Op::ArrayHole => {
-                if let Value::Object(a) = self.peek(0) {
-                    let len = self.length_of_array(a);
-                    self.set_array_length_raw(a, len + 1);
-                }
-            }
-            Op::ArraySpread => {
-                let it = self.pop();
-                if let Value::Object(a) = self.peek(0) {
-                    let vals = self.iterate_to_vec(&it)?;
-                    for v in vals {
-                        self.array_push(a, v)?;
-                    }
-                }
-            }
-            Op::GetProp => {
-                let k = self.pop();
-                let o = self.pop();
-                let v = self.get_value_prop(&o, &k)?;
-                self.push(v);
-            }
-            Op::GetNamed(i) => {
-                let k = self.top().code.keys[i as usize].clone();
-                let o = self.pop();
-                let v = self.get_value_key(&o, &k)?;
-                self.push(v);
-            }
-            Op::SetProp | Op::SetPropPop => {
-                let v = self.pop();
-                let k = self.pop();
-                let o = self.pop();
-                if o.is_nullish() {
-                    // The key isn't converted (that would run user code) for the message.
-                    let ks = match &k {
-                        Value::String(s) => to_rust(s),
-                        Value::Number(n) => value::number_to_string(*n),
-                        _ => String::new(),
+                Op::TypeofVar(i) => {
+                    let name = self.name(i);
+                    let env = self.top().env;
+                    let v = match self.resolve(env, &name)? {
+                        None => Value::str("undefined"),
+                        Some(r) => {
+                            let strict = self.strict();
+                            let v = self.get_binding_value(r, &name, strict)?;
+                            Value::String(self.type_of(&v))
+                        }
                     };
-                    return self.type_error(&format!(
-                        "Cannot set properties of {} (setting '{ks}')",
-                        ops::nullish_name(&o)
-                    ));
-                }
-                let key = self.to_property_key(&k)?;
-                self.put_value(&o, key, v.clone())?;
-                if op == Op::SetProp {
                     self.push(v);
                 }
-            }
-            Op::SetNamed(i) | Op::SetNamedPop(i) => {
-                let k = self.top().code.keys[i as usize].clone();
-                let v = self.pop();
-                let o = self.pop();
-                if o.is_nullish() {
-                    return self.type_error(&format!(
-                        "Cannot set properties of {} (setting '{}')",
-                        ops::nullish_name(&o),
-                        k.display()
-                    ));
+                Op::GetVarThis(i) => {
+                    let (env, slot) = self.slot_here();
+                    if slot != code::NO_SLOT {
+                        let f = self.frames.last().expect("frame");
+                        // A resolved binding is declarative: `this` is undefined.
+                        if let Some(v) = self.read_slot(env, slot, &f.code.names[i as usize]) {
+                            self.push(v);
+                            self.push(Value::Undefined);
+                            continue;
+                        }
+                    }
+                    let name = self.name(i);
+                    // Without a `with` object on the chain the base is an Environment Record:
+                    // `this` is undefined, and the value is an ordinary GetValue.
+                    let mut e = Some(env);
+                    let mut with = false;
+                    while let Some(r) = e {
+                        let rec = self.heap.env(r);
+                        if matches!(rec.kind, EnvKind::Object { with: true, .. }) {
+                            with = true;
+                            break;
+                        }
+                        e = rec.outer;
+                    }
+                    if !with {
+                        let v = self.get_var(env, &name)?;
+                        self.push(v);
+                        self.push(Value::Undefined);
+                        continue;
+                    }
+                    let (v, this) = match self.resolve(env, &name)? {
+                        None => return self.reference_error(&format!("{name} is not defined")),
+                        Some(r) => {
+                            let strict = self.strict();
+                            let v = self.get_binding_value(r, &name, strict)?;
+                            let this = match &self.heap.env(r).kind {
+                                EnvKind::Object { object, with: true } => Value::Object(*object),
+                                _ => Value::Undefined,
+                            };
+                            (v, this)
+                        }
+                    };
+                    self.push(v);
+                    self.push(this);
                 }
-                self.put_value(&o, k, v.clone())?;
-                if matches!(op, Op::SetNamed(_)) {
+                Op::ResolveVar(i) => {
+                    let name = self.name(i);
+                    let env = self.top().env;
+                    let r = self.resolve(env, &name)?;
+                    self.top().refs.push(r);
+                }
+                Op::GetResolved(i) => {
+                    let name = self.name(i);
+                    let v = match self.top().refs.last().copied().flatten() {
+                        None => return self.reference_error(&format!("{name} is not defined")),
+                        Some(r) => {
+                            let strict = self.strict();
+                            self.get_binding_value(r, &name, strict)?
+                        }
+                    };
                     self.push(v);
                 }
-            }
-            Op::DefineProp => {
-                let v = self.pop();
-                let k = self.pop();
-                let key = self.to_property_key(&k)?;
-                if let Value::Object(o) = self.peek(0) {
-                    self.create_data_property_or_throw(o, key, v)?;
-                }
-            }
-            Op::DefineNamed(i) => {
-                let k = self.top().code.keys[i as usize].clone();
-                let v = self.pop();
-                if let Value::Object(o) = self.peek(0) {
-                    self.create_data_property_or_throw(o, k, v)?;
-                }
-            }
-            Op::DefineMethod(t, kind) => {
-                let k = self.pop();
-                let key = self.to_property_key(&k)?;
-                let Value::Object(obj) = self.peek(0) else { return Ok(None) };
-                let tmpl = self.top().code.funcs[t as usize].clone();
-                let env = self.top().env;
-                let prefix = match kind {
-                    1 => Some("get"),
-                    2 => Some("set"),
-                    _ => None,
-                };
-                let f = self.make_function(tmpl, env, Some(obj), false);
-                self.set_function_name(f, &key, prefix);
-                let pk = key;
-                match kind {
-                    0 => {
-                        self.define_own_property_or_throw(
-                            obj,
-                            pk,
-                            object::PropDesc::data(Value::Object(f), true, true, true),
-                        )?;
-                    }
-                    1 => {
-                        let d = object::PropDesc {
-                            get: Some(Some(f)),
-                            enumerable: Some(true),
-                            configurable: Some(true),
-                            ..Default::default()
-                        };
-                        self.define_own_property_or_throw(obj, pk, d)?;
-                    }
-                    _ => {
-                        let d = object::PropDesc {
-                            set: Some(Some(f)),
-                            enumerable: Some(true),
-                            configurable: Some(true),
-                            ..Default::default()
-                        };
-                        self.define_own_property_or_throw(obj, pk, d)?;
-                    }
-                }
-            }
-            Op::SetProto => {
-                let v = self.pop();
-                if let Value::Object(o) = self.peek(0) {
-                    match v {
-                        Value::Object(p) => {
-                            self.set_prototype_of(o, Some(p))?;
+                Op::SetResolved(i) => {
+                    let name = self.name(i);
+                    let v = self.peek(0);
+                    let strict = self.strict();
+                    match self.top().refs.pop().flatten() {
+                        None => {
+                            if strict {
+                                return self.reference_error(&format!("{name} is not defined"));
+                            }
+                            let g = self.realm.global;
+                            let k = self.name_key(&name);
+                            self.set(g, k, v, Value::Object(g))?;
                         }
-                        Value::Null => {
-                            self.set_prototype_of(o, None)?;
-                        }
-                        _ => {}
+                        Some(r) => self.set_mutable_binding(r, &name, v, strict)?,
                     }
                 }
-            }
-            Op::CopyData => {
-                let src = self.pop();
-                if let Value::Object(t) = self.peek(0) {
-                    self.copy_data_properties(t, &src, &[])?;
+                Op::DropRef => {
+                    self.top().refs.pop();
                 }
-            }
-            Op::ObjRest => {
-                let keys = self.pop();
-                let src = self.pop();
-                let excluded = match keys {
-                    Value::Object(a) => {
-                        let n = self.length_of_array(a);
-                        let mut out = Vec::new();
-                        for i in 0..n {
-                            let v = self.get(a, &PropKey::from_u32(i))?;
-                            out.push(self.to_property_key(&v)?);
-                        }
-                        out
+                Op::SetVar(i) => {
+                    let name = self.name(i);
+                    let v = self.peek(0);
+                    let (env, slot) = self.slot_here();
+                    if let Err(v) = self.write_slot(env, slot, &name, v) {
+                        self.set_var(env, &name, v)?;
                     }
-                    _ => Vec::new(),
-                };
-                let t = self.new_object();
-                self.copy_data_properties(t, &src, &excluded)?;
-                self.push(Value::Object(t));
-            }
-            Op::DeleteProp => {
-                let k = self.pop();
-                let o = self.pop();
-                let obj = self.to_object(&o)?;
-                let key = self.to_property_key(&k)?;
-                let ok = self.delete(obj, &key)?;
-                if !ok && self.strict() {
-                    return self.type_error(&format!("Cannot delete property '{}'", key.display()));
                 }
-                self.push(Value::Bool(ok));
-            }
-            Op::AppendKey => {
-                let k = self.peek(0);
-                if let Value::Object(a) = self.peek(3) {
-                    self.array_push(a, k)?;
+                Op::SetVarPop(i) => {
+                    let name = self.name(i);
+                    let v = self.pop();
+                    let (env, slot) = self.slot_here();
+                    if let Err(v) = self.write_slot(env, slot, &name, v) {
+                        self.set_var(env, &name, v)?;
+                    }
                 }
-            }
-            Op::RequireCoercible => {
-                let v = self.peek(0);
-                if v.is_nullish() {
-                    return self.type_error(&format!("Cannot destructure '{}'", ops::nullish_name(&v)));
+                Op::InitBinding(i) => {
+                    let name = self.name(i);
+                    let v = self.pop();
+                    let env = self.top().env;
+                    self.init_binding(env, &name, v)?;
                 }
-            }
-            Op::Call(n) => {
-                let args = self.pop_n(n as usize);
-                let this = self.pop();
-                let f = self.pop();
-                return self.op_call(f, this, args);
-            }
-            Op::TailCall(n) => {
-                let args = self.pop_n(n as usize);
-                let this = self.pop();
-                let f = self.pop();
-                return self.op_tail_call(f, this, args);
-            }
-            Op::TailCallEval(n) => {
-                let args = self.pop_n(n as usize);
-                let this = self.pop();
-                let f = self.pop();
-                if matches!(&f, Value::Object(o) if *o == self.realm.eval) {
-                    // A direct eval needs this frame's environment: no tail call.
-                    return self.op_call_eval(f, this, args);
+                Op::DeclareLet(i) | Op::DeclareConst(i) | Op::DeclareCatch(i) => {
+                    let name = self.name(i);
+                    let env = self.top().env;
+                    let mutable = !matches!(op, Op::DeclareConst(_));
+                    // `strict: false` marks a simple catch parameter (see eval instantiation).
+                    let strict = !matches!(op, Op::DeclareCatch(_));
+                    self.heap
+                        .env_mut(env)
+                        .bindings
+                        .get_or_insert(name, Binding { value: None, mutable, strict, deletable: false });
                 }
-                return self.op_tail_call(f, this, args);
-            }
-            Op::CallSpread => {
-                let arr = self.pop();
-                let this = self.pop();
-                let f = self.pop();
-                let args = self.array_values(&arr)?;
-                return self.op_call(f, this, args);
-            }
-            Op::CallEval(n) => {
-                let args = self.pop_n(n as usize);
-                let this = self.pop();
-                let f = self.pop();
-                return self.op_call_eval(f, this, args);
-            }
-            Op::CallEvalSpread => {
-                let arr = self.pop();
-                let this = self.pop();
-                let f = self.pop();
-                let args = self.array_values(&arr)?;
-                return self.op_call_eval(f, this, args);
-            }
-            Op::New(n) => {
-                let args = self.pop_n(n as usize);
-                let c = self.pop();
-                return self.op_new(c, args);
-            }
-            Op::NewSpread => {
-                let arr = self.pop();
-                let c = self.pop();
-                let args = self.array_values(&arr)?;
-                return self.op_new(c, args);
-            }
-            Op::Closure(i) => {
-                let tmpl = self.top().code.funcs[i as usize].clone();
-                let env = self.top().env;
-                let f = if tmpl.is_expression {
-                    // A named function expression sees its own name (§15.2.5).
-                    let name: Rc<str> = tmpl.ast.name.as_deref().unwrap_or_default().into();
-                    let fenv = self.heap.alloc_env(Env {
-                        outer: Some(env),
-                        kind: EnvKind::Declarative,
-                        bindings: HashMap::default(),
-                    });
-                    let f = self.make_function(tmpl, fenv, None, true);
-                    self.heap.env_mut(fenv).bindings.insert(
+                Op::DeclareVar(i) => {
+                    let name = self.name(i);
+                    let env = self.top().var_env;
+                    self.heap.env_mut(env).bindings.get_or_insert(
                         name,
                         Binding {
-                            value: Some(Value::Object(f)),
-                            mutable: false,
+                            value: Some(Value::Undefined),
+                            mutable: true,
                             strict: false,
                             deletable: false,
                         },
                     );
-                    f
-                } else {
-                    self.make_function(tmpl, env, None, true)
-                };
-                self.push(Value::Object(f));
-            }
-            Op::SetFnName => {
-                let f = self.peek(0);
-                let k = self.peek(1);
-                if let (Value::Object(fo), Ok(key)) = (f, self.to_property_key(&k)) {
-                    // Only functions without an own name (anonymous definitions).
-                    let has_name = matches!(
-                        self.heap.obj(fo).props.get(&PropKey::lit("name")).map(|p| &p.slot),
-                        Some(heap::Slot::Data(Value::String(s))) if !s.is_empty()
-                    );
-                    if !has_name {
-                        self.set_function_name(fo, &key, None);
+                }
+                Op::SetVarEnv(i) => {
+                    let name = self.name(i);
+                    let v = self.pop();
+                    let env = self.top().var_env;
+                    let strict = self.strict();
+                    if matches!(self.heap.env(env).kind, EnvKind::Global { .. })
+                        || self.heap.env(env).bindings.contains_key(&name)
+                    {
+                        self.set_mutable_binding(env, &name, v, strict)?;
+                    } else {
+                        self.heap.env_mut(env).bindings.insert(
+                            name,
+                            Binding { value: Some(v), mutable: true, strict: false, deletable: false },
+                        );
                     }
                 }
-            }
-            Op::Arg(i) => {
-                let v = self.top().args.get(i as usize).cloned().unwrap_or_default();
-                self.push(v);
-            }
-            Op::RestArgs(i) => {
-                let rest: Vec<Value> = self.top().args.iter().skip(i as usize).cloned().collect();
-                let a = self.new_array(rest);
-                self.push(Value::Object(a));
-            }
-            Op::CreateArguments => {
-                let a = self.create_arguments()?;
-                self.push(Value::Object(a));
-            }
-            Op::CreateMappedArguments => {
-                let a = self.create_arguments()?;
-                // CreateMappedArgumentsObject (§10.4.4.7) steps 15–17: the last parameter
-                // with a name wins; only indices below the argument count are mapped.
-                let params = self.top().code.params.clone();
-                let n = self.top().args.len();
-                let mut names: Vec<Option<Rc<str>>> = vec![None; n.min(params.len())];
-                let mut seen = std::collections::HashSet::new();
-                for (i, p) in params.iter().enumerate().rev() {
-                    if seen.insert(p.clone()) && i < n {
-                        names[i] = Some(p.clone());
+                Op::DeleteVar(i) => {
+                    let name = self.name(i);
+                    let env = self.top().env;
+                    let r = self.delete_var(env, &name)?;
+                    self.push(Value::Bool(r));
+                }
+                Op::PushScope => {
+                    let outer = self.top().env;
+                    let e = self.heap.alloc_env(Env {
+                        outer: Some(outer),
+                        kind: EnvKind::Declarative,
+                        bindings: Default::default(),
+                    });
+                    self.top().env = e;
+                }
+                Op::PopScope => {
+                    let e = self.top().env;
+                    if let Some(o) = self.heap.env(e).outer {
+                        self.top().env = o;
                     }
                 }
-                let env = self.top().env;
-                let callee = self.top().callee;
-                let o = self.heap.obj_mut(a);
-                o.kind = Kind::MappedArguments(Box::new(ArgMap { env, names }));
-                // A mapped object's callee is the function even though `strict` is false.
-                if let Some(c) = callee {
-                    o.props.insert(PropKey::lit("callee"), Prop::method(Value::Object(c)));
+                Op::CopyScope => {
+                    let e = self.top().env;
+                    let (outer, bindings) = {
+                        let env = self.heap.env(e);
+                        (env.outer, env.bindings.clone())
+                    };
+                    let n = self.heap.alloc_env(Env { outer, kind: EnvKind::Declarative, bindings });
+                    self.top().env = n;
                 }
-                self.push(Value::Object(a));
-            }
-            Op::TemplateObject(i) => {
-                let o = self.template_object(i);
-                self.push(Value::Object(o));
-            }
-            Op::RegExp(i) => {
-                let (src, flags) = self.top().code.regexps[i as usize].clone();
-                let r = self.regexp_create(src, flags)?;
-                self.push(Value::Object(r));
-            }
-            Op::Add => {
-                let b = self.pop();
-                let a = self.pop();
-                let v = self.add(&a, &b)?;
-                self.push(v);
-            }
-            Op::Sub
-            | Op::Mul
-            | Op::Div
-            | Op::Mod
-            | Op::Exp
-            | Op::Shl
-            | Op::Shr
-            | Op::UShr
-            | Op::BitAnd
-            | Op::BitOr
-            | Op::BitXor => {
-                let b = self.pop();
-                let a = self.pop();
-                let v = self.arith(op, &a, &b)?;
-                self.push(v);
-            }
-            Op::Lt | Op::Gt | Op::Le | Op::Ge => {
-                let b = self.pop();
-                let a = self.pop();
-                let v = self.compare(op, &a, &b)?;
-                self.push(Value::Bool(v));
-            }
-            Op::Eq | Op::Ne => {
-                let b = self.pop();
-                let a = self.pop();
-                let r = self.loosely_equal(&a, &b)?;
-                self.push(Value::Bool(r == (op == Op::Eq)));
-            }
-            Op::UpdateVar(i, flags) => {
-                let name = self.name(i);
-                let env = self.top().env;
-                let old = self.get_var(env, &name)?;
-                let old = match old {
-                    Value::Number(_) => old,
-                    v => self.to_numeric(&v)?,
-                };
-                let inc = flags & 1 != 0;
-                let new = match &old {
-                    Value::Number(n) => Value::Number(if inc { n + 1.0 } else { n - 1.0 }),
-                    Value::BigInt(b) => {
-                        let one = bigint::BigInt::from_i64(if inc { 1 } else { -1 });
-                        Value::BigInt(Rc::new(b.add(&one)))
-                    }
-                    _ => Value::Number(f64::NAN),
-                };
-                self.set_var(env, &name, new.clone())?;
-                if flags & 2 != 0 {
-                    self.push(if flags & 4 != 0 { old } else { new });
+                Op::PushWith => {
+                    let v = self.pop();
+                    let o = self.to_object(&v)?;
+                    let outer = self.top().env;
+                    let e = self.heap.alloc_env(Env {
+                        outer: Some(outer),
+                        kind: EnvKind::Object { object: o, with: true },
+                        bindings: Default::default(),
+                    });
+                    self.top().env = e;
                 }
-            }
-            Op::CmpJumpIfFalse(k, t) => {
-                let b = self.pop();
-                let a = self.pop();
-                let r = match k {
-                    0 => self.compare(Op::Lt, &a, &b)?,
-                    1 => self.compare(Op::Gt, &a, &b)?,
-                    2 => self.compare(Op::Le, &a, &b)?,
-                    3 => self.compare(Op::Ge, &a, &b)?,
-                    4 => value::strict_equals(&a, &b),
-                    5 => !value::strict_equals(&a, &b),
-                    6 => self.loosely_equal(&a, &b)?,
-                    _ => !self.loosely_equal(&a, &b)?,
-                };
-                if !r {
-                    self.jump(t);
+                Op::PushVarScope => {
+                    let outer = self.top().env;
+                    let e = self.heap.alloc_env(Env {
+                        outer: Some(outer),
+                        kind: EnvKind::Declarative,
+                        bindings: Default::default(),
+                    });
+                    let f = self.top();
+                    f.env = e;
+                    f.var_env = e;
                 }
-            }
-            Op::StrictEq | Op::StrictNe => {
-                let b = self.pop();
-                let a = self.pop();
-                let r = value::strict_equals(&a, &b);
-                self.push(Value::Bool(r == (op == Op::StrictEq)));
-            }
-            Op::InstanceOf => {
-                let b = self.pop();
-                let a = self.pop();
-                let r = self.instance_of(&a, &b)?;
-                self.push(Value::Bool(r));
-            }
-            Op::In => {
-                let b = self.pop();
-                let a = self.pop();
-                let Value::Object(o) = b else {
-                    return self.type_error("Cannot use 'in' operator to search for a key in a non-object");
-                };
-                let k = self.to_property_key(&a)?;
-                let r = self.has_property(o, &k)?;
-                self.push(Value::Bool(r));
-            }
-            Op::Neg => {
-                let a = self.pop();
-                let v = match self.to_numeric(&a)? {
-                    Value::BigInt(b) => Value::BigInt(Rc::new(b.neg())),
-                    Value::Number(n) => Value::Number(-n),
-                    v => v,
-                };
-                self.push(v);
-            }
-            Op::Plus => {
-                let a = self.pop();
-                let n = self.to_number(&a)?;
-                self.push(Value::Number(n));
-            }
-            Op::ToNumeric => {
-                let a = self.pop();
-                let v = self.to_numeric(&a)?;
-                self.push(v);
-            }
-            Op::BigInt(i) => {
-                let b = self.top().code.bigints[i as usize].clone();
-                self.push(Value::BigInt(b));
-            }
-            Op::Not => {
-                let a = self.pop();
-                self.push(Value::Bool(!self.to_boolean(&a)));
-            }
-            Op::BitNot => {
-                let a = self.pop();
-                let v = match self.to_numeric(&a)? {
-                    Value::BigInt(b) => Value::BigInt(Rc::new(b.not())),
-                    v => Value::Number(!ops::f64_to_int32(self.to_number(&v)?) as f64),
-                };
-                self.push(v);
-            }
-            Op::TypeOf => {
-                let a = self.pop();
-                let t = self.type_of(&a);
-                self.push(Value::String(t));
-            }
-            Op::Inc | Op::Dec => {
-                let a = self.pop();
-                let v = match self.to_numeric(&a)? {
-                    Value::BigInt(b) => {
-                        let one = bigint::BigInt::from_i64(if op == Op::Inc { 1 } else { -1 });
-                        Value::BigInt(Rc::new(b.add(&one)))
-                    }
-                    v => {
-                        let n = self.to_number(&v)?;
-                        Value::Number(if op == Op::Inc { n + 1.0 } else { n - 1.0 })
-                    }
-                };
-                self.push(v);
-            }
-            Op::ToKeyOfBase => {
-                let base = self.peek(1);
-                if base.is_nullish() {
-                    let k = self.peek(0);
-                    let what = if matches!(base, Value::Null) { "null" } else { "undefined" };
-                    let ks = if let Value::String(s) = &k { to_rust(s) } else { String::new() };
-                    return self.type_error(&format!("Cannot read properties of {what} (reading '{ks}')"));
-                }
-                let a = self.pop();
-                let k = self.to_property_key(&a)?;
-                self.push(k.to_value());
-            }
-            Op::ToKey => {
-                let a = self.pop();
-                let k = self.to_property_key(&a)?;
-                self.push(k.to_value());
-            }
-            Op::ToStr => {
-                let a = self.pop();
-                let s = self.to_string(&a)?;
-                self.push(Value::String(s));
-            }
-            Op::Jump(t) => self.jump(t),
-            Op::JumpIfFalse(t) => {
-                let v = self.pop();
-                if !self.to_boolean(&v) {
-                    self.jump(t);
-                }
-            }
-            Op::JumpIfTrue(t) => {
-                let v = self.pop();
-                if self.to_boolean(&v) {
-                    self.jump(t);
-                }
-            }
-            Op::JumpIfFalseKeep(t) => {
-                if !self.to_boolean(&self.peek(0)) {
-                    self.jump(t);
-                } else {
-                    self.pop();
-                }
-            }
-            Op::JumpIfTrueKeep(t) => {
-                if self.to_boolean(&self.peek(0)) {
-                    self.jump(t);
-                } else {
-                    self.pop();
-                }
-            }
-            Op::JumpIfNotNullishKeep(t) => {
-                if !self.peek(0).is_nullish() {
-                    self.jump(t);
-                } else {
-                    self.pop();
-                }
-            }
-            Op::JumpIfNotUndef(t) => {
-                if !self.peek(0).is_undefined() {
-                    self.jump(t);
-                }
-            }
-            Op::OptCheck(t, extra) => {
-                if self.peek(0).is_nullish() {
-                    self.pop_n(extra as usize + 1);
-                    self.push(Value::Undefined);
-                    self.jump(t);
-                }
-            }
-            Op::Throw => {
-                let v = self.pop();
-                return Err(v);
-            }
-            Op::SetRet => {
-                let v = self.pop();
-                self.top().ret = v;
-            }
-            Op::GetRet => {
-                let v = std::mem::take(&mut self.top().ret);
-                self.push(v);
-            }
-            Op::Ret => {
-                let v = self.pop();
-                // Script and eval code return their completion value.
-                let v = if self.top().code.decls_kind_unit() {
-                    std::mem::take(&mut self.top().completion)
-                } else {
-                    v
-                };
-                return self.do_return(v, base);
-            }
-            Op::TryStart(t) => {
-                let f = self.top();
-                let h = Handler { pc: t, stack: f.stack.len(), env: f.env, refs: f.refs.len() };
-                f.handlers.push(h);
-            }
-            Op::TryEnd => {
-                self.top().handlers.pop();
-            }
-            Op::ForInStart => {
-                let v = self.pop();
-                let object = if v.is_nullish() { None } else { Some(self.to_object(&v)?) };
-                let st =
-                    ForIn { object, visited: Default::default(), queue: Default::default(), started: false };
-                let it = self.heap.alloc(Object::new(None, Kind::ForIn(Box::new(st))));
-                self.push(Value::Object(it));
-            }
-            Op::ForInNext(t) => {
-                let Value::Object(it) = self.peek(0) else { return Ok(None) };
-                match self.for_in_next(it)? {
-                    Some(k) => self.push(k),
-                    None => {
-                        self.pop();
-                        self.jump(t);
-                    }
-                }
-            }
-            Op::GetIter => {
-                let v = self.pop();
-                let r = self.get_iterator(&v)?;
-                self.push(Value::Object(r));
-            }
-            Op::IterNext(t) => {
-                let Value::Object(r) = self.peek(0) else { return Ok(None) };
-                match self.iter_step(r)? {
-                    Some(v) => self.push(v),
-                    None => {
-                        self.pop();
-                        self.jump(t);
-                    }
-                }
-            }
-            Op::IterValue => {
-                let Value::Object(r) = self.peek(0) else { return Ok(None) };
-                let v = if self.iter_done(r) { None } else { self.iter_step(r)? };
-                self.push(v.unwrap_or_default());
-            }
-            Op::IterRest => {
-                let Value::Object(r) = self.peek(0) else { return Ok(None) };
-                let mut vals = Vec::new();
-                while !self.iter_done(r) {
-                    match self.iter_step(r)? {
-                        Some(v) => vals.push(v),
-                        None => break,
-                    }
-                }
-                let a = self.new_array(vals);
-                self.push(Value::Object(a));
-            }
-            Op::IterClose => {
-                let Value::Object(r) = self.pop() else { return Ok(None) };
-                if !self.iter_done(r) {
-                    self.iterator_close(r)?;
-                }
-            }
-            Op::IterCloseThrow => {
-                let exc = self.pop();
-                if let Value::Object(r) = self.pop() {
-                    if !self.iter_done(r) {
-                        let _ = self.iterator_close(r);
-                    }
-                }
-                return Err(exc);
-            }
-            Op::SetCompletion => {
-                let v = self.pop();
-                self.top().completion = v;
-            }
-            Op::GetCompletion => {
-                let v = self.top().completion.clone();
-                self.push(v);
-            }
-            Op::Unsupported(i) => {
-                let s = to_rust(&self.top().code.strings[i as usize]);
-                if let Some(m) = s.strip_prefix("ReferenceError:") {
-                    return self.reference_error(m);
-                }
-                return self.syntax_error(&s);
-            }
-            Op::GeneratorStart => return self.generator_start(base),
-            Op::ParamsStart => self.top().in_params = true,
-            Op::ParamsEnd => self.top().in_params = false,
-            Op::ImportCall => {
-                let opts = self.pop();
-                let spec = self.pop();
-                let p = self.dynamic_import(spec, opts);
-                self.push(p);
-            }
-            Op::ImportDeferCall => {
-                let _ = self.pop();
-                let spec = self.pop();
-                let p = self.dynamic_import_phase(spec, Value::Undefined, true);
-                self.push(p);
-            }
-            Op::ImportSourceCall => {
-                let _ = self.pop();
-                let spec = self.pop();
-                let p = self.import_source(spec);
-                self.push(p);
-            }
-            Op::ImportMeta => {
-                let v = self.import_meta();
-                self.push(v);
-            }
-            Op::AsyncStart => return self.async_start(base),
-            Op::AsyncGenStart => return self.async_gen_start(base),
-            Op::AsyncYield => return self.async_yield(base),
-            Op::YieldStarAsync(t) => self.yield_star_async(t)?,
-            Op::YieldStarAsyncCheck(d, r) => self.yield_star_async_check(d, r)?,
-            Op::GetAsyncIter => {
-                let v = self.pop();
-                let r = self.get_async_iterator(&v)?;
-                self.push(Value::Object(r));
-            }
-            Op::IterNextAsync => {
-                let Value::Object(r) = self.peek(0) else { return Ok(None) };
-                let (it, next) = self.iter_parts(r);
-                let res = self.call(&next, it, Vec::new())?;
-                self.push(res);
-            }
-            Op::IterResultCheck(t) => {
-                let res = self.pop();
-                let Value::Object(ro) = res else {
-                    return self.type_error("Iterator result is not an object");
-                };
-                let cond = self.get(ro, &PropKey::lit("done"))?;
-                if self.to_boolean(&cond) {
-                    self.pop();
-                    self.jump(t);
-                } else {
-                    let v = self.get(ro, &PropKey::lit("value"))?;
+                Op::GlobalInit => self.global_declaration_instantiation()?,
+                Op::EvalInit => self.eval_declaration_instantiation()?,
+                Op::This => {
+                    let env = self.top().env;
+                    let v = self.resolve_this(env)?;
                     self.push(v);
                 }
-            }
-            Op::DisposeScope => {
-                let c = self.new_dispose_cap();
-                self.push(c);
-            }
-            Op::AddDisposable(is_async) => {
-                let v = self.peek(0);
-                let Value::Object(cap) = self.peek(1) else { return Ok(None) };
-                self.add_disposable(cap, v, is_async)?;
-            }
-            Op::DisposeError => {
-                let e = self.pop();
-                let Value::Object(cap) = self.peek(0) else { return Ok(None) };
-                self.dispose_fold_error(cap, e);
-            }
-            Op::DisposeStep(t) => {
-                let Value::Object(cap) = self.peek(0) else { return Ok(None) };
-                match self.dispose_step(cap)? {
-                    Some(v) => self.push(v),
-                    None => self.jump(t),
+                Op::NewTarget => {
+                    let env = self.top().env;
+                    let v = self.new_target_of(env);
+                    self.push(v);
                 }
-            }
-            Op::DisposeSync => {
-                let Value::Object(cap) = self.pop() else { return Ok(None) };
-                self.dispose_sync(cap)?;
-            }
-            Op::AsyncIterClose(t) => {
-                let Value::Object(r) = self.pop() else { return Ok(None) };
-                let (it, _) = self.iter_parts(r);
-                match self.get_method(&it, &PropKey::lit("return"))? {
-                    Some(f) => {
-                        let res = self.call(&f, it, Vec::new())?;
-                        self.push(res);
+                Op::Object => {
+                    let o = self.new_object();
+                    self.push(Value::Object(o));
+                }
+                Op::Array => {
+                    let a = self.new_array(Vec::new());
+                    self.push(Value::Object(a));
+                }
+                Op::ArrayPush => {
+                    let v = self.pop();
+                    if let Value::Object(a) = self.peek(0) {
+                        self.array_push(a, v)?;
                     }
-                    None => self.jump(t),
                 }
-            }
-            Op::AsyncIterCloseThrow => {
-                let exc = self.pop();
-                if let Value::Object(r) = self.pop() {
+                Op::ArrayHole => {
+                    if let Value::Object(a) = self.peek(0) {
+                        let len = self.length_of_array(a);
+                        self.set_array_length_raw(a, len + 1);
+                    }
+                }
+                Op::ArraySpread => {
+                    let it = self.pop();
+                    if let Value::Object(a) = self.peek(0) {
+                        let vals = self.iterate_to_vec(&it)?;
+                        for v in vals {
+                            self.array_push(a, v)?;
+                        }
+                    }
+                }
+                Op::GetProp => {
+                    let k = self.pop();
+                    let o = self.pop();
+                    let v = self.get_value_prop(&o, &k)?;
+                    self.push(v);
+                }
+                Op::GetNamed(i) => {
+                    // Inline cache: an own data property at the entry this site saw last.
+                    let f = self.frames.last().expect("frame");
+                    let pc = f.pc - 1;
+                    if let Some(Value::Object(o)) = f.stack.last() {
+                        let obj = self.heap.obj(*o);
+                        if object::ordinary_get_own(&obj.kind) {
+                            let c = f.code.ic.get(pc).map_or(u32::MAX, |c| c.get()) as usize;
+                            if let Some(Prop { slot: Slot::Data(v), .. }) =
+                                obj.props.at(c, &f.code.keys[i as usize])
+                            {
+                                let v = v.clone();
+                                if let Some(top) = self.frames.last_mut().and_then(|f| f.stack.last_mut()) {
+                                    *top = v;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    let k = self.top().code.keys[i as usize].clone();
+                    let o = self.pop();
+                    let v = self.get_value_key(&o, &k)?;
+                    self.ic_record(pc, &o, &k, false);
+                    self.push(v);
+                }
+                Op::SetProp | Op::SetPropPop => {
+                    let v = self.pop();
+                    let k = self.pop();
+                    let o = self.pop();
+                    if o.is_nullish() {
+                        // The key isn't converted (that would run user code) for the message.
+                        let ks = match &k {
+                            Value::String(s) => to_rust(s),
+                            Value::Number(n) => value::number_to_string(*n),
+                            _ => String::new(),
+                        };
+                        return self.type_error(&format!(
+                            "Cannot set properties of {} (setting '{ks}')",
+                            ops::nullish_name(&o)
+                        ));
+                    }
+                    let key = self.to_property_key(&k)?;
+                    self.put_value(&o, key, v.clone())?;
+                    if op == Op::SetProp {
+                        self.push(v);
+                    }
+                }
+                Op::SetNamed(i) | Op::SetNamedPop(i) => {
+                    let f = self.frames.last().expect("frame");
+                    let pc = f.pc - 1;
+                    let n = f.stack.len();
+                    if let Some(Value::Object(o)) = n.checked_sub(2).and_then(|j| f.stack.get(j)) {
+                        let o = *o;
+                        let c = f.code.ic.get(pc).map_or(u32::MAX, |c| c.get()) as usize;
+                        let key = f.code.keys[i as usize].clone();
+                        let obj = self.heap.obj_mut(o);
+                        let array_length = matches!(obj.kind, Kind::Array) && key.is_str("length");
+                        if object::ordinary_get_own(&obj.kind) && !array_length {
+                            if let Some(Prop { slot: Slot::Data(slot), writable: true, .. }) =
+                                obj.props.at_mut(c, &key)
+                            {
+                                let v =
+                                    self.frames.last_mut().and_then(|f| f.stack.pop()).unwrap_or_default();
+                                *slot = v.clone();
+                                self.pop();
+                                if matches!(op, Op::SetNamed(_)) {
+                                    self.push(v);
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    let k = self.top().code.keys[i as usize].clone();
+                    let v = self.pop();
+                    let o = self.pop();
+                    if o.is_nullish() {
+                        return self.type_error(&format!(
+                            "Cannot set properties of {} (setting '{}')",
+                            ops::nullish_name(&o),
+                            k.display()
+                        ));
+                    }
+                    self.put_value(&o, k.clone(), v.clone())?;
+                    self.ic_record(pc, &o, &k, true);
+                    if matches!(op, Op::SetNamed(_)) {
+                        self.push(v);
+                    }
+                }
+                Op::DefineProp => {
+                    let v = self.pop();
+                    let k = self.pop();
+                    let key = self.to_property_key(&k)?;
+                    if let Value::Object(o) = self.peek(0) {
+                        self.create_data_property_or_throw(o, key, v)?;
+                    }
+                }
+                Op::DefineNamed(i) => {
+                    let k = self.top().code.keys[i as usize].clone();
+                    let v = self.pop();
+                    if let Value::Object(o) = self.peek(0) {
+                        self.create_data_property_or_throw(o, k, v)?;
+                    }
+                }
+                Op::DefineMethod(t, kind) => {
+                    let k = self.pop();
+                    let key = self.to_property_key(&k)?;
+                    let Value::Object(obj) = self.peek(0) else { return Ok(None) };
+                    let tmpl = self.top().code.funcs[t as usize].clone();
+                    let env = self.top().env;
+                    let prefix = match kind {
+                        1 => Some("get"),
+                        2 => Some("set"),
+                        _ => None,
+                    };
+                    let f = self.make_function(tmpl, env, Some(obj), false);
+                    self.set_function_name(f, &key, prefix);
+                    let pk = key;
+                    match kind {
+                        0 => {
+                            self.define_own_property_or_throw(
+                                obj,
+                                pk,
+                                object::PropDesc::data(Value::Object(f), true, true, true),
+                            )?;
+                        }
+                        1 => {
+                            let d = object::PropDesc {
+                                get: Some(Some(f)),
+                                enumerable: Some(true),
+                                configurable: Some(true),
+                                ..Default::default()
+                            };
+                            self.define_own_property_or_throw(obj, pk, d)?;
+                        }
+                        _ => {
+                            let d = object::PropDesc {
+                                set: Some(Some(f)),
+                                enumerable: Some(true),
+                                configurable: Some(true),
+                                ..Default::default()
+                            };
+                            self.define_own_property_or_throw(obj, pk, d)?;
+                        }
+                    }
+                }
+                Op::SetProto => {
+                    let v = self.pop();
+                    if let Value::Object(o) = self.peek(0) {
+                        match v {
+                            Value::Object(p) => {
+                                self.set_prototype_of(o, Some(p))?;
+                            }
+                            Value::Null => {
+                                self.set_prototype_of(o, None)?;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Op::CopyData => {
+                    let src = self.pop();
+                    if let Value::Object(t) = self.peek(0) {
+                        self.copy_data_properties(t, &src, &[])?;
+                    }
+                }
+                Op::ObjRest => {
+                    let keys = self.pop();
+                    let src = self.pop();
+                    let excluded = match keys {
+                        Value::Object(a) => {
+                            let n = self.length_of_array(a);
+                            let mut out = Vec::new();
+                            for i in 0..n {
+                                let v = self.get(a, &PropKey::from_u32(i))?;
+                                out.push(self.to_property_key(&v)?);
+                            }
+                            out
+                        }
+                        _ => Vec::new(),
+                    };
+                    let t = self.new_object();
+                    self.copy_data_properties(t, &src, &excluded)?;
+                    self.push(Value::Object(t));
+                }
+                Op::DeleteProp => {
+                    let k = self.pop();
+                    let o = self.pop();
+                    let obj = self.to_object(&o)?;
+                    let key = self.to_property_key(&k)?;
+                    let ok = self.delete(obj, &key)?;
+                    if !ok && self.strict() {
+                        return self.type_error(&format!("Cannot delete property '{}'", key.display()));
+                    }
+                    self.push(Value::Bool(ok));
+                }
+                Op::AppendKey => {
+                    let k = self.peek(0);
+                    if let Value::Object(a) = self.peek(3) {
+                        self.array_push(a, k)?;
+                    }
+                }
+                Op::RequireCoercible => {
+                    let v = self.peek(0);
+                    if v.is_nullish() {
+                        return self.type_error(&format!("Cannot destructure '{}'", ops::nullish_name(&v)));
+                    }
+                }
+                Op::Call(n) => {
+                    let args = self.pop_n(n as usize);
+                    let this = self.pop();
+                    let f = self.pop();
+                    return self.op_call(f, this, args);
+                }
+                Op::TailCall(n) => {
+                    let args = self.pop_n(n as usize);
+                    let this = self.pop();
+                    let f = self.pop();
+                    return self.op_tail_call(f, this, args);
+                }
+                Op::TailCallEval(n) => {
+                    let args = self.pop_n(n as usize);
+                    let this = self.pop();
+                    let f = self.pop();
+                    if matches!(&f, Value::Object(o) if *o == self.realm.eval) {
+                        // A direct eval needs this frame's environment: no tail call.
+                        return self.op_call_eval(f, this, args);
+                    }
+                    return self.op_tail_call(f, this, args);
+                }
+                Op::CallSpread => {
+                    let arr = self.pop();
+                    let this = self.pop();
+                    let f = self.pop();
+                    let args = self.array_values(&arr)?;
+                    return self.op_call(f, this, args);
+                }
+                Op::CallEval(n) => {
+                    let args = self.pop_n(n as usize);
+                    let this = self.pop();
+                    let f = self.pop();
+                    return self.op_call_eval(f, this, args);
+                }
+                Op::CallEvalSpread => {
+                    let arr = self.pop();
+                    let this = self.pop();
+                    let f = self.pop();
+                    let args = self.array_values(&arr)?;
+                    return self.op_call_eval(f, this, args);
+                }
+                Op::New(n) => {
+                    let args = self.pop_n(n as usize);
+                    let c = self.pop();
+                    return self.op_new(c, args);
+                }
+                Op::NewSpread => {
+                    let arr = self.pop();
+                    let c = self.pop();
+                    let args = self.array_values(&arr)?;
+                    return self.op_new(c, args);
+                }
+                Op::Closure(i) => {
+                    let tmpl = self.top().code.funcs[i as usize].clone();
+                    let env = self.top().env;
+                    let f = if tmpl.is_expression {
+                        // A named function expression sees its own name (§15.2.5).
+                        let name: Rc<str> = tmpl.ast.name.as_deref().unwrap_or_default().into();
+                        let fenv = self.heap.alloc_env(Env {
+                            outer: Some(env),
+                            kind: EnvKind::Declarative,
+                            bindings: Default::default(),
+                        });
+                        let f = self.make_function(tmpl, fenv, None, true);
+                        self.heap.env_mut(fenv).bindings.insert(
+                            name,
+                            Binding {
+                                value: Some(Value::Object(f)),
+                                mutable: false,
+                                strict: false,
+                                deletable: false,
+                            },
+                        );
+                        f
+                    } else {
+                        self.make_function(tmpl, env, None, true)
+                    };
+                    self.push(Value::Object(f));
+                }
+                Op::SetFnName => {
+                    let f = self.peek(0);
+                    let k = self.peek(1);
+                    if let (Value::Object(fo), Ok(key)) = (f, self.to_property_key(&k)) {
+                        // Only functions without an own name (anonymous definitions).
+                        let has_name = matches!(
+                            self.heap.obj(fo).props.get(&PropKey::lit("name")).map(|p| &p.slot),
+                            Some(heap::Slot::Data(Value::String(s))) if !s.is_empty()
+                        );
+                        if !has_name {
+                            self.set_function_name(fo, &key, None);
+                        }
+                    }
+                }
+                Op::Arg(i) => {
+                    let v = self.top().args.get(i as usize).cloned().unwrap_or_default();
+                    self.push(v);
+                }
+                Op::RestArgs(i) => {
+                    let rest: Vec<Value> = self.top().args.iter().skip(i as usize).cloned().collect();
+                    let a = self.new_array(rest);
+                    self.push(Value::Object(a));
+                }
+                Op::CreateArguments => {
+                    let a = self.create_arguments()?;
+                    self.push(Value::Object(a));
+                }
+                Op::CreateMappedArguments => {
+                    let a = self.create_arguments()?;
+                    // CreateMappedArgumentsObject (§10.4.4.7) steps 15–17: the last parameter
+                    // with a name wins; only indices below the argument count are mapped.
+                    let params = self.top().code.params.clone();
+                    let n = self.top().args.len();
+                    let mut names: Vec<Option<Rc<str>>> = vec![None; n.min(params.len())];
+                    let mut seen = std::collections::HashSet::new();
+                    for (i, p) in params.iter().enumerate().rev() {
+                        if seen.insert(p.clone()) && i < n {
+                            names[i] = Some(p.clone());
+                        }
+                    }
+                    let env = self.top().env;
+                    let callee = self.top().callee;
+                    let o = self.heap.obj_mut(a);
+                    o.kind = Kind::MappedArguments(Box::new(ArgMap { env, names }));
+                    // A mapped object's callee is the function even though `strict` is false.
+                    if let Some(c) = callee {
+                        o.props.insert(PropKey::lit("callee"), Prop::method(Value::Object(c)));
+                    }
+                    self.push(Value::Object(a));
+                }
+                Op::TemplateObject(i) => {
+                    let o = self.template_object(i);
+                    self.push(Value::Object(o));
+                }
+                Op::RegExp(i) => {
+                    let (src, flags) = self.top().code.regexps[i as usize].clone();
+                    let r = self.regexp_create(src, flags)?;
+                    self.push(Value::Object(r));
+                }
+                Op::Add => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    let v = self.add(&a, &b)?;
+                    self.push(v);
+                }
+                Op::Sub
+                | Op::Mul
+                | Op::Div
+                | Op::Mod
+                | Op::Exp
+                | Op::Shl
+                | Op::Shr
+                | Op::UShr
+                | Op::BitAnd
+                | Op::BitOr
+                | Op::BitXor => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    let v = self.arith(op, &a, &b)?;
+                    self.push(v);
+                }
+                Op::Lt | Op::Gt | Op::Le | Op::Ge => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    let v = self.compare(op, &a, &b)?;
+                    self.push(Value::Bool(v));
+                }
+                Op::Eq | Op::Ne => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    let r = self.loosely_equal(&a, &b)?;
+                    self.push(Value::Bool(r == (op == Op::Eq)));
+                }
+                Op::UpdateVar(i, flags) => {
+                    let name = self.name(i);
+                    let (env, slot) = self.slot_here();
+                    // A number in a resolved binding: no conversions to observe.
+                    if let Some(Value::Number(n)) = self.read_slot(env, slot, &name) {
+                        let new = if flags & 1 != 0 { n + 1.0 } else { n - 1.0 };
+                        if self.write_slot(env, slot, &name, Value::Number(new)).is_ok() {
+                            if flags & 2 != 0 {
+                                self.push(Value::Number(if flags & 4 != 0 { n } else { new }));
+                            }
+                            continue;
+                        }
+                    }
+                    let old = self.get_var(env, &name)?;
+                    let old = match old {
+                        Value::Number(_) => old,
+                        v => self.to_numeric(&v)?,
+                    };
+                    let inc = flags & 1 != 0;
+                    let new = match &old {
+                        Value::Number(n) => Value::Number(if inc { n + 1.0 } else { n - 1.0 }),
+                        Value::BigInt(b) => {
+                            let one = bigint::BigInt::from_i64(if inc { 1 } else { -1 });
+                            Value::BigInt(Rc::new(b.add(&one)))
+                        }
+                        _ => Value::Number(f64::NAN),
+                    };
+                    self.set_var(env, &name, new.clone())?;
+                    if flags & 2 != 0 {
+                        self.push(if flags & 4 != 0 { old } else { new });
+                    }
+                }
+                Op::CmpJumpIfFalse(k, t) => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    let r = match k {
+                        0 => self.compare(Op::Lt, &a, &b)?,
+                        1 => self.compare(Op::Gt, &a, &b)?,
+                        2 => self.compare(Op::Le, &a, &b)?,
+                        3 => self.compare(Op::Ge, &a, &b)?,
+                        4 => value::strict_equals(&a, &b),
+                        5 => !value::strict_equals(&a, &b),
+                        6 => self.loosely_equal(&a, &b)?,
+                        _ => !self.loosely_equal(&a, &b)?,
+                    };
+                    if !r {
+                        self.jump(t);
+                    }
+                }
+                Op::StrictEq | Op::StrictNe => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    let r = value::strict_equals(&a, &b);
+                    self.push(Value::Bool(r == (op == Op::StrictEq)));
+                }
+                Op::InstanceOf => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    let r = self.instance_of(&a, &b)?;
+                    self.push(Value::Bool(r));
+                }
+                Op::In => {
+                    let b = self.pop();
+                    let a = self.pop();
+                    let Value::Object(o) = b else {
+                        return self
+                            .type_error("Cannot use 'in' operator to search for a key in a non-object");
+                    };
+                    let k = self.to_property_key(&a)?;
+                    let r = self.has_property(o, &k)?;
+                    self.push(Value::Bool(r));
+                }
+                Op::Neg => {
+                    let a = self.pop();
+                    let v = match self.to_numeric(&a)? {
+                        Value::BigInt(b) => Value::BigInt(Rc::new(b.neg())),
+                        Value::Number(n) => Value::Number(-n),
+                        v => v,
+                    };
+                    self.push(v);
+                }
+                Op::Plus => {
+                    let a = self.pop();
+                    let n = self.to_number(&a)?;
+                    self.push(Value::Number(n));
+                }
+                Op::ToNumeric => {
+                    let a = self.pop();
+                    let v = self.to_numeric(&a)?;
+                    self.push(v);
+                }
+                Op::BigInt(i) => {
+                    let b = self.top().code.bigints[i as usize].clone();
+                    self.push(Value::BigInt(b));
+                }
+                Op::Not => {
+                    let a = self.pop();
+                    self.push(Value::Bool(!self.to_boolean(&a)));
+                }
+                Op::BitNot => {
+                    let a = self.pop();
+                    let v = match self.to_numeric(&a)? {
+                        Value::BigInt(b) => Value::BigInt(Rc::new(b.not())),
+                        v => Value::Number(!ops::f64_to_int32(self.to_number(&v)?) as f64),
+                    };
+                    self.push(v);
+                }
+                Op::TypeOf => {
+                    let a = self.pop();
+                    let t = self.type_of(&a);
+                    self.push(Value::String(t));
+                }
+                Op::Inc | Op::Dec => {
+                    let a = self.pop();
+                    let v = match self.to_numeric(&a)? {
+                        Value::BigInt(b) => {
+                            let one = bigint::BigInt::from_i64(if op == Op::Inc { 1 } else { -1 });
+                            Value::BigInt(Rc::new(b.add(&one)))
+                        }
+                        v => {
+                            let n = self.to_number(&v)?;
+                            Value::Number(if op == Op::Inc { n + 1.0 } else { n - 1.0 })
+                        }
+                    };
+                    self.push(v);
+                }
+                Op::ToKeyOfBase => {
+                    let base = self.peek(1);
+                    if base.is_nullish() {
+                        let k = self.peek(0);
+                        let what = if matches!(base, Value::Null) { "null" } else { "undefined" };
+                        let ks = if let Value::String(s) = &k { to_rust(s) } else { String::new() };
+                        return self
+                            .type_error(&format!("Cannot read properties of {what} (reading '{ks}')"));
+                    }
+                    let a = self.pop();
+                    let k = self.to_property_key(&a)?;
+                    self.push(k.to_value());
+                }
+                Op::ToKey => {
+                    let a = self.pop();
+                    let k = self.to_property_key(&a)?;
+                    self.push(k.to_value());
+                }
+                Op::ToStr => {
+                    let a = self.pop();
+                    let s = self.to_string(&a)?;
+                    self.push(Value::String(s));
+                }
+                Op::Jump(t) => self.jump(t),
+                Op::JumpIfFalse(t) => {
+                    let v = self.pop();
+                    if !self.to_boolean(&v) {
+                        self.jump(t);
+                    }
+                }
+                Op::JumpIfTrue(t) => {
+                    let v = self.pop();
+                    if self.to_boolean(&v) {
+                        self.jump(t);
+                    }
+                }
+                Op::JumpIfFalseKeep(t) => {
+                    if !self.to_boolean(&self.peek(0)) {
+                        self.jump(t);
+                    } else {
+                        self.pop();
+                    }
+                }
+                Op::JumpIfTrueKeep(t) => {
+                    if self.to_boolean(&self.peek(0)) {
+                        self.jump(t);
+                    } else {
+                        self.pop();
+                    }
+                }
+                Op::JumpIfNotNullishKeep(t) => {
+                    if !self.peek(0).is_nullish() {
+                        self.jump(t);
+                    } else {
+                        self.pop();
+                    }
+                }
+                Op::JumpIfNotUndef(t) => {
+                    if !self.peek(0).is_undefined() {
+                        self.jump(t);
+                    }
+                }
+                Op::OptCheck(t, extra) => {
+                    if self.peek(0).is_nullish() {
+                        self.pop_n(extra as usize + 1);
+                        self.push(Value::Undefined);
+                        self.jump(t);
+                    }
+                }
+                Op::Throw => {
+                    let v = self.pop();
+                    return Err(v);
+                }
+                Op::SetRet => {
+                    let v = self.pop();
+                    self.top().ret = v;
+                }
+                Op::GetRet => {
+                    let v = std::mem::take(&mut self.top().ret);
+                    self.push(v);
+                }
+                Op::Ret => {
+                    let v = self.pop();
+                    // Script and eval code return their completion value.
+                    let v = if self.top().code.decls_kind_unit() {
+                        std::mem::take(&mut self.top().completion)
+                    } else {
+                        v
+                    };
+                    return self.do_return(v, base);
+                }
+                Op::TryStart(t) => {
+                    let f = self.top();
+                    let h = Handler { pc: t, stack: f.stack.len(), env: f.env, refs: f.refs.len() };
+                    f.handlers.push(h);
+                }
+                Op::TryEnd => {
+                    self.top().handlers.pop();
+                }
+                Op::ForInStart => {
+                    let v = self.pop();
+                    let object = if v.is_nullish() { None } else { Some(self.to_object(&v)?) };
+                    let st = ForIn {
+                        object,
+                        visited: Default::default(),
+                        queue: Default::default(),
+                        started: false,
+                    };
+                    let it = self.heap.alloc(Object::new(None, Kind::ForIn(Box::new(st))));
+                    self.push(Value::Object(it));
+                }
+                Op::ForInNext(t) => {
+                    let Value::Object(it) = self.peek(0) else { return Ok(None) };
+                    match self.for_in_next(it)? {
+                        Some(k) => self.push(k),
+                        None => {
+                            self.pop();
+                            self.jump(t);
+                        }
+                    }
+                }
+                Op::GetIter => {
+                    let v = self.pop();
+                    let r = self.get_iterator(&v)?;
+                    self.push(Value::Object(r));
+                }
+                Op::IterNext(t) => {
+                    let Value::Object(r) = self.peek(0) else { return Ok(None) };
+                    match self.iter_step(r)? {
+                        Some(v) => self.push(v),
+                        None => {
+                            self.pop();
+                            self.jump(t);
+                        }
+                    }
+                }
+                Op::IterValue => {
+                    let Value::Object(r) = self.peek(0) else { return Ok(None) };
+                    let v = if self.iter_done(r) { None } else { self.iter_step(r)? };
+                    self.push(v.unwrap_or_default());
+                }
+                Op::IterRest => {
+                    let Value::Object(r) = self.peek(0) else { return Ok(None) };
+                    let mut vals = Vec::new();
+                    while !self.iter_done(r) {
+                        match self.iter_step(r)? {
+                            Some(v) => vals.push(v),
+                            None => break,
+                        }
+                    }
+                    let a = self.new_array(vals);
+                    self.push(Value::Object(a));
+                }
+                Op::IterClose => {
+                    let Value::Object(r) = self.pop() else { return Ok(None) };
+                    if !self.iter_done(r) {
+                        self.iterator_close(r)?;
+                    }
+                }
+                Op::IterCloseThrow => {
+                    let exc = self.pop();
+                    if let Value::Object(r) = self.pop() {
+                        if !self.iter_done(r) {
+                            let _ = self.iterator_close(r);
+                        }
+                    }
+                    return Err(exc);
+                }
+                Op::SetCompletion => {
+                    let v = self.pop();
+                    self.top().completion = v;
+                }
+                Op::GetCompletion => {
+                    let v = self.top().completion.clone();
+                    self.push(v);
+                }
+                Op::Unsupported(i) => {
+                    let s = to_rust(&self.top().code.strings[i as usize]);
+                    if let Some(m) = s.strip_prefix("ReferenceError:") {
+                        return self.reference_error(m);
+                    }
+                    return self.syntax_error(&s);
+                }
+                Op::GeneratorStart => return self.generator_start(base),
+                Op::ParamsStart => self.top().in_params = true,
+                Op::ParamsEnd => self.top().in_params = false,
+                Op::ImportCall => {
+                    let opts = self.pop();
+                    let spec = self.pop();
+                    let p = self.dynamic_import(spec, opts);
+                    self.push(p);
+                }
+                Op::ImportDeferCall => {
+                    let _ = self.pop();
+                    let spec = self.pop();
+                    let p = self.dynamic_import_phase(spec, Value::Undefined, true);
+                    self.push(p);
+                }
+                Op::ImportSourceCall => {
+                    let _ = self.pop();
+                    let spec = self.pop();
+                    let p = self.import_source(spec);
+                    self.push(p);
+                }
+                Op::ImportMeta => {
+                    let v = self.import_meta();
+                    self.push(v);
+                }
+                Op::AsyncStart => return self.async_start(base),
+                Op::AsyncGenStart => return self.async_gen_start(base),
+                Op::AsyncYield => return self.async_yield(base),
+                Op::YieldStarAsync(t) => self.yield_star_async(t)?,
+                Op::YieldStarAsyncCheck(d, r) => self.yield_star_async_check(d, r)?,
+                Op::GetAsyncIter => {
+                    let v = self.pop();
+                    let r = self.get_async_iterator(&v)?;
+                    self.push(Value::Object(r));
+                }
+                Op::IterNextAsync => {
+                    let Value::Object(r) = self.peek(0) else { return Ok(None) };
+                    let (it, next) = self.iter_parts(r);
+                    let res = self.call(&next, it, Vec::new())?;
+                    self.push(res);
+                }
+                Op::IterResultCheck(t) => {
+                    let res = self.pop();
+                    let Value::Object(ro) = res else {
+                        return self.type_error("Iterator result is not an object");
+                    };
+                    let cond = self.get(ro, &PropKey::lit("done"))?;
+                    if self.to_boolean(&cond) {
+                        self.pop();
+                        self.jump(t);
+                    } else {
+                        let v = self.get(ro, &PropKey::lit("value"))?;
+                        self.push(v);
+                    }
+                }
+                Op::DisposeScope => {
+                    let c = self.new_dispose_cap();
+                    self.push(c);
+                }
+                Op::AddDisposable(is_async) => {
+                    let v = self.peek(0);
+                    let Value::Object(cap) = self.peek(1) else { return Ok(None) };
+                    self.add_disposable(cap, v, is_async)?;
+                }
+                Op::DisposeError => {
+                    let e = self.pop();
+                    let Value::Object(cap) = self.peek(0) else { return Ok(None) };
+                    self.dispose_fold_error(cap, e);
+                }
+                Op::DisposeStep(t) => {
+                    let Value::Object(cap) = self.peek(0) else { return Ok(None) };
+                    match self.dispose_step(cap)? {
+                        Some(v) => self.push(v),
+                        None => self.jump(t),
+                    }
+                }
+                Op::DisposeSync => {
+                    let Value::Object(cap) = self.pop() else { return Ok(None) };
+                    self.dispose_sync(cap)?;
+                }
+                Op::AsyncIterClose(t) => {
+                    let Value::Object(r) = self.pop() else { return Ok(None) };
                     let (it, _) = self.iter_parts(r);
-                    if let Ok(Some(f)) = self.get_method(&it, &PropKey::lit("return")) {
-                        let _ = self.call(&f, it, Vec::new());
+                    match self.get_method(&it, &PropKey::lit("return"))? {
+                        Some(f) => {
+                            let res = self.call(&f, it, Vec::new())?;
+                            self.push(res);
+                        }
+                        None => self.jump(t),
                     }
                 }
-                if self.terminated {
-                    return Err(Value::Undefined);
+                Op::AsyncIterCloseThrow => {
+                    let exc = self.pop();
+                    if let Value::Object(r) = self.pop() {
+                        let (it, _) = self.iter_parts(r);
+                        if let Ok(Some(f)) = self.get_method(&it, &PropKey::lit("return")) {
+                            let _ = self.call(&f, it, Vec::new());
+                        }
+                    }
+                    if self.terminated {
+                        return Err(Value::Undefined);
+                    }
+                    return Err(exc);
                 }
-                return Err(exc);
-            }
-            Op::CheckObject => {
-                if !matches!(self.pop(), Value::Object(_)) {
-                    return self.type_error("Iterator result is not an object");
+                Op::CheckObject => {
+                    if !matches!(self.pop(), Value::Object(_)) {
+                        return self.type_error("Iterator result is not an object");
+                    }
                 }
-            }
-            Op::Await => return self.await_value(base),
-            Op::Yield => {
-                let v = self.pop();
-                self.yield_raw = false;
-                return self.suspend(v, base, false);
-            }
-            Op::Resume(t) => match std::mem::take(&mut self.top().resume) {
-                Resume::Next => {}
-                Resume::Throw => return Err(self.pop()),
-                Resume::Return => self.jump(t),
-            },
-            Op::JumpIfResumeReturn(t) => {
-                if self.top().resume == Resume::Return {
-                    self.top().resume = Resume::Next;
-                    self.jump(t);
+                Op::Await => return self.await_value(base),
+                Op::Yield => {
+                    let v = self.pop();
+                    self.yield_raw = false;
+                    return self.suspend(v, base, false);
                 }
-            }
-            Op::SetResume(m) => {
-                self.top().resume = match m {
-                    1 => Resume::Throw,
-                    2 => Resume::Return,
-                    _ => Resume::Next,
-                };
-            }
-            Op::YieldStar(done, ret) => return self.yield_star(done, ret, base),
-            Op::NewPrivateName(i) => {
-                let d = to_rust(&self.top().code.strings[i as usize]);
-                self.push(Value::Symbol(value::Sym::private(&d)));
-            }
-            Op::ClassCreate(t, h) => self.class_create(t, h)?,
-            Op::ClassMethod(t, k, fl) => self.class_method(t, k, fl)?,
-            Op::ClassField(t, fl) => self.class_field(t, fl)?,
-            Op::ClassDecorate => self.class_decorate()?,
-            Op::ClassStaticBlock(t) => self.class_static_block(t)?,
-            Op::ClassFinish(d) => self.class_finish(d)?,
-            Op::InitInstance => {
-                let env = self.top().env;
-                let this = self.resolve_this(env)?;
-                if let (Value::Object(o), Some(f)) = (this, self.top().callee) {
-                    self.init_instance(o, f)?;
+                Op::Resume(t) => match std::mem::take(&mut self.top().resume) {
+                    Resume::Next => {}
+                    Resume::Throw => return Err(self.pop()),
+                    Resume::Return => self.jump(t),
+                },
+                Op::JumpIfResumeReturn(t) => {
+                    if self.top().resume == Resume::Return {
+                        self.top().resume = Resume::Next;
+                        self.jump(t);
+                    }
                 }
-            }
-            Op::SetFnNameField => {
-                if let (Value::Object(f), Some(k)) = (self.peek(0), self.current_field_name()) {
-                    self.set_function_name(f, &k, None);
+                Op::SetResume(m) => {
+                    self.top().resume = match m {
+                        1 => Resume::Throw,
+                        2 => Resume::Return,
+                        _ => Resume::Next,
+                    };
                 }
+                Op::YieldStar(done, ret) => return self.yield_star(done, ret, base),
+                Op::NewPrivateName(i) => {
+                    let d = to_rust(&self.top().code.strings[i as usize]);
+                    self.push(Value::Symbol(value::Sym::private(&d)));
+                }
+                Op::ClassCreate(t, h) => self.class_create(t, h)?,
+                Op::ClassMethod(t, k, fl) => self.class_method(t, k, fl)?,
+                Op::ClassField(t, fl) => self.class_field(t, fl)?,
+                Op::ClassDecorate => self.class_decorate()?,
+                Op::ClassStaticBlock(t) => self.class_static_block(t)?,
+                Op::ClassFinish(d) => self.class_finish(d)?,
+                Op::InitInstance => {
+                    let env = self.top().env;
+                    let this = self.resolve_this(env)?;
+                    if let (Value::Object(o), Some(f)) = (this, self.top().callee) {
+                        self.init_instance(o, f)?;
+                    }
+                }
+                Op::SetFnNameField => {
+                    if let (Value::Object(f), Some(k)) = (self.peek(0), self.current_field_name()) {
+                        self.set_function_name(f, &k, None);
+                    }
+                }
+                Op::SuperCall(n) => {
+                    let args = self.pop_n(n as usize);
+                    let r = self.super_call(args)?;
+                    self.push(r);
+                }
+                Op::SuperCallSpread => {
+                    let arr = self.pop();
+                    let args = self.array_values(&arr)?;
+                    let r = self.super_call(args)?;
+                    self.push(r);
+                }
+                Op::SuperCallForward => {
+                    let args = self.top().args.clone();
+                    let r = self.super_call(args)?;
+                    self.push(r);
+                }
+                Op::SuperRef => {
+                    let k = self.pop();
+                    let r = self.super_ref(k)?;
+                    self.push(r);
+                }
+                Op::SuperGet => {
+                    let k = self.pop();
+                    let this = self.pop();
+                    let v = self.super_get(this, &k)?;
+                    self.push(v);
+                }
+                Op::SuperSet => {
+                    let v = self.pop();
+                    let k = self.pop();
+                    let this = self.pop();
+                    self.super_set(this, &k, v.clone())?;
+                    self.push(v);
+                }
+                Op::PrivateGet => {
+                    let n = self.pop();
+                    let o = self.pop();
+                    let v = self.private_get(&o, &n)?;
+                    self.push(v);
+                }
+                Op::PrivateSet => {
+                    let v = self.pop();
+                    let n = self.pop();
+                    let o = self.pop();
+                    self.private_set(&o, &n, v.clone())?;
+                    self.push(v);
+                }
+                Op::PrivateIn => {
+                    let o = self.pop();
+                    let n = self.pop();
+                    let r = self.private_in(&n, &o)?;
+                    self.push(Value::Bool(r));
+                }
+                Op::Nop => {}
             }
-            Op::SuperCall(n) => {
-                let args = self.pop_n(n as usize);
-                let r = self.super_call(args)?;
-                self.push(r);
-            }
-            Op::SuperCallSpread => {
-                let arr = self.pop();
-                let args = self.array_values(&arr)?;
-                let r = self.super_call(args)?;
-                self.push(r);
-            }
-            Op::SuperCallForward => {
-                let args = self.top().args.clone();
-                let r = self.super_call(args)?;
-                self.push(r);
-            }
-            Op::SuperRef => {
-                let k = self.pop();
-                let r = self.super_ref(k)?;
-                self.push(r);
-            }
-            Op::SuperGet => {
-                let k = self.pop();
-                let this = self.pop();
-                let v = self.super_get(this, &k)?;
-                self.push(v);
-            }
-            Op::SuperSet => {
-                let v = self.pop();
-                let k = self.pop();
-                let this = self.pop();
-                self.super_set(this, &k, v.clone())?;
-                self.push(v);
-            }
-            Op::PrivateGet => {
-                let n = self.pop();
-                let o = self.pop();
-                let v = self.private_get(&o, &n)?;
-                self.push(v);
-            }
-            Op::PrivateSet => {
-                let v = self.pop();
-                let n = self.pop();
-                let o = self.pop();
-                self.private_set(&o, &n, v.clone())?;
-                self.push(v);
-            }
-            Op::PrivateIn => {
-                let o = self.pop();
-                let n = self.pop();
-                let r = self.private_in(&n, &o)?;
-                self.push(Value::Bool(r));
-            }
-            Op::Nop => {}
         }
-        Ok(None)
     }
 
     fn op_call(&mut self, f: Value, this: Value, args: Vec<Value>) -> JsResult<Option<Value>> {
@@ -2073,7 +2213,7 @@ impl Vm {
         let lex = self.heap.alloc_env(Env {
             outer: Some(env),
             kind: EnvKind::Declarative,
-            bindings: HashMap::default(),
+            bindings: Default::default(),
         });
         let var = if prog.strict { lex } else { var_env };
         if self.frames.len() >= MAX_FRAMES {
@@ -2100,7 +2240,7 @@ impl Vm {
         let lex = self.heap.alloc_env(Env {
             outer: Some(genv),
             kind: EnvKind::Declarative,
-            bindings: HashMap::default(),
+            bindings: Default::default(),
         });
         let var = if prog.strict { lex } else { genv };
         let frame = self.frame(code, lex, var);

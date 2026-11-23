@@ -230,10 +230,7 @@ impl Vm {
             if sa.len() + sb.len() > super::value::MAX_STRING_LEN {
                 return self.range_error("Invalid string length");
             }
-            let mut v = Vec::with_capacity(sa.len() + sb.len());
-            v.extend_from_slice(&sa);
-            v.extend_from_slice(&sb);
-            return Ok(Value::String(v.into()));
+            return Ok(Value::String(super::value::JsString::concat(&sa, &sb)));
         }
         let x = self.to_numeric(&pa)?;
         let y = self.to_numeric(&pb)?;

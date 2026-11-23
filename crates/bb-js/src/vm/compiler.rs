@@ -2,7 +2,7 @@
 //! dynamically, which `with` and sloppy direct `eval` require); the compiler emits the
 //! declaration instantiation steps (§10.2.11, §14.2.3, §16.1.7) as instructions.
 
-use super::code::{Code, Decls, FuncTemplate, ImportEntry, ModuleInfo, Op};
+use super::code::{Code, Decls, FuncTemplate, ImportEntry, ModuleInfo, Op, ScopeInfo, NO_SLOT};
 use super::value::{js_str, JsString, PropKey};
 use crate::ast::*;
 use std::cell::OnceCell;
@@ -17,7 +17,9 @@ enum BreakKind {
 }
 
 enum Ctl<'a> {
-    Scope,
+    /// A lexical scope (an environment pushed by PushScope or PushWith), with what the
+    /// compiler knows of its bindings.
+    Scope(Rc<ScopeInfo>),
     Handler,
     Finally(&'a [Stmt]),
     /// Values on the stack (for-in iterators) to pop when jumping out.
@@ -62,6 +64,14 @@ pub struct Compiler<'a> {
     referrer: Option<Rc<str>>,
     /// Inside `with` or code with a direct eval: resolve assignment references once.
     dynamic: bool,
+    /// Function-level static scopes, outermost first: the function's environment (or the
+    /// script's, module's, eval's), the parameter-expression var scope, the sloppy
+    /// lexical scope. Block scopes live in `ctl`.
+    fn_scopes: Vec<Rc<ScopeInfo>>,
+    /// Where `var` declarations go.
+    var_scope: Option<Rc<ScopeInfo>>,
+    /// Identifiers may be resolved to slots (not in eval code or dynamic code).
+    resolving: bool,
     /// A destructuring target identifier already resolved (`ResolveVar`) before its value
     /// was read: `bind` puts to that reference (KeyedBindingInitialization step 2).
     pre_resolved: Option<&'a str>,
@@ -100,6 +110,9 @@ impl<'a> Compiler<'a> {
             dynamic: false,
             stable: HashSet::new(),
             pre_resolved: None,
+            fn_scopes: Vec::new(),
+            var_scope: None,
+            resolving: false,
             in_with: false,
             max_target: 0,
         }
@@ -108,8 +121,73 @@ impl<'a> Compiler<'a> {
     // ---- emitting ----
 
     fn emit(&mut self, op: Op) -> usize {
+        let slot = match op {
+            Op::DeclareLet(i) | Op::DeclareConst(i) | Op::DeclareCatch(i) | Op::InitBinding(i) => {
+                if let Some(sc) = self.cur_scope() {
+                    sc.add(&self.code.names[i as usize]);
+                }
+                NO_SLOT
+            }
+            Op::DeclareVar(i) | Op::SetVarEnv(i) => {
+                if let Some(sc) = &self.var_scope {
+                    sc.add(&self.code.names[i as usize]);
+                }
+                NO_SLOT
+            }
+            Op::GetVar(i) | Op::SetVar(i) | Op::SetVarPop(i) | Op::UpdateVar(i, _) | Op::GetVarThis(i) => {
+                self.resolve_slot(i)
+            }
+            _ => NO_SLOT,
+        };
         self.code.ops.push(op);
+        self.code.slots.push(slot);
+        self.code.ic.push(std::cell::Cell::new(u32::MAX));
         self.code.ops.len() - 1
+    }
+
+    /// The innermost static scope at this point of the code.
+    fn cur_scope(&self) -> Option<Rc<ScopeInfo>> {
+        for c in self.ctl.iter().rev() {
+            if let Ctl::Scope(sc) = c {
+                return Some(sc.clone());
+            }
+        }
+        self.fn_scopes.last().cloned()
+    }
+
+    /// Open a lexical scope (after emitting PushScope or PushWith).
+    fn push_scope_ctl(&mut self, dynamic: bool) {
+        let sc = ScopeInfo::child(self.cur_scope(), dynamic);
+        self.ctl.push(Ctl::Scope(sc));
+    }
+
+    /// Push a function-level scope (after the op that creates its environment, if any).
+    fn push_fn_scope(&mut self, dynamic: bool) -> Rc<ScopeInfo> {
+        let sc = ScopeInfo::child(self.cur_scope(), dynamic);
+        self.fn_scopes.push(sc.clone());
+        sc
+    }
+
+    /// The static resolution of `names[i]` here: `hops << 16 | slot`, or NO_SLOT when it
+    /// can't be resolved statically (a dynamic scope is in the way, or it is global).
+    fn resolve_slot(&self, i: u32) -> u32 {
+        if !self.resolving || self.dynamic {
+            return NO_SLOT;
+        }
+        let name = &self.code.names[i as usize];
+        let mut cur = self.cur_scope();
+        let mut hops = 0u32;
+        while let Some(sc) = cur {
+            if sc.dynamic {
+                return NO_SLOT;
+            }
+            if let Some(k) = sc.names.borrow().iter().position(|x| **x == **name) {
+                return if hops < 0xFFFF && k < 0xFFFF { hops << 16 | k as u32 } else { NO_SLOT };
+            }
+            cur = sc.parent.clone();
+            hops += 1;
+        }
+        NO_SLOT
     }
     fn here(&self) -> u32 {
         self.code.ops.len() as u32
@@ -192,10 +270,25 @@ impl<'a> Compiler<'a> {
             default_ctor: false,
             text_span: None,
             dynamic: self.in_with,
+            scope: self.closure_scope(f, is_expression),
         };
         self.code.funcs.push(Rc::new(t));
         self.code.funcs.len() as u32 - 1
     }
+    /// The static scope a closure made here captures: the current one, and for a named
+    /// function expression the scope of its own name (§15.2.5).
+    fn closure_scope(&self, f: &Rc<Function>, is_expression: bool) -> Option<Rc<ScopeInfo>> {
+        let cur = self.cur_scope();
+        match (&f.name, is_expression) {
+            (Some(n), true) => {
+                let sc = ScopeInfo::child(cur, false);
+                sc.add(&Rc::from(n.as_str()));
+                Some(sc)
+            }
+            _ => cur,
+        }
+    }
+
     /// A closure; `name` is SetFunctionName for anonymous functions in named positions
     /// (§8.4.5 NamedEvaluation).
     fn closure(&mut self, f: &Rc<Function>, is_expression: bool, name: Option<&str>) {
@@ -217,6 +310,11 @@ impl<'a> Compiler<'a> {
         let dynamic = !prog.strict && (is_eval || has_eval);
         let mut c = Compiler::new(source, prog.strict, true);
         c.dynamic = dynamic;
+        // The global environment (or eval's): bindings may appear at any time.
+        let root = ScopeInfo::child(None, true);
+        c.fn_scopes.push(root.clone());
+        c.var_scope = Some(root);
+        c.resolving = !is_eval;
         // Eval code may itself be inside `with`, and so its functions.
         c.in_with = !prog.strict && is_eval;
         c.referrer = referrer.clone();
@@ -286,6 +384,12 @@ impl<'a> Compiler<'a> {
         let mut c = Compiler::new(source, true, false);
         c.referrer = referrer.clone();
         c.code.referrer = referrer;
+        // The module environment (its names are filled in link order below), inside the
+        // global one; imports aren't bindings of it and resolve by name.
+        let msc = ScopeInfo::child(Some(ScopeInfo::child(None, true)), false);
+        c.fn_scopes.push(msc.clone());
+        c.var_scope = Some(msc.clone());
+        c.resolving = true;
         let body = &prog.body;
         let mut info = ModuleInfo::default();
         let mut decls = Decls::default();
@@ -449,6 +553,24 @@ impl<'a> Compiler<'a> {
             }
         }
         info.has_tla = body.iter().any(stmt_has_await);
+        // The module environment's bindings in InitializeEnvironment's order: namespace and
+        // source imports, vars, lexical declarations, functions (a named import that turns
+        // out to be a namespace re-export shifts them; the run-time check catches that).
+        for ie in &info.imports {
+            let source =
+                ie.import_name.as_ref().is_some_and(|n| n.iter().copied().eq("*source*".encode_utf16()));
+            if ie.import_name.is_none() || source {
+                msc.add(&ie.local);
+            }
+        }
+        for v in decls
+            .vars
+            .iter()
+            .chain(decls.lexical.iter().map(|l| &l.0))
+            .chain(decls.functions.iter().map(|f| &f.0))
+        {
+            msc.add(v);
+        }
         c.code.decls = decls;
         c.code.module = Some(Box::new(info));
         if c.code.module.as_ref().is_some_and(|m| m.has_tla) {
@@ -467,9 +589,15 @@ impl<'a> Compiler<'a> {
         let f = &t.ast;
         let mut c = Compiler::new(t.source.clone(), f.strict, false);
         c.in_with = t.dynamic;
-        c.dynamic = t.dynamic || (!f.strict && t.source_text().contains("eval"));
+        let sloppy_eval = !f.strict && t.source_text().contains("eval");
+        c.dynamic = t.dynamic || sloppy_eval;
         c.referrer = t.referrer.clone();
         c.code.referrer = t.referrer.clone();
+        // The function's own environment (enter_closure makes it), below the captured one.
+        let fsc = ScopeInfo::child(t.scope.clone(), sloppy_eval);
+        c.fn_scopes.push(fsc.clone());
+        c.var_scope = Some(fsc);
+        c.resolving = !c.dynamic;
         let is_arrow = f.kind == FuncKind::Arrow;
         c.async_gen = f.is_async && f.is_generator;
         if f.is_async && !f.is_generator {
@@ -517,7 +645,13 @@ impl<'a> Compiler<'a> {
         let funcs = top_functions(&f.body);
         let fnames: HashSet<String> = funcs.iter().filter_map(|f| f.name.clone()).collect();
         let lex_names: HashSet<String> = lex.iter().map(|l| l.0.clone()).collect();
+        // The arguments object only exists if something can see it: the name (perhaps
+        // escaped) or a direct eval in the function's text (nested arrows share it).
+        let text: String =
+            t.source.get(f.span.0..f.span.1.min(t.source.len())).unwrap_or(&[]).iter().collect();
+        let mentions_arguments = text.contains("arguments") || text.contains("eval") || text.contains('\\');
         let arguments_needed = !is_arrow
+            && mentions_arguments
             && f.kind != FuncKind::ClassField
             && !param_names.iter().any(|n| n == "arguments")
             && (has_param_exprs || (!fnames.contains("arguments") && !lex_names.contains("arguments")));
@@ -598,6 +732,8 @@ impl<'a> Compiler<'a> {
                 }
             }
             c.emit(Op::PushVarScope);
+            let vsc = c.push_fn_scope(sloppy_eval);
+            c.var_scope = Some(vsc);
             for v in copy.iter().rev() {
                 let i = c.name(v);
                 c.emit(Op::DeclareVar(i));
@@ -629,6 +765,7 @@ impl<'a> Compiler<'a> {
         }
         if !f.strict {
             c.emit(Op::PushScope);
+            c.push_fn_scope(false);
         }
         for (n, is_const) in &lex {
             let i = c.name(n);
@@ -654,6 +791,7 @@ impl<'a> Compiler<'a> {
         c.stmts(&f.body);
         c.emit(Op::Undef);
         c.emit(Op::Ret);
+        c.code.env_size = c.fn_scopes.first().map_or(0, |s| s.names.borrow().len() as u32);
         // Strict, non-async, non-generator function code has tail calls (§15.10.1).
         if f.strict && !f.is_async && !f.is_generator && f.kind != FuncKind::ClassField {
             mark_tail_calls(&mut c.code.ops);
@@ -679,7 +817,7 @@ impl<'a> Compiler<'a> {
             return false;
         }
         self.emit(Op::PushScope);
-        self.ctl.push(Ctl::Scope);
+        self.push_scope_ctl(false);
         for (n, is_const) in &lex {
             let i = self.name(n);
             self.emit(if *is_const { Op::DeclareConst(i) } else { Op::DeclareLet(i) });
@@ -870,7 +1008,7 @@ impl<'a> Compiler<'a> {
                 self.set_completion_undefined();
                 self.expr(o);
                 self.emit(Op::PushWith);
-                self.ctl.push(Ctl::Scope);
+                self.push_scope_ctl(true);
                 let dynamic = std::mem::replace(&mut self.dynamic, true);
                 let in_with = std::mem::replace(&mut self.in_with, true);
                 self.stmt(body);
@@ -1074,7 +1212,7 @@ impl<'a> Compiler<'a> {
         while i > depth {
             i -= 1;
             match &self.ctl[i] {
-                Ctl::Scope => {
+                Ctl::Scope(_) => {
                     self.emit(Op::PopScope);
                 }
                 Ctl::Handler => {
@@ -1198,7 +1336,7 @@ impl<'a> Compiler<'a> {
                         decls,
                     )) => {
                         self.emit(Op::PushScope);
-                        self.ctl.push(Ctl::Scope);
+                        self.push_scope_ctl(false);
                         scoped = true;
                         // Per-iteration copies are only observable through closures or eval
                         // in the loop (§14.7.4.4); skip them otherwise.
@@ -1353,11 +1491,13 @@ impl<'a> Compiler<'a> {
             let mut names = Vec::new();
             pat_names(p, &mut names);
             self.emit(Op::PushScope);
+            self.push_scope_ctl(false);
             for n in &names {
                 let i = self.name(n);
                 self.emit(if *k == VarKind::Let { Op::DeclareLet(i) } else { Op::DeclareConst(i) });
             }
             self.expr(right);
+            self.ctl.pop();
             self.emit(Op::PopScope);
         } else {
             self.expr(right);
@@ -1372,7 +1512,7 @@ impl<'a> Compiler<'a> {
                 let mut names = Vec::new();
                 pat_names(p, &mut names);
                 self.emit(Op::PushScope);
-                self.ctl.push(Ctl::Scope);
+                self.push_scope_ctl(false);
                 for n in &names {
                     let i = self.name(n);
                     self.emit(if *k == VarKind::Const { Op::DeclareConst(i) } else { Op::DeclareLet(i) });
@@ -1385,7 +1525,7 @@ impl<'a> Compiler<'a> {
                 let mut names = Vec::new();
                 pat_names(p, &mut names);
                 self.emit(Op::PushScope);
-                self.ctl.push(Ctl::Scope);
+                self.push_scope_ctl(false);
                 for n in &names {
                     let i = self.name(n);
                     self.emit(Op::DeclareConst(i));
@@ -1447,7 +1587,7 @@ impl<'a> Compiler<'a> {
                     let mut names = Vec::new();
                     pat_names(p, &mut names);
                     self.emit(Op::PushScope);
-                    self.ctl.push(Ctl::Scope);
+                    self.push_scope_ctl(false);
                     let simple = matches!(p, Pat::Ident(_));
                     for n in &names {
                         let i = self.name(n);
@@ -1522,7 +1662,7 @@ impl<'a> Compiler<'a> {
         let scoped = !lex.is_empty() || !funcs.is_empty();
         if scoped {
             self.emit(Op::PushScope);
-            self.ctl.push(Ctl::Scope);
+            self.push_scope_ctl(false);
             for (n, is_const) in &lex {
                 let i = self.name(n);
                 self.emit(if *is_const { Op::DeclareConst(i) } else { Op::DeclareLet(i) });
@@ -2819,7 +2959,7 @@ impl<'a> Compiler<'a> {
             self.decorator_list(&c.decorators);
         }
         self.emit(Op::PushScope);
-        self.ctl.push(Ctl::Scope);
+        self.push_scope_ctl(false);
         if let Some(n) = &c.name {
             let i = self.name(n);
             self.emit(Op::DeclareConst(i));
@@ -2872,6 +3012,7 @@ impl<'a> Compiler<'a> {
             default_ctor: c.constructor.is_none(),
             text_span: Some(c.span),
             dynamic: self.in_with,
+            scope: self.cur_scope(),
         };
         self.code.funcs.push(Rc::new(t));
         let ti = self.code.funcs.len() as u32 - 1;

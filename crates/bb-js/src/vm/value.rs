@@ -6,7 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 /// A JavaScript string: UTF-16 code units, possibly with lone surrogates (§6.1.4).
-pub type JsString = Rc<[u16]>;
+pub use super::jsstring::JsString;
 
 /// The longest string we build (code units); longer ones are a RangeError.
 pub const MAX_STRING_LEN: usize = 1 << 28;
@@ -137,6 +137,17 @@ pub enum PropKey {
 }
 
 impl PropKey {
+    /// Equality with a pointer shortcut for string keys from the same code.
+    #[inline]
+    pub fn same(&self, o: &PropKey) -> bool {
+        match (self, o) {
+            (PropKey::Str(a), PropKey::Str(b)) => JsString::ptr_eq(a, b) || a == b,
+            (PropKey::Index(a), PropKey::Index(b)) => a == b,
+            (PropKey::Sym(a), PropKey::Sym(b)) => a == b,
+            _ => false,
+        }
+    }
+
     pub fn from_js(s: JsString) -> PropKey {
         match array_index(&s) {
             Some(i) => PropKey::Index(i),

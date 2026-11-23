@@ -40,40 +40,142 @@ impl Prop {
 }
 
 /// Property storage keeping insertion order (§10.1.11.1 OrdinaryOwnPropertyKeys).
+///
+/// Integer indices from 0 up are kept densely (`dense[i]`, holes are `None`): array
+/// elements don't go through the hash table. Every index in `map` is at least
+/// `dense.len()`, so indices still come out in ascending order.
 #[derive(Default, Debug, Clone)]
 pub struct Props {
     map: HashMap<PropKey, usize>,
     entries: Vec<Option<(PropKey, Prop)>>,
+    /// How many keys in `map` are integer indices: lookups of an index on an object
+    /// without any (most prototypes) skip the hash table.
+    indices: u32,
+    dense: Vec<Option<Prop>>,
+    dense_count: u32,
 }
 
 impl Props {
+    #[inline]
+    fn absent(&self, k: &PropKey) -> bool {
+        matches!(k, PropKey::Index(_)) && self.indices == 0
+    }
     pub fn get(&self, k: &PropKey) -> Option<&Prop> {
+        if let PropKey::Index(i) = k {
+            if let Some(d) = self.dense.get(*i as usize) {
+                return d.as_ref();
+            }
+        }
+        if self.absent(k) {
+            return None;
+        }
         self.map.get(k).and_then(|&i| self.entries[i].as_ref().map(|e| &e.1))
     }
     pub fn get_mut(&mut self, k: &PropKey) -> Option<&mut Prop> {
+        if let PropKey::Index(i) = k {
+            if (*i as usize) < self.dense.len() {
+                return self.dense[*i as usize].as_mut();
+            }
+        }
+        if self.absent(k) {
+            return None;
+        }
         match self.map.get(k) {
             Some(&i) => self.entries[i].as_mut().map(|e| &mut e.1),
             None => None,
         }
     }
     pub fn contains(&self, k: &PropKey) -> bool {
-        self.map.contains_key(k)
+        self.get(k).is_some()
+    }
+    /// The entry index of a named key (stable until the property is deleted; for inline
+    /// caches). Dense indices have none.
+    pub fn index_of(&self, k: &PropKey) -> Option<usize> {
+        if matches!(k, PropKey::Index(_)) {
+            return None;
+        }
+        self.map.get(k).copied()
+    }
+    /// The property at entry `i` if its key is `k` (an inline cache's guess, verified).
+    #[inline]
+    pub fn at(&self, i: usize, k: &PropKey) -> Option<&Prop> {
+        match self.entries.get(i) {
+            Some(Some((key, p))) if key.same(k) => Some(p),
+            _ => None,
+        }
+    }
+    #[inline]
+    pub fn at_mut(&mut self, i: usize, k: &PropKey) -> Option<&mut Prop> {
+        match self.entries.get_mut(i) {
+            Some(Some((key, p))) if key.same(k) => Some(p),
+            _ => None,
+        }
     }
     pub fn insert(&mut self, k: PropKey, p: Prop) {
+        if let PropKey::Index(i) = k {
+            let i = i as usize;
+            if i < self.dense.len() {
+                if self.dense[i].is_none() {
+                    self.dense_count += 1;
+                }
+                self.dense[i] = Some(p);
+                return;
+            }
+            if i == self.dense.len() {
+                // Next to the dense run (never in `map`, which holds only higher indices);
+                // map indices that now follow move over too.
+                self.dense.push(Some(p));
+                self.dense_count += 1;
+                while self.indices > 0 {
+                    let next = PropKey::Index(self.dense.len() as u32);
+                    match self.remove_from_map(&next) {
+                        Some(q) => {
+                            self.dense.push(Some(q));
+                            self.dense_count += 1;
+                        }
+                        None => break,
+                    }
+                }
+                return;
+            }
+        }
         if let Some(&i) = self.map.get(&k) {
             self.entries[i] = Some((k, p));
         } else {
+            if matches!(k, PropKey::Index(_)) {
+                self.indices += 1;
+            }
             self.map.insert(k.clone(), self.entries.len());
             self.entries.push(Some((k, p)));
         }
     }
-    pub fn remove(&mut self, k: &PropKey) -> Option<Prop> {
+    fn remove_from_map(&mut self, k: &PropKey) -> Option<Prop> {
         let i = self.map.remove(k)?;
+        if matches!(k, PropKey::Index(_)) {
+            self.indices -= 1;
+        }
         let e = self.entries[i].take();
         if self.entries.len() > 16 && self.map.len() * 2 < self.entries.len() {
             self.compact();
         }
         e.map(|e| e.1)
+    }
+    pub fn remove(&mut self, k: &PropKey) -> Option<Prop> {
+        if let PropKey::Index(i) = k {
+            let i = *i as usize;
+            if i < self.dense.len() {
+                let p = self.dense[i].take();
+                if p.is_some() {
+                    self.dense_count -= 1;
+                }
+                // Trailing holes go away (keeps `dense.len()` meaning "length so far").
+                while matches!(self.dense.last(), Some(None)) {
+                    self.dense.pop();
+                }
+                return p;
+            }
+        }
+        self.remove_from_map(k)
     }
     fn compact(&mut self) {
         self.entries.retain(|e| e.is_some());
@@ -85,13 +187,19 @@ impl Props {
         }
     }
     pub fn len(&self) -> usize {
-        self.map.len()
+        self.map.len() + self.dense_count as usize
     }
     pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
+        self.len() == 0
     }
     /// Integer indices ascending, then strings, then symbols, each in creation order.
     pub fn keys(&self) -> Vec<PropKey> {
+        let mut out: Vec<PropKey> = Vec::with_capacity(self.len());
+        for (i, d) in self.dense.iter().enumerate() {
+            if d.is_some() {
+                out.push(PropKey::Index(i as u32));
+            }
+        }
         let mut idx: Vec<u32> = Vec::new();
         let mut strs = Vec::new();
         let mut syms = Vec::new();
@@ -103,25 +211,25 @@ impl Props {
             }
         }
         idx.sort_unstable();
-        let mut out: Vec<PropKey> = idx.into_iter().map(PropKey::Index).collect();
+        out.extend(idx.into_iter().map(PropKey::Index));
         out.extend(strs);
         out.extend(syms);
         out
     }
     pub fn index_keys(&self) -> Vec<u32> {
-        self.map
-            .keys()
-            .filter_map(|k| match k {
-                PropKey::Index(i) => Some(*i),
-                _ => None,
-            })
-            .collect()
+        let mut out: Vec<u32> =
+            self.dense.iter().enumerate().filter(|(_, d)| d.is_some()).map(|(i, _)| i as u32).collect();
+        out.extend(self.map.keys().filter_map(|k| match k {
+            PropKey::Index(i) => Some(*i),
+            _ => None,
+        }));
+        out
     }
     pub fn values(&self) -> impl Iterator<Item = &Prop> {
-        self.entries.iter().flatten().map(|e| &e.1)
+        self.dense.iter().flatten().chain(self.entries.iter().flatten().map(|e| &e.1))
     }
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Prop> {
-        self.entries.iter_mut().flatten().map(|e| &mut e.1)
+        self.dense.iter_mut().flatten().chain(self.entries.iter_mut().flatten().map(|e| &mut e.1))
     }
 }
 
@@ -595,7 +703,115 @@ pub enum EnvKind {
 pub struct Env {
     pub outer: Option<EnvRef>,
     pub kind: EnvKind,
-    pub bindings: HashMap<Rc<str>, Binding>,
+    pub bindings: Bindings,
+}
+
+/// The bindings of an Environment Record by name. Scopes are mostly small: a vector,
+/// searched comparing the name's pointer first (code refers to names through the same
+/// interned `Rc<str>` that declared them); large scopes (global, module) add an index.
+#[derive(Clone, Default)]
+pub struct Bindings {
+    list: Vec<(Rc<str>, Binding)>,
+    index: Option<HashMap<Rc<str>, usize>>,
+}
+
+const INDEX_AT: usize = 12;
+
+impl Bindings {
+    /// Room for `n` bindings (a function environment's known names).
+    pub fn with_capacity(n: usize) -> Bindings {
+        Bindings { list: Vec::with_capacity(n.min(INDEX_AT)), index: None }
+    }
+
+    fn find(&self, n: &str) -> Option<usize> {
+        if let Some(ix) = &self.index {
+            return ix.get(n).copied();
+        }
+        let p = n.as_ptr();
+        self.list.iter().position(|(k, _)| (k.as_ptr() == p && k.len() == n.len()) || **k == *n)
+    }
+
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.list.is_empty()
+    }
+
+    pub fn contains_key(&self, n: &str) -> bool {
+        self.find(n).is_some()
+    }
+
+    pub fn get(&self, n: &str) -> Option<&Binding> {
+        self.find(n).map(|i| &self.list[i].1)
+    }
+
+    pub fn get_mut(&mut self, n: &str) -> Option<&mut Binding> {
+        self.find(n).map(|i| &mut self.list[i].1)
+    }
+
+    /// Insert or replace; the previous binding if there was one.
+    pub fn insert(&mut self, n: Rc<str>, b: Binding) -> Option<Binding> {
+        if let Some(i) = self.find(&n) {
+            return Some(std::mem::replace(&mut self.list[i].1, b));
+        }
+        self.push(n, b);
+        None
+    }
+
+    fn push(&mut self, n: Rc<str>, b: Binding) {
+        if let Some(ix) = &mut self.index {
+            ix.insert(n.clone(), self.list.len());
+        }
+        self.list.push((n, b));
+        if self.index.is_none() && self.list.len() > INDEX_AT {
+            self.index = Some(self.list.iter().enumerate().map(|(i, (k, _))| (k.clone(), i)).collect());
+        }
+    }
+
+    /// The binding for `n`, inserted as `b` when there is none.
+    pub fn get_or_insert(&mut self, n: Rc<str>, b: Binding) -> &mut Binding {
+        let i = match self.find(&n) {
+            Some(i) => i,
+            None => {
+                self.push(n, b);
+                self.list.len() - 1
+            }
+        };
+        &mut self.list[i].1
+    }
+
+    pub fn remove(&mut self, n: &str) -> Option<Binding> {
+        let i = self.find(n)?;
+        let (k, b) = self.list.swap_remove(i);
+        if let Some(ix) = &mut self.index {
+            ix.remove(&*k);
+            if let Some((moved, _)) = self.list.get(i) {
+                ix.insert(moved.clone(), i);
+            }
+        }
+        Some(b)
+    }
+
+    /// The binding at position `k` if it is `n`'s (pointer or text match).
+    pub fn at(&self, k: usize, n: &str) -> Option<&Binding> {
+        let (key, b) = self.list.get(k)?;
+        ((key.as_ptr() == n.as_ptr() && key.len() == n.len()) || **key == *n).then_some(b)
+    }
+
+    pub fn at_mut(&mut self, k: usize, n: &str) -> Option<&mut Binding> {
+        let (key, b) = self.list.get_mut(k)?;
+        ((key.as_ptr() == n.as_ptr() && key.len() == n.len()) || **key == *n).then_some(b)
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &Rc<str>> {
+        self.list.iter().map(|(k, _)| k)
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &Binding> {
+        self.list.iter().map(|(_, b)| b)
+    }
 }
 
 #[derive(Default)]

@@ -479,12 +479,10 @@ impl Vm {
         let code = self.modules[id].code.clone();
         let d = &code.decls;
         for v in &d.vars {
-            self.heap.env_mut(env).bindings.entry(v.clone()).or_insert(Binding {
-                value: Some(Value::Undefined),
-                mutable: true,
-                strict: false,
-                deletable: false,
-            });
+            self.heap.env_mut(env).bindings.get_or_insert(
+                v.clone(),
+                Binding { value: Some(Value::Undefined), mutable: true, strict: false, deletable: false },
+            );
         }
         for (n, is_const) in &d.lexical {
             self.heap.env_mut(env).bindings.insert(

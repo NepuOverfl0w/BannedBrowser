@@ -372,6 +372,30 @@ impl Vm {
     pub fn get_with_receiver(&mut self, o: ObjRef, k: &PropKey, receiver: Value) -> JsResult<Value> {
         self.burn()?;
         let mut cur = o;
+        // Ordinary objects up the chain are read directly (no descriptors); the general
+        // loop below takes over at the first exotic one.
+        loop {
+            let obj = self.heap.obj(cur);
+            if !ordinary_get_own(&obj.kind) {
+                break;
+            }
+            match obj.props.get(k) {
+                Some(p) => {
+                    return match &p.slot {
+                        Slot::Data(v) => Ok(v.clone()),
+                        Slot::Accessor(Some(g), _) => {
+                            let g = *g;
+                            self.call(&Value::Object(g), receiver, Vec::new())
+                        }
+                        Slot::Accessor(None, _) => Ok(Value::Undefined),
+                    };
+                }
+                None => match obj.proto {
+                    Some(p) => cur = p,
+                    None => return Ok(Value::Undefined),
+                },
+            }
+        }
         loop {
             if self.is_proxy(cur) {
                 return self.proxy_get(cur, k, receiver);
@@ -402,6 +426,83 @@ impl Vm {
 
     /// [[Set]] (§10.1.9 OrdinarySet).
     pub fn set(&mut self, o: ObjRef, k: PropKey, v: Value, receiver: Value) -> JsResult<bool> {
+        if matches!(receiver, Value::Object(r) if r == o) {
+            match self.ordinary_set_fast(o, &k, v) {
+                Ok(done) => return Ok(done),
+                Err(back) => return self.set_general(o, k, back, receiver),
+            }
+        }
+        self.set_general(o, k, v, receiver)
+    }
+
+    /// OrdinarySet with the object as receiver, when every object involved is ordinary:
+    /// an own writable data property is written, and a key no object in the chain has is
+    /// added (an array index past the length extends it). `Err(v)` hands the value back
+    /// for the general algorithm (accessors, read-only, exotic objects, `length`).
+    fn ordinary_set_fast(&mut self, o: ObjRef, k: &PropKey, v: Value) -> Result<bool, Value> {
+        let obj = self.heap.obj(o);
+        if !ordinary_get_own(&obj.kind) {
+            return Err(v);
+        }
+        let is_array = matches!(obj.kind, Kind::Array);
+        if let Some(p) = obj.props.get(k) {
+            if !p.writable || !matches!(p.slot, Slot::Data(_)) {
+                return Err(v);
+            }
+            if is_array && k.is_str("length") {
+                // ArraySetLength (§10.4.2.4) without deletions: an integer length that
+                // doesn't shrink the array.
+                let ok = match (&p.slot, &v) {
+                    (Slot::Data(Value::Number(cur)), Value::Number(n)) => {
+                        *n >= *cur && *n <= u32::MAX as f64 && n.fract() == 0.0
+                    }
+                    _ => false,
+                };
+                if !ok {
+                    return Err(v);
+                }
+            }
+            if let Some(Prop { slot: Slot::Data(slot), .. }) = self.heap.obj_mut(o).props.get_mut(k) {
+                *slot = v;
+            }
+            return Ok(true);
+        }
+        if !obj.extensible {
+            return Err(v);
+        }
+        let mut cur = obj.proto;
+        while let Some(c) = cur {
+            let p = self.heap.obj(c);
+            if !ordinary_get_own(&p.kind) || p.props.get(k).is_some() {
+                return Err(v);
+            }
+            cur = p.proto;
+        }
+        // CreateDataProperty on an extensible object (§10.1.6.3; §10.4.2.1 for arrays).
+        let mut grow = None;
+        if is_array {
+            if let PropKey::Index(i) = k {
+                match self.heap.obj(o).props.get(&PropKey::lit("length")) {
+                    Some(Prop { slot: Slot::Data(Value::Number(n)), writable, .. }) => {
+                        if *i as f64 >= *n {
+                            if !*writable {
+                                return Err(v);
+                            }
+                            grow = Some(*i + 1);
+                        }
+                    }
+                    _ => return Err(v),
+                }
+            }
+        }
+        self.heap.obj_mut(o).props.insert(k.clone(), Prop::data(v, true, true, true));
+        if let Some(n) = grow {
+            self.set_array_length_raw(o, n);
+        }
+        Ok(true)
+    }
+
+    fn set_general(&mut self, o: ObjRef, k: PropKey, v: Value, receiver: Value) -> JsResult<bool> {
         let mut cur = o;
         let own = loop {
             if self.is_proxy(cur) {
@@ -564,26 +665,23 @@ impl Vm {
     }
 
     pub fn create_data_property_or_throw(&mut self, o: ObjRef, k: PropKey, v: Value) -> JsResult<()> {
-        let d = k.display();
-        if !self.create_data_property(o, k, v)? {
-            return self.type_error(&format!("Cannot define property '{d}'"));
+        if !self.create_data_property(o, k.clone(), v)? {
+            return self.type_error(&format!("Cannot define property '{}'", k.display()));
         }
         Ok(())
     }
 
     pub fn define_own_property_or_throw(&mut self, o: ObjRef, k: PropKey, d: PropDesc) -> JsResult<()> {
-        let name = k.display();
-        if !self.define_own_property(o, k, d)? {
-            return self.type_error(&format!("Cannot redefine property: {name}"));
+        if !self.define_own_property(o, k.clone(), d)? {
+            return self.type_error(&format!("Cannot redefine property: {}", k.display()));
         }
         Ok(())
     }
 
     /// Set (§7.3.4) with `Throw` = true.
     pub fn set_or_throw(&mut self, o: ObjRef, k: PropKey, v: Value) -> JsResult<()> {
-        let name = k.display();
-        if !self.set(o, k, v, Value::Object(o))? {
-            return self.type_error(&format!("Cannot assign to read only property '{name}'"));
+        if !self.set(o, k.clone(), v, Value::Object(o))? {
+            return self.type_error(&format!("Cannot assign to read only property '{}'", k.display()));
         }
         Ok(())
     }
@@ -649,16 +747,15 @@ impl Vm {
 
     /// PutValue on a property reference (§6.2.5.6).
     pub fn put_value(&mut self, base: &Value, k: PropKey, v: Value) -> JsResult<()> {
-        let name = k.display();
         let ok = match base {
-            Value::Object(o) => self.set(*o, k, v, base.clone())?,
+            Value::Object(o) => self.set(*o, k.clone(), v, base.clone())?,
             _ => {
                 let o = self.to_object(base)?;
-                self.set(o, k, v, base.clone())?
+                self.set(o, k.clone(), v, base.clone())?
             }
         };
         if !ok && self.strict() {
-            return self.type_error(&format!("Cannot assign to read only property '{name}'"));
+            return self.type_error(&format!("Cannot assign to read only property '{}'", k.display()));
         }
         Ok(())
     }
@@ -979,4 +1076,17 @@ pub fn validate_and_apply(
         p.configurable = c;
     }
     true
+}
+
+/// Kinds whose [[GetOwnProperty]], [[DefineOwnProperty]] for non-`length` keys and
+/// [[GetPrototypeOf]] are ordinary (arrays included: only `length` is special for [[Set]]).
+pub(super) fn ordinary_get_own(k: &Kind) -> bool {
+    !matches!(
+        k,
+        Kind::Proxy(_)
+            | Kind::ModuleNamespace(..)
+            | Kind::TypedArray(_)
+            | Kind::MappedArguments(_)
+            | Kind::String(_)
+    )
 }

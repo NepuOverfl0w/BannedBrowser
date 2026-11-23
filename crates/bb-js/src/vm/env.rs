@@ -163,6 +163,41 @@ impl Vm {
         }
     }
 
+    /// The environment a static slot (`Code::slots`) points to from `env`.
+    #[inline]
+    fn slot_env(&self, env: EnvRef, slot: u32) -> Option<EnvRef> {
+        if slot == super::code::NO_SLOT {
+            return None;
+        }
+        let mut e = env;
+        for _ in 0..(slot >> 16) {
+            e = self.heap.env(e).outer?;
+        }
+        Some(e)
+    }
+
+    /// The value of an initialized binding at a static slot, when the binding there is
+    /// `name`'s; `None` sends the caller down the by-name path (TDZ errors included).
+    #[inline]
+    pub(super) fn read_slot(&self, env: EnvRef, slot: u32, name: &str) -> Option<Value> {
+        let e = self.slot_env(env, slot)?;
+        self.heap.env(e).bindings.at((slot & 0xFFFF) as usize, name)?.value.clone()
+    }
+
+    /// Write an initialized mutable binding at a static slot; `Err(v)` when the by-name
+    /// path must do it (constants, TDZ, a mismatch).
+    #[inline]
+    pub(super) fn write_slot(&mut self, env: EnvRef, slot: u32, name: &str, v: Value) -> Result<(), Value> {
+        let Some(e) = self.slot_env(env, slot) else { return Err(v) };
+        match self.heap.env_mut(e).bindings.at_mut((slot & 0xFFFF) as usize, name) {
+            Some(b) if b.mutable && b.value.is_some() => {
+                b.value = Some(v);
+                Ok(())
+            }
+            _ => Err(v),
+        }
+    }
+
     /// A data property found on an ordinary object or its ordinary prototypes, without side
     /// effects: `Some(Some(v))`, or `Some(None)` when no object in the chain has it. `None`
     /// when an accessor or an exotic object is in the way (the caller takes the spec path).
@@ -556,7 +591,7 @@ impl Vm {
                 }
                 if !matches!(self.heap.env(r).kind, EnvKind::Object { .. }) {
                     for n in &names {
-                        if let Some(b) = self.heap.env(r).bindings.get(*n) {
+                        if let Some(b) = self.heap.env(r).bindings.get(n) {
                             // B.3.4: a catch parameter may be redeclared by eval's var
                             // and function declarations; simple catch bindings are mutable
                             // and non-strict.
@@ -624,12 +659,10 @@ impl Vm {
                 self.create_global_var(var_env, n, true)?;
             } else {
                 let env = self.heap.env_mut(var_env);
-                env.bindings.entry(n.clone()).or_insert(Binding {
-                    value: Some(Value::Undefined),
-                    mutable: true,
-                    strict: false,
-                    deletable: true,
-                });
+                env.bindings.get_or_insert(
+                    n.clone(),
+                    Binding { value: Some(Value::Undefined), mutable: true, strict: false, deletable: true },
+                );
             }
         }
         let _ = ErrorKind::Syntax;

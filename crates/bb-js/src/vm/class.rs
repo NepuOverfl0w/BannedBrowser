@@ -791,12 +791,11 @@ impl Vm {
 
     pub(super) fn super_set(&mut self, this: Value, r: &Value, v: Value) -> JsResult<()> {
         let (base, k) = self.super_parts(r)?;
-        let name = k.display();
         let Some(b) = base else {
-            return self.type_error(&format!("Cannot set properties of null (setting '{name}')"));
+            return self.type_error(&format!("Cannot set properties of null (setting '{}')", k.display()));
         };
-        if !self.set(b, k, v, this)? && self.strict() {
-            return self.type_error(&format!("Cannot assign to read only property '{name}'"));
+        if !self.set(b, k.clone(), v, this)? && self.strict() {
+            return self.type_error(&format!("Cannot assign to read only property '{}'", k.display()));
         }
         Ok(())
     }
