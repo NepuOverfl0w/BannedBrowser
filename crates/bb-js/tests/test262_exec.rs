@@ -8,7 +8,8 @@
 //! `$262.agent` runs each agent on its own thread with its own VM; SharedArrayBuffers
 //! share their Shared Data Block across them.
 //!
-//! Not supported yet, and failing for it: Temporal and more built-ins (see PROGRESS.md).
+//! Not supported yet, and failing for it: named time zones and non-ISO calendars (no time
+//! zone or CLDR data), decorators and a few more (see PROGRESS.md).
 //! `FLOOR` only ever goes up; the goal is all of it.
 //!
 //! `cargo test -p bb-js --test test262_exec -- --nocapture` prints the numbers; failures go to
@@ -24,7 +25,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 43_900;
+const FLOOR: usize = 48_290;
 
 /// Instructions per test variant before it counts as hung (TEST262_FUEL overrides it
 /// for experiments). The heaviest legitimate tests, the generated RegExp property-escape

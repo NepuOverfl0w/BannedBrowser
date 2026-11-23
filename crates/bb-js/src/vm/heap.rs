@@ -383,6 +383,8 @@ pub enum Kind {
     WeakRef(Value),
     /// (cleanup callback, registered (target, held, token) cells); callbacks never run.
     FinalizationRegistry(Value, Vec<(Value, Value, Value)>),
+    /// A self-hosted class's internal slots (Temporal): (brand, the slots' array).
+    Slots(u32, ObjRef),
     /// [[ShadowRealm]]: the realm's id.
     ShadowRealm(u32),
     /// JSON.rawJSON's result ([[IsRawJSON]]).
@@ -745,6 +747,7 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
         Kind::WeakRef(v) => push_val(v, os),
         Kind::MappedArguments(m) => es.push(m.env),
         Kind::DisposeCap(c) => c.trace(os),
+        Kind::Slots(_, a) => os.push(*a),
         Kind::DisposableStack(s) => s.cap.trace(os),
         Kind::TypedArray(t) => os.push(t.buffer),
         Kind::IterHelper(h) => h.trace(os),

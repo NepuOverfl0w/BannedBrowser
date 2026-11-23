@@ -18,17 +18,23 @@ use std::rc::Rc;
 /// The referrer of self-hosted code; `Function.prototype.toString` reports it as native.
 pub const MARK: &str = "\u{0}builtin";
 
-const SOURCE: &str = include_str!("selfhost.js");
+/// The self-hosted scripts, run in this order with the same helpers.
+const SOURCES: [&str; 2] = [include_str!("selfhost.js"), include_str!("temporal.js")];
 
-fn code() -> Option<Rc<Code>> {
+fn code() -> Vec<Rc<Code>> {
     thread_local! {
-        static CODE: OnceCell<Option<Rc<Code>>> = const { OnceCell::new() };
+        static CODE: OnceCell<Vec<Rc<Code>>> = const { OnceCell::new() };
     }
     CODE.with(|c| {
         c.get_or_init(|| {
-            let prog = crate::parse_script(SOURCE).ok()?;
-            let source: Rc<[char]> = SOURCE.chars().collect::<Vec<_>>().into();
-            Some(Rc::new(Compiler::compile_unit(Unit::Script(&prog), source, Some(MARK.into()))))
+            SOURCES
+                .iter()
+                .filter_map(|src| {
+                    let prog = crate::parse_script(src).ok()?;
+                    let source: Rc<[char]> = src.chars().collect::<Vec<_>>().into();
+                    Some(Rc::new(Compiler::compile_unit(Unit::Script(&prog), source, Some(MARK.into()))))
+                })
+                .collect()
         })
         .clone()
     })
@@ -47,8 +53,99 @@ fn helper(vm: &mut Vm, on: ObjRef, name: &str, f: NativeFn) {
 }
 
 pub(super) fn install(vm: &mut Vm) {
-    let Some(code) = code() else { return };
+    let codes = code();
+    debug_assert_eq!(codes.len(), SOURCES.len(), "a self-hosted script doesn't parse");
     let i = vm.heap.alloc(Object::new(None, Kind::Ordinary));
+    // Internal slots for self-hosted classes (Temporal): an array only the JavaScript sees.
+    helper(vm, i, "setSlots", |vm, c| {
+        let o = obj_arg(vm, &c, 0)?;
+        let brand = vm.to_number(&c.arg(1))? as u32;
+        let arr = obj_arg(vm, &c, 2)?;
+        let obj = vm.heap.obj_mut(o);
+        if !matches!(obj.kind, Kind::Ordinary) {
+            return vm.type_error("the object already has internal slots");
+        }
+        obj.kind = Kind::Slots(brand, arr);
+        Ok(Value::Undefined)
+    });
+    helper(vm, i, "slots", |vm, c| {
+        let brand = vm.to_number(&c.arg(1))? as u32;
+        if let Value::Object(o) = c.arg(0) {
+            if let Kind::Slots(b, arr) = vm.heap.obj(o).kind {
+                if b == brand {
+                    return Ok(Value::Object(arr));
+                }
+            }
+        }
+        let what = super::to_rust(&vm.to_string(&c.arg(2))?);
+        vm.type_error(&format!("the receiver is not a {what}"))
+    });
+    helper(vm, i, "brand", |vm, c| {
+        Ok(Value::Number(match c.arg(0) {
+            Value::Object(o) => match vm.heap.obj(o).kind {
+                Kind::Slots(b, _) => b as f64,
+                _ => -1.0,
+            },
+            _ => -1.0,
+        }))
+    });
+    helper(vm, i, "objectCreate", |vm, c| {
+        let proto = c.arg(0).as_object();
+        Ok(Value::Object(vm.heap.alloc(Object::new(proto, Kind::Ordinary))))
+    });
+    // defineValue(obj, key, value, writable, enumerable, configurable)
+    helper(vm, i, "defineValue", |vm, c| {
+        let o = obj_arg(vm, &c, 0)?;
+        let k = vm.to_property_key(&c.arg(1))?;
+        let p = Prop::data(c.arg(2), c.arg(3).truthy(), c.arg(4).truthy(), c.arg(5).truthy());
+        vm.heap.obj_mut(o).props.insert(k, p);
+        Ok(Value::Undefined)
+    });
+    helper(vm, i, "nowNs", |_, _| {
+        let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        use super::super::bigint::BigInt;
+        let ns = BigInt::from_u64(d.as_secs())
+            .mul(&BigInt::from_u64(1_000_000_000))
+            .add(&BigInt::from_u64(d.subsec_nanos() as u64));
+        Ok(Value::BigInt(Rc::new(ns)))
+    });
+    helper(vm, i, "codeUnit", |vm, c| {
+        let s = vm.to_string(&c.arg(0))?;
+        let k = vm.to_number(&c.arg(1))?;
+        Ok(match s.get(k as usize) {
+            Some(&u) if k >= 0.0 => Value::Number(u as f64),
+            _ => Value::Number(f64::NAN),
+        })
+    });
+    helper(vm, i, "substring", |vm, c| {
+        let s = vm.to_string(&c.arg(0))?;
+        let a = (vm.to_number(&c.arg(1))?.max(0.0) as usize).min(s.len());
+        let b = if c.arg(2).is_undefined() {
+            s.len()
+        } else {
+            (vm.to_number(&c.arg(2))?.max(0.0) as usize).min(s.len())
+        };
+        Ok(Value::String(s[a.min(b)..b.max(a)].into()))
+    });
+    helper(vm, i, "toPrimitive", |vm, c| {
+        let hint = match c.arg(1) {
+            Value::String(s) if s.iter().copied().eq("string".encode_utf16()) => {
+                super::super::ops::Hint::String
+            }
+            _ => super::super::ops::Hint::Number,
+        };
+        vm.to_primitive(&c.arg(0), hint)
+    });
+    helper(vm, i, "asciiLower", |vm, c| {
+        let s = vm.to_string(&c.arg(0))?;
+        let v: Vec<u16> = s.iter().map(|&u| if (65..=90).contains(&u) { u + 32 } else { u }).collect();
+        Ok(Value::String(v.into()))
+    });
+    helper(vm, i, "asciiUpper", |vm, c| {
+        let s = vm.to_string(&c.arg(0))?;
+        let v: Vec<u16> = s.iter().map(|&u| if (97..=122).contains(&u) { u - 32 } else { u }).collect();
+        Ok(Value::String(v.into()))
+    });
     helper(vm, i, "call", |vm, c| {
         let f = c.arg(0);
         let this = c.arg(1);
@@ -108,6 +205,9 @@ pub(super) fn install(vm: &mut Vm) {
     let mut vals: Vec<(&str, Value)> = vec![
         ("Array", Value::Object(vm.realm.array_ctor)),
         ("Promise", Value::Object(vm.realm.promise_ctor)),
+        ("ObjectPrototype", Value::Object(vm.realm.object_proto)),
+        ("FunctionPrototype", Value::Object(vm.realm.function_proto)),
+        ("global", Value::Object(vm.realm.global)),
         ("AsyncDisposableStackPrototype", Value::Object(vm.realm.async_disposable_stack_proto)),
         ("AsyncIteratorPrototype", Value::Object(vm.realm.async_iterator_proto)),
     ];
@@ -121,10 +221,15 @@ pub(super) fn install(vm: &mut Vm) {
     for (name, v) in vals {
         vm.heap.obj_mut(i).props.insert(PropKey::named(name), Prop::data(v, false, false, false));
     }
-    match vm.run_global_code(code) {
-        Ok(f) => {
-            let _ = vm.call(&f, Value::Undefined, vec![Value::Object(i)]);
+    for code in codes {
+        match vm.run_global_code(code) {
+            Ok(f) => {
+                if let Err(e) = vm.call(&f, Value::Undefined, vec![Value::Object(i)]) {
+                    let d = vm.describe(&e);
+                    debug_assert!(false, "a self-hosted script threw: {d}");
+                }
+            }
+            Err(_) => debug_assert!(false, "a self-hosted script failed to run"),
         }
-        Err(_) => debug_assert!(false, "selfhost.js failed to run"),
     }
 }
