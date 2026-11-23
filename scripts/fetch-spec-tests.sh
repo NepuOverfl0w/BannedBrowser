@@ -2,8 +2,9 @@
 # Fetch the external conformance suites into third_party/ (git-ignored).
 #   - html5lib-tests: tokenizer tests (HEAD).
 #   - WPT html/syntax/parsing/resources/*.dat: the tree-construction tests, which moved
-#     from html5lib-tests to WPT in 2026. Pinned to WPT_COMMIT for reproducible runs; bump
-#     it deliberately and fix what the new tests reveal.
+#     from html5lib-tests to WPT in 2026; WPT resources/ (testharness.js) and dom/ for
+#     bb-webapi's WPT runner. Pinned to WPT_COMMIT for reproducible runs; bump it
+#     deliberately and fix what the new tests reveal.
 #   - WPT url/resources/urltestdata.json
 #   - WHATWG entities.json (used to regenerate the named character reference table)
 #   - test262 (test/language, test/built-ins, test/annexB, harness), pinned to TEST262_COMMIT:
@@ -22,6 +23,7 @@ if [ ! -d html5lib-tests/.git ]; then
 fi
 
 WPT_COMMIT="9986bb32c9e97707eff870ab284ebc5cc7ae8d21" # 2026-11-21
+WPT_PATHS="html/syntax/parsing/resources/ resources/ dom/"
 if [ "$(git -C wpt rev-parse HEAD 2>/dev/null || true)" != "$WPT_COMMIT" ]; then
   rm -rf wpt
   git init -q wpt
@@ -29,10 +31,13 @@ if [ "$(git -C wpt rev-parse HEAD 2>/dev/null || true)" != "$WPT_COMMIT" ]; then
    git remote add origin https://github.com/web-platform-tests/wpt
    # No leading "/": Git Bash on Windows would rewrite it into a Windows path. A pattern
    # with a slash in the middle is anchored at the root anyway.
-   git sparse-checkout set --no-cone html/syntax/parsing/resources/
+   git sparse-checkout set --no-cone $WPT_PATHS
    git fetch -q --depth 1 --filter=blob:none origin "$WPT_COMMIT"
    git -c advice.detachedHead=false checkout -q FETCH_HEAD)
 fi
+# A checkout from before the DOM tests were added: widen it.
+[ -d wpt/dom/nodes ] || (cd wpt && git sparse-checkout set --no-cone $WPT_PATHS)
+[ -f wpt/resources/testharness.js ] || { echo "WPT resources missing after fetch" >&2; exit 1; }
 [ -d wpt/html/syntax/parsing/resources ] || { echo "WPT parsing tests missing after fetch" >&2; exit 1; }
 
 mkdir -p wpt-url
