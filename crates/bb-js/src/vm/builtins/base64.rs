@@ -343,6 +343,9 @@ pub(super) fn install(vm: &mut Vm) {
     });
     method(vm, proto, "setFromBase64", 1, |vm, c| {
         let into = validate(vm, &c.this)?;
+        if vm.views_immutable(into) {
+            return vm.type_error("the Uint8Array's buffer is immutable");
+        }
         let s = string_arg(vm, &c.arg(0))?;
         let o = options(vm, &c.arg(1))?;
         let url = alphabet(vm, o)?;
@@ -353,6 +356,9 @@ pub(super) fn install(vm: &mut Vm) {
     });
     method(vm, proto, "setFromHex", 1, |vm, c| {
         let into = validate(vm, &c.this)?;
+        if vm.views_immutable(into) {
+            return vm.type_error("the Uint8Array's buffer is immutable");
+        }
         let s = string_arg(vm, &c.arg(0))?;
         let max = target_len(vm, into)?;
         let d = from_hex(&s, max);

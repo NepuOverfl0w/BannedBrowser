@@ -400,6 +400,10 @@ impl Vm {
                 return Ok(false);
             }
             if let Some(n) = self.ta_numeric(cur, &k) {
+                // An immutable buffer rejects every write (§10.4.5.5 step 1.b.ii).
+                if self.views_immutable(cur) {
+                    return Ok(false);
+                }
                 // §10.4.5.5: the typed array itself as receiver writes the element.
                 if matches!(&receiver, Value::Object(r) if *r == cur) {
                     self.ta_set(cur, n, &v)?;

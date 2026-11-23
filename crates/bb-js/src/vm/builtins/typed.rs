@@ -61,7 +61,13 @@ pub(super) fn allocate_buffer(
     };
     Ok(vm.heap.alloc(Object::new(
         Some(proto),
-        Kind::ArrayBuffer(Box::new(Buffer { bytes, block, max: max.map(|m| m as usize), shared })),
+        Kind::ArrayBuffer(Box::new(Buffer {
+            bytes,
+            block,
+            max: max.map(|m| m as usize),
+            shared,
+            immutable: false,
+        })),
     )))
 }
 
@@ -135,12 +141,20 @@ fn buffer_slice(vm: &mut Vm, c: NativeCall, shared: bool) -> JsResult<Value> {
 }
 
 /// ArrayBufferCopyAndDetach (§25.1.3.3): transfer / transferToFixedLength.
+/// `fixed`: transferToFixedLength; `immutable`: transferToImmutable (fixed too).
 fn transfer(vm: &mut Vm, c: NativeCall, fixed: bool) -> JsResult<Value> {
+    transfer_mode(vm, c, fixed, false)
+}
+
+fn transfer_mode(vm: &mut Vm, c: NativeCall, fixed: bool, immutable: bool) -> JsResult<Value> {
     let o = buffer_of(vm, &c.this, false)?;
     let (cur, max) = buf_data(vm, o);
     let new_len = if c.arg(0).is_undefined() { cur.unwrap_or(0) as f64 } else { vm.to_index(&c.arg(0))? };
     let Some(_) = cur else { return vm.type_error("ArrayBuffer is detached") };
-    let new_max = if fixed { None } else { max.map(|m| m as f64) };
+    if vm.is_immutable(o) {
+        return vm.type_error("an immutable ArrayBuffer can't be transferred");
+    }
+    let new_max = if fixed || immutable { None } else { max.map(|m| m as f64) };
     if let Some(m) = new_max {
         if new_len > m {
             return vm.range_error("new length exceeds maxByteLength");
@@ -154,6 +168,40 @@ fn transfer(vm: &mut Vm, c: NativeCall, fixed: bool) -> JsResult<Value> {
         t[..k].copy_from_slice(&bytes[..k]);
     }
     vm.detach_array_buffer(o)?;
+    if immutable {
+        set_immutable(vm, n);
+    }
+    Ok(Value::Object(n))
+}
+
+fn set_immutable(vm: &mut Vm, b: ObjRef) {
+    if let Kind::ArrayBuffer(d) = &mut vm.heap.obj_mut(b).kind {
+        d.immutable = true;
+    }
+}
+
+/// ArrayBuffer.prototype.sliceToImmutable ( start, end ).
+fn slice_to_immutable(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+    let o = buffer_of(vm, &c.this, false)?;
+    if vm.is_detached(o) {
+        return vm.type_error("ArrayBuffer is detached");
+    }
+    let len = buf_data(vm, o).0.unwrap_or(0) as f64;
+    let first = rel(vm, &c.arg(0), len, 0.0)?;
+    let fin = rel(vm, &c.arg(1), len, len)?;
+    let new_len = (fin - first).max(0.0);
+    if vm.is_detached(o) {
+        return vm.type_error("ArrayBuffer is detached");
+    }
+    let cur = buf_data(vm, o).0.unwrap_or(0) as f64;
+    if cur < fin {
+        return vm.range_error("the ArrayBuffer shrank below the slice's end");
+    }
+    let proto = vm.realm.array_buffer_proto;
+    let n = allocate_buffer(vm, proto, new_len, None, false)?;
+    let bytes = vm.buffer_read(o, first as usize, new_len as usize).unwrap_or_default();
+    vm.buffer_write(n, 0, &bytes);
+    set_immutable(vm, n);
     Ok(Value::Object(n))
 }
 
@@ -214,8 +262,23 @@ fn install_buffers(vm: &mut Vm) {
         None,
     );
     method(vm, abp, "slice", 2, |vm, c| buffer_slice(vm, c, false));
+    method(vm, abp, "transferToImmutable", 0, |vm, c| transfer_mode(vm, c, true, true));
+    method(vm, abp, "sliceToImmutable", 2, slice_to_immutable);
+    accessor(
+        vm,
+        abp,
+        PropKey::lit("immutable"),
+        Some(|vm, c| {
+            let o = buffer_of(vm, &c.this, false)?;
+            Ok(Value::Bool(vm.is_immutable(o)))
+        }),
+        None,
+    );
     method(vm, abp, "resize", 1, |vm, c| {
         let o = buffer_of(vm, &c.this, false)?;
+        if vm.is_immutable(o) {
+            return vm.type_error("an immutable ArrayBuffer can't be resized");
+        }
         let (_, max) = buf_data(vm, o);
         let Some(max) = max else { return vm.type_error("ArrayBuffer is not resizable") };
         let n = vm.to_index(&c.arg(0))?;
@@ -326,6 +389,9 @@ fn view_get(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
 
 fn view_set(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
     let (buf, off, len) = view_parts(vm, &c.this)?;
+    if vm.is_immutable(buf) {
+        return vm.type_error("the DataView's buffer is immutable");
+    }
     let idx = vm.to_index(&c.arg(0))?;
     let x = vm.to_number(&c.arg(1))?;
     let little = c.arg(2).truthy();
@@ -356,6 +422,9 @@ fn view_get_big(vm: &mut Vm, c: NativeCall, kind: TaKind) -> JsResult<Value> {
 
 fn view_set_big(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let (buf, off, len) = view_parts(vm, &c.this)?;
+    if vm.is_immutable(buf) {
+        return vm.type_error("the DataView's buffer is immutable");
+    }
     let idx = vm.to_index(&c.arg(0))?;
     let x = vm.to_bigint(&c.arg(1))?;
     let little = c.arg(2).truthy();
@@ -622,14 +691,21 @@ fn proto_from(vm: &mut Vm, nt: ObjRef, kind: TaKind) -> JsResult<ObjRef> {
     vm.prototype_from_ctor(nt, move |r| r.ta_protos[kind.index()])
 }
 
-/// TypedArrayCreateFromConstructor (§23.2.4.2).
+/// TypedArrayCreateFromConstructor (§23.2.4.2) for writing into the result.
 fn ta_create(vm: &mut Vm, ctor: &Value, args: Vec<Value>) -> JsResult<ObjRef> {
+    ta_create_mode(vm, ctor, args, true)
+}
+
+fn ta_create_mode(vm: &mut Vm, ctor: &Value, args: Vec<Value>, write: bool) -> JsResult<ObjRef> {
     let Some(co) = ctor.as_object() else { return vm.type_error("not a constructor") };
     let want = match args.as_slice() {
         [Value::Number(n)] => Some(*n),
         _ => None,
     };
     let r = vm.construct(co, args, None)?;
+    if write {
+        check_writable(vm, &r)?;
+    }
     let (o, len) = vm.ta_validate(&r)?;
     if let Some(n) = want {
         if (len as f64) < n {
@@ -652,6 +728,22 @@ fn species_create(vm: &mut Vm, exemplar: ObjRef, args: Vec<Value>) -> JsResult<O
 }
 
 fn this_ta(vm: &mut Vm, c: &NativeCall) -> JsResult<(ObjRef, usize)> {
+    vm.ta_validate(&c.this)
+}
+
+/// ValidateTypedArray(O, order, write) step 4: an immutable buffer is a TypeError.
+fn check_writable(vm: &mut Vm, v: &Value) -> JsResult<()> {
+    if let Value::Object(o) = v {
+        if vm.ta(*o).is_some() && vm.views_immutable(*o) {
+            return vm.type_error("the typed array's buffer is immutable");
+        }
+    }
+    Ok(())
+}
+
+/// ValidateTypedArray for a method that writes into `this`.
+fn this_ta_write(vm: &mut Vm, c: &NativeCall) -> JsResult<(ObjRef, usize)> {
+    check_writable(vm, &c.this)?;
     vm.ta_validate(&c.this)
 }
 
@@ -884,7 +976,7 @@ fn install_typed_arrays(vm: &mut Vm) {
         Ok(vm.ta_get(o, k))
     });
     method(vm, tap, "copyWithin", 2, |vm, c| {
-        let (o, len) = this_ta(vm, &c)?;
+        let (o, len) = this_ta_write(vm, &c)?;
         let lf = len as f64;
         let to = rel(vm, &c.arg(0), lf, 0.0)?;
         let from = rel(vm, &c.arg(1), lf, 0.0)?;
@@ -934,7 +1026,7 @@ fn install_typed_arrays(vm: &mut Vm) {
         method(vm, tap, name, 1, f);
     }
     method(vm, tap, "fill", 1, |vm, c| {
-        let (o, len) = this_ta(vm, &c)?;
+        let (o, len) = this_ta_write(vm, &c)?;
         let v = vm.ta_coerce(o, &c.arg(0))?;
         let lf = len as f64;
         let k = rel(vm, &c.arg(1), lf, 0.0)?;
@@ -1013,7 +1105,7 @@ fn install_typed_arrays(vm: &mut Vm) {
     method(vm, tap, "reduce", 1, |vm, c| reduce(vm, c, false));
     method(vm, tap, "reduceRight", 1, |vm, c| reduce(vm, c, true));
     method(vm, tap, "reverse", 0, |vm, c| {
-        let (o, len) = this_ta(vm, &c)?;
+        let (o, len) = this_ta_write(vm, &c)?;
         let vals = ta_values(vm, o);
         for (i, v) in vals.into_iter().rev().enumerate().take(len) {
             vm.ta_set(o, i as f64, &v)?;
@@ -1025,6 +1117,7 @@ fn install_typed_arrays(vm: &mut Vm) {
         if vm.ta(o).is_none() {
             return vm.type_error("not a typed array");
         }
+        check_writable(vm, &c.this)?;
         let off = vm.to_integer_or_infinity(&c.arg(1))?;
         if off < 0.0 {
             return vm.range_error("offset is out of bounds");
@@ -1091,7 +1184,7 @@ fn install_typed_arrays(vm: &mut Vm) {
         if !cmp.is_undefined() {
             callback(vm, &cmp)?;
         }
-        let (o, _) = this_ta(vm, &c)?;
+        let (o, _) = this_ta_write(vm, &c)?;
         let vals = ta_values(vm, o);
         let s = sorted(vm, vals, &cmp)?;
         for (i, v) in s.into_iter().enumerate() {
@@ -1112,7 +1205,7 @@ fn install_typed_arrays(vm: &mut Vm) {
         }
         let default = vm.realm.ta_ctors[kind.index()];
         let ctor = vm.species_constructor(o, default)?;
-        Ok(Value::Object(ta_create(vm, &ctor, args)?))
+        Ok(Value::Object(ta_create_mode(vm, &ctor, args, false)?))
     });
     method(vm, tap, "toLocaleString", 0, |vm, c| {
         let (o, len) = this_ta(vm, &c)?;
@@ -1278,6 +1371,19 @@ pub(super) fn install(vm: &mut Vm) {
 
 /// ValidateIntegerTypedArray + ValidateAtomicAccess (§25.4.3.1–2): (array, element index).
 fn atomic_target(vm: &mut Vm, ta: &Value, idx: &Value, waitable: bool) -> JsResult<(ObjRef, usize)> {
+    atomic_target_mode(vm, ta, idx, waitable, false)
+}
+
+fn atomic_target_mode(
+    vm: &mut Vm,
+    ta: &Value,
+    idx: &Value,
+    waitable: bool,
+    write: bool,
+) -> JsResult<(ObjRef, usize)> {
+    if write {
+        check_writable(vm, ta)?;
+    }
     let (o, len) = vm.ta_validate(ta)?;
     let kind = vm.ta(o).expect("typed array").0;
     let ok = if waitable {
@@ -1311,7 +1417,7 @@ fn ta_block(vm: &Vm, o: ObjRef) -> Option<std::sync::Arc<super::super::typed::Sh
 
 /// An atomic read-modify-write: returns the old value.
 fn atomic_rmw(vm: &mut Vm, c: NativeCall, op: fn(&Value, &Value) -> Value) -> JsResult<Value> {
-    let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), false)?;
+    let (o, i) = atomic_target_mode(vm, &c.arg(0), &c.arg(1), false, true)?;
     let v = coerce_integer(vm, o, &c.arg(2))?;
     revalidate(vm, o, i)?;
     let block = ta_block(vm, o);
@@ -1441,7 +1547,7 @@ fn install_atomics(vm: &mut Vm) {
     });
     method(vm, a, "exchange", 3, |vm, c| atomic_rmw(vm, c, |_, y| y.clone()));
     method(vm, a, "compareExchange", 4, |vm, c| {
-        let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), false)?;
+        let (o, i) = atomic_target_mode(vm, &c.arg(0), &c.arg(1), false, true)?;
         let expected = coerce_integer(vm, o, &c.arg(2))?;
         let replacement = coerce_integer(vm, o, &c.arg(3))?;
         revalidate(vm, o, i)?;
@@ -1467,7 +1573,7 @@ fn install_atomics(vm: &mut Vm) {
         Ok(vm.ta_get(o, i as f64))
     });
     method(vm, a, "store", 3, |vm, c| {
-        let (o, i) = atomic_target(vm, &c.arg(0), &c.arg(1), false)?;
+        let (o, i) = atomic_target_mode(vm, &c.arg(0), &c.arg(1), false, true)?;
         let v = coerce_integer(vm, o, &c.arg(2))?;
         let v = match v {
             Value::Number(n) => Value::Number(n + 0.0),

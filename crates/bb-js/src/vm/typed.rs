@@ -19,6 +19,8 @@ pub struct Buffer {
     /// Resizable (ArrayBuffer) or growable (SharedArrayBuffer) up to this.
     pub max: Option<usize>,
     pub shared: bool,
+    /// An immutable ArrayBuffer (immutable-arraybuffer proposal): its bytes never change.
+    pub immutable: bool,
 }
 
 /// A Shared Data Block (§6.2.9): bytes several agents read and write at once. Plain
@@ -356,7 +358,7 @@ impl Vm {
     /// A SharedArrayBuffer of this realm over an existing block (another agent's).
     pub fn new_shared_array_buffer(&mut self, block: Arc<SharedBlock>, max: Option<usize>) -> Value {
         let proto = self.realm.shared_array_buffer_proto;
-        let buf = Buffer { bytes: None, block: Some(block), max, shared: true };
+        let buf = Buffer { bytes: None, block: Some(block), max, shared: true, immutable: false };
         Value::Object(self.heap.alloc(Object::new(Some(proto), Kind::ArrayBuffer(Box::new(buf)))))
     }
 
@@ -403,6 +405,20 @@ impl Vm {
         }
     }
 
+    /// IsImmutableBuffer.
+    pub fn is_immutable(&self, b: ObjRef) -> bool {
+        matches!(&self.heap.obj(b).kind, Kind::ArrayBuffer(d) if d.immutable)
+    }
+
+    /// Whether a typed array or DataView views an immutable buffer.
+    pub fn views_immutable(&self, o: ObjRef) -> bool {
+        match &self.heap.obj(o).kind {
+            Kind::TypedArray(t) => self.is_immutable(t.buffer),
+            Kind::DataView(d) => self.is_immutable(d.buffer),
+            _ => false,
+        }
+    }
+
     pub fn is_detached(&self, b: ObjRef) -> bool {
         matches!(&self.heap.obj(b).kind, Kind::ArrayBuffer(d) if d.bytes.is_none() && d.block.is_none())
     }
@@ -410,7 +426,7 @@ impl Vm {
     /// DetachArrayBuffer (§25.1.3.5), for hosts and `transfer`.
     pub fn detach_array_buffer(&mut self, b: ObjRef) -> JsResult<()> {
         match &mut self.heap.obj_mut(b).kind {
-            Kind::ArrayBuffer(d) if !d.shared => {
+            Kind::ArrayBuffer(d) if !d.shared && !d.immutable => {
                 d.bytes = None;
                 Ok(())
             }
@@ -488,9 +504,11 @@ impl Vm {
     // ---- the exotic internal methods, called from object.rs for numeric keys ----
 
     pub(super) fn ta_get_own(&self, o: ObjRef, n: f64) -> Option<PropDesc> {
+        // An immutable buffer's elements are non-writable and non-configurable.
+        let mutable = !self.views_immutable(o);
         match self.ta_get(o, n) {
             Value::Undefined => None,
-            v => Some(PropDesc::data(v, true, true, true)),
+            v => Some(PropDesc::data(v, mutable, true, mutable)),
         }
     }
 
@@ -501,6 +519,21 @@ impl Vm {
     pub(super) fn ta_define(&mut self, o: ObjRef, n: f64, d: PropDesc) -> JsResult<bool> {
         if self.valid_index(o, n).is_none() {
             return Ok(false);
+        }
+        if self.views_immutable(o) {
+            // ValidateAndApplyPropertyDescriptor against the frozen element.
+            let Some(cur) = self.ta_get_own(o, n) else { return Ok(false) };
+            if d.configurable == Some(true)
+                || d.enumerable == Some(false)
+                || d.is_accessor()
+                || d.writable == Some(true)
+            {
+                return Ok(false);
+            }
+            return Ok(match (&d.value, &cur.value) {
+                (Some(v), Some(c)) => super::value::same_value(v, c),
+                _ => true,
+            });
         }
         if d.configurable == Some(false)
             || d.enumerable == Some(false)
