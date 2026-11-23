@@ -248,7 +248,25 @@ fn worker(id: u64, client: Arc<Client>, rx: Receiver<TabCmd>, notify: Notify) {
         let targets = if internal || under_test() { page.element_rects_by_id() } else { Vec::new() };
         Some(Frame { pixels: Arc::new(c.pixels), w, h, scroll_y: sy, frames: page.frame_rects(), targets })
     };
-    while let Ok(cmd) = rx.recv() {
+    loop {
+        // Wait for a command, or until the page's scripts are due (timers, animation frames).
+        let wakeup = page.as_ref().and_then(Page::script_wakeup);
+        let cmd = match wakeup {
+            None => match rx.recv() {
+                Ok(c) => c,
+                Err(_) => break,
+            },
+            Some(d) => match rx.recv_timeout(d) {
+                Ok(c) => c,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    if let Some(p) = page.as_mut() {
+                        run_page_scripts(id, &notify, p, &last_render, &render);
+                    }
+                    continue;
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            },
+        };
         // Coalesce queued render requests: only the newest matters.
         let mut cmd = cmd;
         if matches!(cmd, TabCmd::Render { .. } | TabCmd::Hover { .. }) {
@@ -280,6 +298,44 @@ fn worker(id: u64, client: Arc<Client>, rx: Receiver<TabCmd>, notify: Notify) {
 }
 
 type RenderFn<'a> = &'a dyn Fn(&mut Page, (f32, f32), f32, f32, bool) -> Option<Frame>;
+
+/// After the page's listeners ran: repaint if they changed the page; follow a navigation
+/// they asked for.
+fn after_script_event(
+    id: u64,
+    notify: &Notify,
+    p: &mut Page,
+    last_render: &Option<(f32, f32, f32, f32, bool)>,
+    render: RenderFn,
+) {
+    if std::mem::take(&mut p.script_title_changed) {
+        notify(id, loaded_event(p));
+    }
+    if std::mem::take(&mut p.script_repaint) {
+        rerender(id, notify, p, last_render, render);
+    }
+    if let Some(u) = p.take_script_navigation() {
+        notify(id, TabEvent::Clicked { link: Some(NavRequest::get(u)), open: LinkOpen::Current });
+    }
+}
+
+/// Run the page's due script tasks; repaint if they changed it, and follow a navigation
+/// they asked for.
+fn run_page_scripts(
+    id: u64,
+    notify: &Notify,
+    p: &mut Page,
+    last_render: &Option<(f32, f32, f32, f32, bool)>,
+    render: RenderFn,
+) {
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| p.run_scripts()));
+    if r.is_err() {
+        log::error!("tab {id}: a page script task panicked; scripts stopped");
+        p.script = None;
+        return;
+    }
+    after_script_event(id, notify, p, last_render, render);
+}
 
 /// Send a fresh frame for the current viewport.
 fn rerender(
@@ -440,6 +496,13 @@ fn handle(
         }
         TabCmd::Click { x, y, new_tab } => {
             let Some(p) = page.as_mut() else { return };
+            // The page's mouse and click listeners first; a canceled click has no default action.
+            if !new_tab && !p.script_click(x, y) {
+                after_script_event(id, notify, p, last_render, render);
+                notify(id, TabEvent::Clicked { link: None, open: LinkOpen::Current });
+                return;
+            }
+            after_script_event(id, notify, p, last_render, render);
             let Some(hit) = p.link_hit_at(x, y) else {
                 // Not a link: focus and the click's activation behaviour (form controls, a
                 // <summary> toggling its <details>, ...).
@@ -483,14 +546,29 @@ fn handle(
         TabCmd::Key { key, mods } => {
             let Some(p) = page.as_mut() else { return };
             let before = p.focused();
-            let out = p.key(key, mods);
-            apply_outcome(id, client, notify, p, last_render, render, out, before);
+            if p.script_key_down(key, mods) {
+                let out = p.key(key, mods);
+                let changed = out.repaint;
+                apply_outcome(id, client, notify, p, last_render, render, out, before);
+                if changed && matches!(key, PageKey::Backspace | PageKey::Delete | PageKey::Cut) {
+                    p.script_input();
+                }
+            }
+            p.script_key_up(key, mods);
+            after_script_event(id, notify, p, last_render, render);
         }
         TabCmd::Text(text) => {
             let Some(p) = page.as_mut() else { return };
             let before = p.focused();
-            let out = p.insert_text(&text);
-            apply_outcome(id, client, notify, p, last_render, render, out, before);
+            if p.script_text_key(&text) {
+                let out = p.insert_text(&text);
+                let changed = out.repaint;
+                apply_outcome(id, client, notify, p, last_render, render, out, before);
+                if changed {
+                    p.script_input();
+                }
+            }
+            after_script_event(id, notify, p, last_render, render);
         }
         TabCmd::ChooseOption { frame_path, select, index } => {
             let Some(p) = page.as_mut() else { return };

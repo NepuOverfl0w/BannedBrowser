@@ -357,6 +357,10 @@ pub fn setup_token_list(vm: &mut Vm, proto: ObjRef) {
         let t = rstr(vm, &c.arg(0))?;
         let nt = rstr(vm, &c.arg(1))?;
         let (h, n) = token_this(vm, &c)?;
+        // DOM §7.1 replace: both empty checks come before the whitespace checks.
+        if t.is_empty() || nt.is_empty() {
+            return throw(vm, "SyntaxError", "the token is empty");
+        }
         check_token(vm, &t)?;
         check_token(vm, &nt)?;
         let cur = tokens(&h, n);

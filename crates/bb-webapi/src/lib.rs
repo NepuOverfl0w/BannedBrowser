@@ -189,6 +189,37 @@ impl Window {
         loader::register_handlers(&mut self.vm, &h);
     }
 
+    /// Dispatch a trusted event at node `target` of the window's document (or at the window
+    /// when `target` is None); `fields` sets the event's init fields. Returns false if a
+    /// listener canceled it (the embedder then skips the default action).
+    pub fn dispatch_ui(
+        &mut self,
+        class: class::C,
+        ty: &str,
+        target: Option<bb_dom::NodeId>,
+        bubbles: bool,
+        cancelable: bool,
+        fields: &[(&str, Value)],
+    ) -> bool {
+        let h = self.host.clone();
+        self.begin_task();
+        let e = events::trusted_event(&mut self.vm, &h, class, ty, bubbles, cancelable);
+        for (k, v) in fields {
+            events::set_field(&mut self.vm, e, k, v.clone());
+        }
+        let t = match target {
+            Some(n) => host::wrap(&mut self.vm, &h, NodeRef { doc: 0, id: n }),
+            None => Ok(h.window.get().map_or(Value::Undefined, Value::Object)),
+        };
+        let r = match t {
+            Ok(t) => events::dispatch(&mut self.vm, &h, e, t),
+            Err(e) => Err(e),
+        };
+        let proceed = *r.as_ref().unwrap_or(&true);
+        self.end_task(r.map(|_| ()));
+        proceed
+    }
+
     /// Whether scripts changed the DOM since the last call (the embedder restyles).
     pub fn take_dirty(&self) -> bool {
         self.host.dirty.replace(false)

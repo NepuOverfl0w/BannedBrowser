@@ -430,11 +430,10 @@ pub fn rstr(vm: &mut Vm, v: &Value) -> JsResult<String> {
     Ok(to_rust(&s))
 }
 
-/// A `DOMString?` argument: null (and undefined, where `undef_null`) is None.
-pub fn rstr_opt(vm: &mut Vm, v: &Value, undef_null: bool) -> JsResult<Option<String>> {
+/// A `DOMString?` argument: null and undefined are None (WebIDL §3.2.21 nullable types).
+pub fn rstr_opt(vm: &mut Vm, v: &Value, _undef_null: bool) -> JsResult<Option<String>> {
     match v {
-        Value::Null => Ok(None),
-        Value::Undefined if undef_null => Ok(None),
+        Value::Null | Value::Undefined => Ok(None),
         _ => rstr(vm, v).map(Some),
     }
 }

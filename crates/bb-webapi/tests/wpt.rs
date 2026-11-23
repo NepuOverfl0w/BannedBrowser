@@ -152,7 +152,7 @@ fn run_file(rel: &str) -> (usize, usize, Vec<String>) {
             if st == "0" {
                 passed += 1;
             } else {
-                fails.push(format!("{rel}: [{st}] {name}: {msg}"));
+                fails.push(format!("{rel}: [{st}] {name}: {}", msg.replace('\n', " ")));
             }
         }
     }

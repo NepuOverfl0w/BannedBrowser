@@ -9,6 +9,7 @@ pub mod forms;
 mod frames;
 pub mod interact;
 mod internal;
+pub mod script;
 
 pub use forms::{FormSubmission, NavRequest, PostBody};
 pub use frames::{ChildFrame, LinkDisposition, LinkHit, MAX_FRAMES, MAX_FRAME_DEPTH};
@@ -41,6 +42,8 @@ pub struct PageConfig {
     pub frame_depth: u8,
     /// The frame container's `marginwidth`/`marginheight` (HTML §15.3.3).
     pub container_margins: (Option<f32>, Option<f32>),
+    /// Run page scripts (HTML's "scripting is enabled").
+    pub scripting: bool,
 }
 
 impl Default for PageConfig {
@@ -53,6 +56,7 @@ impl Default for PageConfig {
             load_images: true,
             frame_depth: 0,
             container_margins: (None, None),
+            scripting: true,
         }
     }
 }
@@ -100,6 +104,17 @@ pub struct Page {
     pub encoding: &'static encoding_rs::Encoding,
     /// Keyboard focus in this document (see `interact.rs`).
     pub focus: interact::FocusState,
+    /// The page's scripting global, when scripts are enabled (see `script.rs`).
+    pub script: Option<bb_webapi::Window>,
+    /// The client the page loaded with (scripts fetch with it; stylesheets are re-collected
+    /// with it after scripts change them).
+    pub client: Client,
+    /// The style and stylesheet-link markup the sheets were collected from.
+    style_signature: String,
+    /// Set when scripts changed the page (the tab repaints and clears it).
+    pub script_repaint: bool,
+    /// Set when scripts changed the title (the tab tells the UI and clears it).
+    pub script_title_changed: bool,
 }
 
 struct PageResources<'a> {
@@ -184,6 +199,24 @@ pub(crate) fn subresource_context(page_url: &Url) -> bb_net::cookies::CookieCont
         top_level_navigation: false,
         ..Default::default()
     }
+}
+
+/// The markup stylesheets come from: `<style>` text and stylesheet `<link>`s (if scripts
+/// change it, the sheets are collected again).
+fn style_signature(doc: &Document) -> String {
+    let mut s = String::new();
+    for n in doc.descendants(Document::ROOT) {
+        if doc.is_html(n, "style") {
+            s.push_str(&doc.text_content(n));
+            s.push('\u{1}');
+        } else if doc.is_html(n, "link") {
+            s.push_str(doc.attr(n, "rel").unwrap_or(""));
+            s.push(' ');
+            s.push_str(doc.attr(n, "href").unwrap_or(""));
+            s.push('\u{1}');
+        }
+    }
+    s
 }
 
 /// Fetch a document. `frame_top`: for a frame's document, the top-level document's URL (its
@@ -566,7 +599,20 @@ impl Page {
     ) -> Page {
         let mut stats = LoadStats::default();
         let t0 = Instant::now();
-        let mut doc = bb_html::parse_document(html);
+        // With scripting on, the parser runs the page's scripts as it goes (bb-webapi).
+        let scripting = config.scripting && url.scheme() != "about" && status != 0;
+        let mut window = None;
+        let mut doc = if scripting {
+            let emb = Rc::new(script::PageEmbedder::new(client.clone(), url.clone(), config.viewport));
+            let mut w = bb_webapi::Window::new(url.clone(), emb);
+            w.load_html(html);
+            let mut d = Document::new();
+            w.swap_document(&mut d);
+            window = Some(w);
+            d
+        } else {
+            bb_html::parse_document(html)
+        };
         doc.url = url.href();
         let base = base_url(&doc, url);
         // HTML §15.6: a frameset document renders its frames instead of a body.
@@ -588,7 +634,11 @@ impl Page {
         };
         stats.stylesheets = author.len();
         let mut sheets = bb_style::ua_sheets(doc.quirks_mode == bb_dom::QuirksMode::Quirks);
+        if scripting {
+            sheets.push(bb_style::ua_scripting_sheet());
+        }
         sheets.extend(author);
+        let style_signature = style_signature(&doc);
         let env = StyleEnv {
             viewport: config.viewport,
             prefers_dark: config.prefers_dark,
@@ -659,10 +709,95 @@ impl Page {
             find_active: None,
             encoding: encoding_rs::UTF_8,
             focus: interact::FocusState { window_focus: true, ..Default::default() },
+            script: window,
+            client: client.clone(),
+            style_signature,
+            script_repaint: false,
+            script_title_changed: false,
         };
         page.relayout_styles_ready();
         page.load_frames(client);
+        // HTML §13.2.7 "the end": the load event once subresources are in.
+        page.with_window(|w| w.fire_load());
         page
+    }
+
+    /// Lend the document to the page's Window for `f`, then restyle if scripts changed it.
+    pub fn with_window(&mut self, f: impl FnOnce(&mut bb_webapi::Window)) {
+        let Some(mut w) = self.script.take() else { return };
+        w.swap_document(&mut self.doc);
+        f(&mut w);
+        w.swap_document(&mut self.doc);
+        let dirty = w.take_dirty();
+        for line in w.take_console() {
+            log::info!("console [{}]: {line}", self.url);
+        }
+        self.script = Some(w);
+        if dirty {
+            self.after_script_mutation();
+            self.script_repaint = true;
+        }
+    }
+
+    /// Scripts changed the DOM: pick up new stylesheets, then restyle and lay out.
+    fn after_script_mutation(&mut self) {
+        let title = self.doc.title();
+        if title != self.title {
+            self.title = title;
+            self.script_title_changed = true;
+        }
+        let sig = style_signature(&self.doc);
+        if sig != self.style_signature {
+            self.style_signature = sig;
+            let media = MediaContext {
+                width: self.config.viewport.0,
+                height: self.config.viewport.1,
+                dark: self.config.prefers_dark,
+                print: false,
+                dppx: 1.0,
+            };
+            let deadline = Instant::now() + self.config.subresource_timeout;
+            let author = if self.config.no_author_styles {
+                Vec::new()
+            } else {
+                collect_stylesheets(&self.client, &self.doc, &self.base_url, &media, deadline)
+            };
+            let mut sheets = bb_style::ua_sheets(self.doc.quirks_mode == bb_dom::QuirksMode::Quirks);
+            sheets.push(bb_style::ua_scripting_sheet());
+            sheets.extend(author);
+            self.sheets = sheets;
+        }
+        self.restyle();
+    }
+
+    /// Run the page's due timers and queued tasks (HTML §8.1.7 event loop); returns whether
+    /// any ran.
+    pub fn run_scripts(&mut self) -> bool {
+        let mut ran = false;
+        self.with_window(|w| {
+            ran = w.run_tasks();
+            ran |= w.run_animation_frames();
+        });
+        ran
+    }
+
+    /// How long until the page's scripts next need to run (None: nothing pending).
+    pub fn script_wakeup(&self) -> Option<Duration> {
+        let w = self.script.as_ref()?;
+        if w.has_tasks() {
+            // Animation frames run at about 60 Hz.
+            return Some(Duration::from_millis(16));
+        }
+        let due = w.next_timer_due()?;
+        let now = w.host.embedder.now_ms();
+        Some(Duration::from_secs_f64(((due - now).max(0.0)) / 1000.0))
+    }
+
+    /// A navigation the page's scripts asked for (`location.href = …`).
+    pub fn take_script_navigation(&mut self) -> Option<Url> {
+        let w = self.script.as_ref()?;
+        let to = w.host.pending_navigation.borrow_mut().take()?;
+        Url::parse(&to).ok()
     }
 
     /// Recompute styles (e.g. after a viewport or color-scheme change), then lay out.

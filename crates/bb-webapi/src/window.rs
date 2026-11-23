@@ -347,8 +347,12 @@ fn install_location(vm: &mut Vm, g: ObjRef) {
             vm,
             dp,
             "location",
-            |vm, _| {
+            |vm, c| {
                 let h = host(vm)?;
+                // Only a document with a browsing context has a location (HTML §7.10.1).
+                if node_of(vm, &c.this).is_none_or(|n| n.doc != 0) {
+                    return Ok(Value::Null);
+                }
                 let loc = h.misc.borrow().get("location").copied();
                 Ok(loc.map_or(Value::Null, Value::Object))
             },

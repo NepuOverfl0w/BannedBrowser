@@ -38,6 +38,18 @@ pub fn ua_sheets(quirks: bool) -> Vec<Sheet> {
     v
 }
 
+/// HTML §15.3.1: with scripting enabled, `<noscript>` isn't rendered.
+pub fn ua_scripting_sheet() -> Sheet {
+    thread_local! {
+        static SHEET: Rc<bb_css::Stylesheet> = Rc::new(bb_css::Stylesheet::parse("noscript { display: none !important; }"));
+    }
+    Sheet {
+        origin: Origin::UserAgent,
+        stylesheet: SHEET.with(|s| s.clone()),
+        media: bb_css::MediaQueryList::default(),
+    }
+}
+
 /// Human-readable dump of computed styles (for `--dump-style`).
 pub fn dump_styles(doc: &bb_dom::Document, map: &StyleMap) -> String {
     use std::fmt::Write;

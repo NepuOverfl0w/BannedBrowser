@@ -44,6 +44,7 @@ bb-paint = { path = "crates/bb-paint" }
 bb-layout = { path = "crates/bb-layout" }
 bb-engine = { path = "crates/bb-engine" }
 bb-js = { path = "crates/bb-js" }
+bb-webapi = { path = "crates/bb-webapi" }
 bb-ui = { path = "crates/bb-ui" }
 bb-profile = { path = "crates/bb-profile" }
 

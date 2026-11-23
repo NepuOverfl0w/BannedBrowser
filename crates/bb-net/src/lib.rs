@@ -237,8 +237,20 @@ impl ClientConfig {
     }
 }
 
-/// A shareable HTTP client with a keep-alive connection pool.
-pub struct Client {
+/// A shareable HTTP client with a keep-alive connection pool. Cloning is cheap: clones
+/// share the pool, cookies, cache and TLS state.
+#[derive(Clone)]
+pub struct Client(Arc<ClientInner>);
+
+impl std::ops::Deref for Client {
+    type Target = ClientInner;
+    fn deref(&self) -> &ClientInner {
+        &self.0
+    }
+}
+
+/// A client's shared state.
+pub struct ClientInner {
     config: ClientConfig,
     tls: tls::TlsContext,
     proxies: proxy::ProxyConfig,
@@ -260,20 +272,25 @@ impl Client {
         let tls = tls::TlsContext::new(&ca_files, !config.no_http2);
         let proxies =
             if config.no_proxy_env { proxy::ProxyConfig::default() } else { proxy::ProxyConfig::from_env() };
-        Client {
+        Client(Arc::new(ClientInner {
             config,
             tls,
             proxies,
             pool: Mutex::new(http::Pool::default()),
             pool_changed: std::sync::Condvar::new(),
             cookies: cookies::CookieJar::new(),
-        }
+        }))
     }
 
     /// Trust a certificate that failed verification, for its host only and only that exact
     /// certificate, for the rest of the session (the "Accept the Risk and Continue" button).
     pub fn add_certificate_exception(&self, problem: &CertificateProblem) {
         self.tls.add_exception(&problem.host, &problem.der);
+    }
+
+    /// The `User-Agent` this client sends.
+    pub fn user_agent(&self) -> &str {
+        self.config.user_agent()
     }
 
     /// This client's cookie jar.

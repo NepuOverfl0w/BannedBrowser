@@ -1081,6 +1081,28 @@ pub fn fire(
     dispatch(vm, h, e, target)
 }
 
+/// A trusted UI event (from real input) of interface `class`, with its init fields set to
+/// their defaults and `view` to the window.
+pub fn trusted_event(vm: &mut Vm, h: &Host, class: C, ty: &str, bubbles: bool, cancelable: bool) -> ObjRef {
+    let mut f = INITIALIZED | TRUSTED | COMPOSED;
+    if bubbles {
+        f |= BUBBLES;
+    }
+    if cancelable {
+        f |= CANCELABLE;
+    }
+    let e = new_event(vm, h, class, None, ty, f);
+    for (name, _, d) in init_fields(class) {
+        set_field(vm, e, name, d);
+    }
+    if let Some(w) = h.window.get() {
+        if class != C::Event {
+            set_field(vm, e, "view", Value::Object(w));
+        }
+    }
+    e
+}
+
 /// HTMLElement.click (HTML §6.5.3): a synthetic, untrusted click.
 pub fn fire_synthetic_click(vm: &mut Vm, h: &Host, n: NodeRef) -> JsResult<()> {
     let e = new_event(vm, h, C::MouseEvent, None, "click", INITIALIZED | BUBBLES | CANCELABLE | COMPOSED);

@@ -22,6 +22,8 @@ bb-text.workspace = true
 bb-image.workspace = true
 bb-paint.workspace = true
 bb-layout.workspace = true
+bb-webapi.workspace = true
+bb-js.workspace = true
 log.workspace = true
 encoding_rs.workspace = true
 

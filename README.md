@@ -23,8 +23,8 @@
 > **Status: [v0.1.0 "Hello, Old Web"](https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0) released.**
 > BannedBrowser renders example.com, theoldnet.com and archived 1990s sites convincingly.
 > Since then `main` (on its way to v0.2) has gained working forms, a persistent profile, an HTTP
-> cache, HTTP/2 and its own JavaScript engine (passing all of test262), which isn't hooked up
-> to pages yet. It doesn't run page scripts, and has no bookmarks or sandboxing. See [PROGRESS.md](PROGRESS.md) for the
+> cache, HTTP/2 and its own JavaScript engine (passing all of test262), which now runs page
+> scripts (the DOM, events, timers). It has no bookmarks or sandboxing yet. See [PROGRESS.md](PROGRESS.md) for the
 > honest details.
 
 ## 📑 Contents
@@ -166,7 +166,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Bidi text | 🚧 basic reordering |
 | Frames: `<frameset>`, `<iframe>` (src/srcdoc), link targets, per-frame scrolling, frame navigations in history | ✅ |
 | SVG | 📋 |
-| JavaScript | 🚧 own engine: parser done (100 % of test262's parse phase); interpreter passes all of test262; not hooked up to pages yet |
+| JavaScript | 🚧 own engine (all of test262) runs page scripts: the DOM, events, timers, `document.write`; fetch/XHR, storage, workers, canvas and iframes' scripts still to come |
 
 </details>
 
@@ -359,7 +359,7 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 
 **Is it safe for daily browsing?** Not yet. There is no sandboxing or process isolation, and no JavaScript yet (safer, but it breaks many sites). Treat it as an experiment.
 
-**Does it run JavaScript?** Not in pages yet. The from-scratch engine (`bb-js`) parses all of test262 correctly and its interpreter passes all of it; pages get it with the DOM bindings (milestone E). Until then `<script>` is ignored and `<noscript>` content is shown.
+**Does it run JavaScript?** Yes, with our own engine (`bb-js`, passing all of test262) and Web APIs (`bb-webapi`): scripts can change the DOM, listen to clicks and keys, use timers and `document.write`. Many Web APIs are still missing (fetch, XHR, storage, workers, canvas, scripts in frames), so script-heavy sites may not work yet.
 
 **Why Rust?** Memory safety for parsers that eat hostile input all day, great tooling, and fearless threading for the per-tab pipelines. Every engine crate is `#![forbid(unsafe_code)]`.
 
