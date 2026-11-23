@@ -74,6 +74,55 @@ fn install_global(vm: &mut Vm) {
     let e = method(vm, g, "eval", 1, |vm, c| vm.indirect_eval(c.arg(0)));
     vm.realm.eval = e;
     method(vm, g, "isNaN", 1, |vm, c| Ok(Value::Bool(vm.to_number(&c.arg(0))?.is_nan())));
+    // escape / unescape (Annex B.2.1.1–2).
+    method(vm, g, "escape", 1, |vm, c| {
+        let s = vm.to_string(&c.arg(0))?;
+        let mut out: Vec<u16> = Vec::with_capacity(s.len());
+        for &u in s.iter() {
+            let keep = u < 128 && {
+                let b = u as u8;
+                b.is_ascii_alphanumeric() || b"@*_+-./".contains(&b)
+            };
+            if keep {
+                out.push(u);
+            } else if u < 256 {
+                out.extend(format!("%{u:02X}").encode_utf16());
+            } else {
+                out.extend(format!("%u{u:04X}").encode_utf16());
+            }
+        }
+        Ok(Value::String(out.into()))
+    });
+    method(vm, g, "unescape", 1, |vm, c| {
+        let s = vm.to_string(&c.arg(0))?;
+        let hex = |u: u16| char::from_u32(u as u32).and_then(|c| c.to_digit(16));
+        let digits = |from: usize, n: usize| -> Option<u16> {
+            let mut v = 0u32;
+            for &u in s.get(from..from + n)? {
+                v = v * 16 + hex(u)?;
+            }
+            Some(v as u16)
+        };
+        let mut out: Vec<u16> = Vec::with_capacity(s.len());
+        let mut k = 0;
+        while k < s.len() {
+            let mut u = s[k];
+            if u == u16::from(b'%') {
+                if s.get(k + 1) == Some(&u16::from(b'u')) {
+                    if let Some(v) = digits(k + 2, 4) {
+                        u = v;
+                        k += 5;
+                    }
+                } else if let Some(v) = digits(k + 1, 2) {
+                    u = v;
+                    k += 2;
+                }
+            }
+            out.push(u);
+            k += 1;
+        }
+        Ok(Value::String(out.into()))
+    });
     method(vm, g, "isFinite", 1, |vm, c| Ok(Value::Bool(vm.to_number(&c.arg(0))?.is_finite())));
     let pf = method(vm, g, "parseFloat", 1, number::parse_float);
     let pi = method(vm, g, "parseInt", 2, number::parse_int);
