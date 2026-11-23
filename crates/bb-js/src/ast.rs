@@ -119,8 +119,9 @@ pub enum Expr {
     Null,
     Ident(String),
     This,
+    /// A regular expression literal: its body as UTF-16 (it may hold lone surrogates).
     Regex {
-        body: String,
+        body: JsStr,
         flags: String,
     },
     Template(Vec<TemplatePart>),

@@ -163,7 +163,76 @@ impl Vm {
         }
     }
 
+    /// A data property found on an ordinary object or its ordinary prototypes, without side
+    /// effects: `Some(Some(v))`, or `Some(None)` when no object in the chain has it. `None`
+    /// when an accessor or an exotic object is in the way (the caller takes the spec path).
+    fn ordinary_lookup(&mut self, o: ObjRef, name: &Rc<str>) -> Option<Option<Value>> {
+        let key = self.name_key(name);
+        let mut cur = Some(o);
+        while let Some(c) = cur {
+            let obj = self.heap.obj(c);
+            if !matches!(obj.kind, Kind::Ordinary) {
+                return None;
+            }
+            if let Some(p) = obj.props.get(&key) {
+                return match &p.slot {
+                    Slot::Data(v) => Some(Some(v.clone())),
+                    _ => None,
+                };
+            }
+            cur = obj.proto;
+        }
+        Some(None)
+    }
+
+    /// GetValue of an identifier: ResolveBinding + GetBindingValue (§9.4.2, §6.2.5.5). The
+    /// common cases (declarative bindings, a data property of the ordinary global object)
+    /// are read directly; they have no observable steps in between.
     pub(super) fn get_var(&mut self, env: EnvRef, name: &Rc<str>) -> JsResult<Value> {
+        let mut e = Some(env);
+        while let Some(r) = e {
+            let rec = self.heap.env(r);
+            match &rec.kind {
+                EnvKind::Declarative | EnvKind::Function { .. } => {
+                    if let Some(b) = rec.bindings.get(name) {
+                        match &b.value {
+                            Some(v) => return Ok(v.clone()),
+                            None => break,
+                        }
+                    }
+                }
+                EnvKind::Module { imports } => {
+                    if imports.contains_key(name) {
+                        break;
+                    }
+                    if let Some(b) = rec.bindings.get(name) {
+                        match &b.value {
+                            Some(v) => return Ok(v.clone()),
+                            None => break,
+                        }
+                    }
+                }
+                EnvKind::Global { object, .. } => {
+                    if let Some(b) = rec.bindings.get(name) {
+                        match &b.value {
+                            Some(v) => return Ok(v.clone()),
+                            None => break,
+                        }
+                    }
+                    let object = *object;
+                    if let Some(Some(v)) = self.ordinary_lookup(object, name) {
+                        return Ok(v);
+                    }
+                    break;
+                }
+                EnvKind::Object { .. } => break,
+            }
+            e = rec.outer;
+        }
+        self.get_var_slow(env, name)
+    }
+
+    fn get_var_slow(&mut self, env: EnvRef, name: &Rc<str>) -> JsResult<Value> {
         match self.resolve(env, name)? {
             None => self.reference_error(&format!("{name} is not defined")),
             Some(r) => {
@@ -173,8 +242,47 @@ impl Vm {
         }
     }
 
-    /// PutValue on an identifier reference (§6.2.5.6).
+    /// PutValue on an identifier reference (§6.2.5.6). Initialized mutable declarative
+    /// bindings and writable own data properties of the ordinary global object are written
+    /// directly; everything else takes the spec path.
     pub(super) fn set_var(&mut self, env: EnvRef, name: &Rc<str>, v: Value) -> JsResult<()> {
+        let mut e = Some(env);
+        while let Some(r) = e {
+            let rec = self.heap.env(r);
+            let outer = rec.outer;
+            match &rec.kind {
+                EnvKind::Declarative | EnvKind::Function { .. } => {
+                    if rec.bindings.contains_key(name) {
+                        if let Some(b) = self.heap.env_mut(r).bindings.get_mut(name) {
+                            if b.mutable && b.value.is_some() {
+                                b.value = Some(v);
+                                return Ok(());
+                            }
+                        }
+                        break;
+                    }
+                }
+                EnvKind::Global { object, .. } => {
+                    if rec.bindings.contains_key(name) {
+                        break;
+                    }
+                    let object = *object;
+                    if !matches!(self.heap.obj(object).kind, Kind::Ordinary) {
+                        break;
+                    }
+                    let key = self.name_key(name);
+                    if let Some(p) = self.heap.obj_mut(object).props.get_mut(&key) {
+                        if let (Slot::Data(slot), true) = (&mut p.slot, p.writable) {
+                            *slot = v;
+                            return Ok(());
+                        }
+                    }
+                    break;
+                }
+                _ => break,
+            }
+            e = outer;
+        }
         let strict = self.strict();
         match self.resolve(env, name)? {
             None => {

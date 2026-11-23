@@ -201,7 +201,13 @@ fn utf16(s: &str) -> JsStr {
 
 impl Parser {
     pub fn new(src: &str, module: bool) -> R<Parser> {
+        Self::new_with_surrogates(src, module, None)
+    }
+
+    /// A parser for source text from `lexer::encode_source` (lone surrogates mapped).
+    pub fn new_with_surrogates(src: &str, module: bool, surrogates: Option<u32>) -> R<Parser> {
         let mut lx = Lexer::new(src);
+        lx.surrogates = surrogates;
         let tok = lx.next(true, !module)?;
         Ok(Parser {
             lx,
@@ -2358,6 +2364,13 @@ impl Parser {
                 let target = if op == "=" && matches!(lhs, Expr::Object(_) | Expr::Array(_)) {
                     self.cover_errs.truncate(before);
                     self.reinterpret_as_pattern(lhs, false, start)?
+                } else if matches!(&lhs, Expr::Paren(_)) {
+                    // `(x) = function () {}`: IsIdentifierRef is false for a parenthesized
+                    // name, so no NamedEvaluation (§13.15.2 step 1.c); keep the parentheses.
+                    match self.simple_target(lhs.clone(), start, !matches!(op, "&&=" | "||=" | "??="))? {
+                        Pat::Ident(_) => Pat::Expr(Box::new(lhs)),
+                        t => t,
+                    }
                 } else {
                     self.simple_target(lhs, start, !matches!(op, "&&=" | "||=" | "??="))?
                 };
@@ -3081,6 +3094,7 @@ impl Parser {
                     flags.contains('v'),
                 )
                 .map_err(|m| ParseError { pos, msg: format!("invalid regular expression: {m}") })?;
+                let body = self.lx.units(&body);
                 self.next()?;
                 Ok(Expr::Regex { body, flags })
             }
@@ -3370,11 +3384,13 @@ pub struct EvalContext {
     pub no_arguments: bool,
     /// The Private Names of the enclosing classes (PerformEval step 7, without the `#`).
     pub private_names: Vec<String>,
+    /// `lexer::encode_source`'s block for lone surrogates in the text.
+    pub surrogates: Option<u32>,
 }
 
 /// Parse eval code: a script, strict when the caller is.
 pub fn parse_eval(src: &str, ctx: EvalContext) -> Result<Program, ParseError> {
-    let mut p = Parser::new(src, false)?;
+    let mut p = Parser::new_with_surrogates(src, false, ctx.surrogates)?;
     p.strict = ctx.strict;
     p.fns[0].new_target = ctx.new_target;
     p.fns[0].super_prop = ctx.super_prop;

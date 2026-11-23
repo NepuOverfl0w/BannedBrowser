@@ -166,7 +166,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Bidi text | 🚧 basic reordering |
 | Frames: `<frameset>`, `<iframe>` (src/srcdoc), link targets, per-frame scrolling, frame navigations in history | ✅ |
 | SVG | 📋 |
-| JavaScript | 🚧 own engine: parser done (100 % of test262's parse phase); interpreter runs 99.96 % of test262; not hooked up to pages yet |
+| JavaScript | 🚧 own engine: parser done (100 % of test262's parse phase); interpreter passes all of test262; not hooked up to pages yet |
 
 </details>
 
@@ -187,7 +187,8 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | WPT tree construction | **1959 / 1959 (100 %)** |
 | Reftests | **50 / 50** |
 | test262 parse phase (`language`, `built-ins`, `annexB`) | **48803 / 48803 (100 %)** |
-| test262 execution (interpreter in progress) | **48782 / 48803 (99.96 %)** |
+| test262 execution | **48803 / 48803 (100 %)** |
+| Unicode NormalizationTest (UAX #15) | **all lines + every other code point** |
 | Public Suffix List tests | **78 / 78 (100 %)** |
 
 ## 🏗 Architecture
@@ -349,7 +350,7 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 - [ ] M7 Layout II (grid, transforms, `@font-face`, …)
 - [x] M8 Forms, cookies, profile storage, HTTP cache
 - [ ] M9 Bookmarks, history, downloads, settings, Reader View, passwords
-- [ ] M10 JavaScript engine (parser done; interpreter at 99.96 % of test262)
+- [ ] M10 JavaScript engine (parser and interpreter pass all of test262; Web APIs next)
 - [ ] M11 DevTools, performance, accessibility, packaging
 
 ## ❓ FAQ
@@ -358,7 +359,7 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 
 **Is it safe for daily browsing?** Not yet. There is no sandboxing or process isolation, and no JavaScript yet (safer, but it breaks many sites). Treat it as an experiment.
 
-**Does it run JavaScript?** Not in pages yet. The from-scratch engine (`bb-js`) parses all of test262 correctly and its interpreter already runs 99.96 % of the suite; pages get it with the DOM bindings (milestone E). Until then `<script>` is ignored and `<noscript>` content is shown.
+**Does it run JavaScript?** Not in pages yet. The from-scratch engine (`bb-js`) parses all of test262 correctly and its interpreter passes all of it; pages get it with the DOM bindings (milestone E). Until then `<script>` is ignored and `<noscript>` content is shown.
 
 **Why Rust?** Memory safety for parsers that eat hostile input all day, great tooling, and fearless threading for the per-tab pipelines. Every engine crate is `#![forbid(unsafe_code)]`.
 

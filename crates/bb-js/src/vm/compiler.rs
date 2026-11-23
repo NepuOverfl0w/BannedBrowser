@@ -62,6 +62,14 @@ pub struct Compiler<'a> {
     referrer: Option<Rc<str>>,
     /// Inside `with` or code with a direct eval: resolve assignment references once.
     dynamic: bool,
+    /// A destructuring target identifier already resolved (`ResolveVar`) before its value
+    /// was read: `bind` puts to that reference (KeyedBindingInitialization step 2).
+    pre_resolved: Option<&'a str>,
+    /// Names that always resolve to the same declarative binding here (this function's
+    /// parameters, vars and top-level declarations, a script's lexical declarations): a
+    /// strict assignment to any other name resolves it before the right-hand side runs,
+    /// since the right-hand side may create a global property of that name.
+    stable: HashSet<String>,
     /// Lexically inside `with` (inherited by nested functions; an eval is not).
     in_with: bool,
     /// The furthest position a jump was patched to (compare/jump fusion must not remove a
@@ -90,6 +98,8 @@ impl<'a> Compiler<'a> {
             async_gen: false,
             referrer: None,
             dynamic: false,
+            stable: HashSet::new(),
+            pre_resolved: None,
             in_with: false,
             max_target: 0,
         }
@@ -127,6 +137,7 @@ impl<'a> Compiler<'a> {
             Op::IterResultCheck(_) => Op::IterResultCheck(to),
             Op::AsyncIterClose(_) => Op::AsyncIterClose(to),
             Op::DisposeStep(_) => Op::DisposeStep(to),
+            Op::JumpIfResumeReturn(_) => Op::JumpIfResumeReturn(to),
             o => o,
         };
     }
@@ -217,6 +228,9 @@ impl<'a> Compiler<'a> {
         for (n, is_const) in &lex {
             decls.lexical.push((n.as_str().into(), *is_const));
         }
+        if !is_eval {
+            c.stable.extend(lex.iter().map(|l| l.0.clone()));
+        }
         let mut vars = Vec::new();
         var_names(body, &mut vars, true);
         let funcs = top_functions(body);
@@ -280,8 +294,10 @@ impl<'a> Compiler<'a> {
         for (n, is_const) in &lex {
             decls.lexical.push((n.as_str().into(), *is_const));
         }
+        c.stable.extend(lex.iter().map(|l| l.0.clone()));
         let mut vars = Vec::new();
         var_names(body, &mut vars, false);
+        c.stable.extend(vars.iter().cloned());
         let mut seen = HashSet::new();
         for v in &vars {
             if seen.insert(v.clone()) {
@@ -548,6 +564,13 @@ impl<'a> Compiler<'a> {
         }
         let mut vars = Vec::new();
         var_names(&f.body, &mut vars, true);
+        c.stable.extend(param_names.iter().cloned());
+        c.stable.extend(vars.iter().cloned());
+        c.stable.extend(lex_names.iter().cloned());
+        c.stable.extend(fnames.iter().cloned());
+        if arguments_needed {
+            c.stable.insert("arguments".into());
+        }
         let mut instantiated: HashSet<String> = param_names.iter().cloned().collect();
         if arguments_needed {
             instantiated.insert("arguments".into());
@@ -793,12 +816,16 @@ impl<'a> Compiler<'a> {
             | Stmt::DoWhile(..) => self.loop_stmt(s, Vec::new()),
             Stmt::Return(e) => {
                 match e {
-                    Some(e) => self.expr(e),
+                    Some(e) => {
+                        self.expr(e);
+                        self.return_top();
+                    }
                     None => {
+                        // §15.10.1: `return;` is a direct return; only an expression awaits.
                         self.emit(Op::Undef);
+                        self.return_value(false);
                     }
                 }
-                self.return_top();
             }
             Stmt::Break(label) => self.jump_out(label.as_deref(), false),
             Stmt::Continue(label) => self.jump_out(label.as_deref(), true),
@@ -891,7 +918,12 @@ impl<'a> Compiler<'a> {
     }
 
     fn return_top(&mut self) {
-        if self.async_gen {
+        self.return_value(true);
+    }
+
+    /// Return the top of the stack; in an async generator, `await_it` awaits it first.
+    fn return_value(&mut self, await_it: bool) {
+        if self.async_gen && await_it {
             self.await_top();
         }
         let needs_cleanup = self
@@ -923,6 +955,18 @@ impl<'a> Compiler<'a> {
                 self.await_top();
                 let check = self.emit(Op::YieldStarAsyncCheck(0, 0));
                 self.emit(Op::AsyncYield);
+                let rr = self.emit(Op::JumpIfResumeReturn(0));
+                self.emit(Op::Jump(top));
+                // A `return(v)` resumption: Await(v) first; its rejection is received as a
+                // throw completion (AsyncGeneratorYield steps 13–16, then yield* step 7).
+                self.patch(rr);
+                let catch = self.emit(Op::TryStart(0));
+                self.await_top();
+                self.emit(Op::TryEnd);
+                self.emit(Op::SetResume(2));
+                self.emit(Op::Jump(top));
+                self.patch(catch);
+                self.emit(Op::SetResume(1));
                 self.emit(Op::Jump(top));
                 let ret = self.here();
                 self.return_top();
@@ -992,9 +1036,14 @@ impl<'a> Compiler<'a> {
                     let Some(init) = init else { continue };
                     match p {
                         Pat::Ident(n) => {
-                            self.named_expr(init, n);
+                            // §14.3.2.1: ResolveBinding before the initializer runs (it can
+                            // remove a `with` object's property).
                             let i = self.name(n);
-                            self.emit(Op::SetVar(i));
+                            if self.dynamic {
+                                self.emit(Op::ResolveVar(i));
+                            }
+                            self.named_expr(init, n);
+                            self.ident_set(i);
                             self.emit(Op::Pop);
                         }
                         _ => {
@@ -1445,12 +1494,20 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// A finally block doesn't change the completion value unless it completes abruptly.
+    /// A finally block doesn't change the completion value unless it completes abruptly
+    /// (§14.15.3: a normal F is replaced by B; an abrupt one is UpdateEmpty(F, undefined)):
+    /// the try's value waits on the stack while the block records its own.
     fn finally_body(&mut self, f: &'a [Stmt]) {
-        let comp = self.completion;
-        self.completion = false;
+        if !self.completion {
+            self.stmts(f);
+            return;
+        }
+        self.emit(Op::GetCompletion);
+        self.ctl.push(Ctl::Pop);
+        self.set_completion_undefined();
         self.stmts(f);
-        self.completion = comp;
+        self.ctl.pop();
+        self.emit(Op::SetCompletion);
     }
 
     fn switch_stmt(&mut self, d: &'a Expr, cases: &'a [Case], labels: Vec<String>) {
@@ -1529,6 +1586,11 @@ impl<'a> Compiler<'a> {
                     Bind::Init => {
                         self.emit(Op::InitBinding(i));
                     }
+                    Bind::Assign if self.pre_resolved == Some(n.as_str()) => {
+                        self.pre_resolved = None;
+                        self.emit(Op::SetResolved(i));
+                        self.emit(Op::Pop);
+                    }
                     Bind::Assign => {
                         self.emit(Op::SetVar(i));
                         self.emit(Op::Pop);
@@ -1538,10 +1600,13 @@ impl<'a> Compiler<'a> {
             Pat::Default(target, def) => {
                 let j = self.emit(Op::JumpIfNotUndef(0));
                 self.emit(Op::Pop);
+                // Patterns inside the initializer don't take this element's reference.
+                let pre = self.pre_resolved.take();
                 match &**target {
                     Pat::Ident(n) => self.named_expr(def, n),
                     _ => self.expr(def),
                 }
+                self.pre_resolved = pre;
                 self.patch(j);
                 self.bind(target, mode);
             }
@@ -1562,12 +1627,14 @@ impl<'a> Compiler<'a> {
                         continue;
                     }
                     self.emit(Op::Dup);
+                    let pre = self.pre_resolve(sub, mode);
                     match k {
                         crate::ast::PropKey::Ident(_)
                         | crate::ast::PropKey::Str(_)
                         | crate::ast::PropKey::Num(_)
                             if rest.is_none() =>
                         {
+                            self.resolve_target(pre);
                             let key = static_key(k);
                             let ki = self.key(key);
                             self.emit(Op::GetNamed(ki));
@@ -1577,6 +1644,7 @@ impl<'a> Compiler<'a> {
                             if rest.is_some() {
                                 self.emit(Op::AppendKey);
                             }
+                            self.resolve_target(pre);
                             self.emit(Op::GetProp);
                         }
                     }
@@ -1595,6 +1663,8 @@ impl<'a> Compiler<'a> {
                         self.emit(Op::Pop);
                         self.pop_ctls(n);
                     } else {
+                        let pre = self.pre_resolve(r, mode);
+                        self.resolve_target(pre);
                         self.emit(Op::Swap);
                         self.emit(Op::ObjRest);
                         self.bind(r, mode);
@@ -1630,6 +1700,8 @@ impl<'a> Compiler<'a> {
                                 self.emit(Op::Pop);
                                 self.pop_ctls(n);
                             } else {
+                                let pre = self.pre_resolve(p, mode);
+                                self.resolve_target(pre);
                                 self.emit(Op::IterValue);
                                 self.bind(p, mode);
                             }
@@ -1647,6 +1719,8 @@ impl<'a> Compiler<'a> {
                         self.emit(Op::Pop);
                         self.pop_ctls(n);
                     } else {
+                        let pre = self.pre_resolve(r, mode);
+                        self.resolve_target(pre);
                         self.emit(Op::IterRest);
                         self.bind(r, mode);
                     }
@@ -1660,6 +1734,31 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::IterCloseThrow);
                 self.patch(done);
             }
+        }
+    }
+
+    /// In dynamic code, a pattern element's identifier target (with or without a default):
+    /// it is resolved before the element's value is read (KeyedBindingInitialization and
+    /// IteratorBindingInitialization, SingleNameBinding step 2).
+    fn pre_resolve(&self, p: &'a Pat, mode: Bind) -> Option<&'a str> {
+        if mode != Bind::Assign || !self.dynamic {
+            return None;
+        }
+        match p {
+            Pat::Ident(n) => Some(n),
+            Pat::Default(t, _) => match &**t {
+                Pat::Ident(n) => Some(n),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn resolve_target(&mut self, pre: Option<&'a str>) {
+        if let Some(n) = pre {
+            let i = self.name(n);
+            self.emit(Op::ResolveVar(i));
+            self.pre_resolved = Some(n);
         }
     }
 
@@ -1968,7 +2067,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::This);
             }
             Expr::Regex { body, flags } => {
-                self.code.regexps.push((js_str(body), js_str(flags)));
+                self.code.regexps.push((body.as_slice().into(), js_str(flags)));
                 let i = self.code.regexps.len() as u32 - 1;
                 self.emit(Op::RegExp(i));
             }
@@ -2242,8 +2341,22 @@ impl<'a> Compiler<'a> {
                 let i = self.name(n);
                 self.emit(Op::GetVarThis(i));
             }
+            Expr::OptionalChain(inner)
+                if matches!(**inner, Expr::Member { .. } | Expr::PrivateMember { .. }) =>
+            {
+                // `(a?.b)()`: the parenthesized chain is still a Reference (§13.2.9.4), so the
+                // call keeps `a` as `this`; a short-circuit calls undefined.
+                self.chain.push(Vec::new());
+                self.callee(inner);
+                let end = self.emit(Op::Jump(0));
+                for j in self.chain.pop().unwrap_or_default() {
+                    self.patch(j);
+                }
+                self.emit(Op::Undef);
+                self.patch(end);
+            }
+            Expr::Paren(inner) if matches!(**inner, Expr::OptionalChain(_)) => self.callee(inner),
             Expr::OptionalChain(_) => {
-                // `(a?.b)()`: the chain's value, called with its base lost.
                 self.expr(callee);
                 self.emit(Op::Undef);
             }
@@ -2557,11 +2670,14 @@ impl<'a> Compiler<'a> {
             match target {
                 Pat::Ident(n) => {
                     let i = self.name(n);
-                    if self.dynamic {
+                    // §13.15.2 step 1.a: the reference is resolved before the value.
+                    let resolve = self.dynamic
+                        || (self.code.strict && !self.stable.contains(n.as_str()) && may_run_code(value));
+                    if resolve {
                         self.emit(Op::ResolveVar(i));
                     }
                     self.named_expr(value, n);
-                    self.ident_set(i);
+                    self.emit(if resolve { Op::SetResolved(i) } else { Op::SetVar(i) });
                 }
                 Pat::Expr(e) => self.assign_expr_target(e, value),
                 _ => {
@@ -2660,9 +2776,14 @@ impl<'a> Compiler<'a> {
         }
         match t {
             Expr::Ident(n) => {
-                self.expr(value);
                 let i = self.name(n);
-                self.emit(Op::SetVar(i));
+                let resolve = self.dynamic
+                    || (self.code.strict && !self.stable.contains(n.as_str()) && may_run_code(value));
+                if resolve {
+                    self.emit(Op::ResolveVar(i));
+                }
+                self.expr(value);
+                self.emit(if resolve { Op::SetResolved(i) } else { Op::SetVar(i) });
             }
             Expr::Call { .. } => {
                 self.expr(t);
@@ -3164,6 +3285,24 @@ fn block_lexical(body: &[Stmt], out: &mut Vec<(String, bool)>, funcs: &mut Vec<R
         if let Stmt::Function(f) = s {
             funcs.push(f.clone());
         }
+    }
+}
+
+/// Whether evaluating `e` may run user code (which could create a global binding).
+fn may_run_code(e: &Expr) -> bool {
+    match e {
+        Expr::Num(_)
+        | Expr::BigInt(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Null
+        | Expr::This
+        | Expr::Regex { .. }
+        | Expr::Function(_)
+        | Expr::Arrow(_) => false,
+        Expr::Template(parts) => parts.iter().any(|p| matches!(p, crate::ast::TemplatePart::Expr(_))),
+        Expr::Paren(x) => may_run_code(x),
+        _ => true,
     }
 }
 

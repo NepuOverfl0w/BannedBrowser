@@ -10,6 +10,7 @@
 #     the v0.2 JavaScript scope (intl402 and staging are out of scope).
 #   - The Public Suffix List's own test vectors (tests/test_psl.txt, HEAD). The list itself
 #     is downloaded by bb-net's build script, so both are current.
+#   - Unicode 17 NormalizationTest.txt (UAX #15 conformance for String.prototype.normalize).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TP="$ROOT/third_party"
@@ -38,7 +39,7 @@ mkdir -p wpt-url
 [ -s wpt-url/urltestdata.json ] || curl -fsSL -o wpt-url/urltestdata.json \
   https://raw.githubusercontent.com/web-platform-tests/wpt/master/url/resources/urltestdata.json
 [ -s entities.json ] || curl -fsSL -o entities.json https://html.spec.whatwg.org/entities.json
-TEST262_COMMIT="2a1ade303f72d3de80565c921d685222405c32ce" # 2026-11-22
+TEST262_COMMIT="ebf6ae620a0f292b4845cd4099cb9096735e64ae" # 2026-11-23
 if [ "$(git -C test262 rev-parse HEAD 2>/dev/null || true)" != "$TEST262_COMMIT" ]; then
   rm -rf test262
   git init -q test262
@@ -56,4 +57,9 @@ fi
 mkdir -p psl
 [ -s psl/test_psl.txt ] || curl -fsSL -o psl/test_psl.txt \
   https://raw.githubusercontent.com/publicsuffix/list/main/tests/test_psl.txt
+
+# Unicode normalization conformance (UAX #15), for String.prototype.normalize.
+mkdir -p ucd
+[ -s ucd/NormalizationTest.txt ] || curl -fsSL -o ucd/NormalizationTest.txt \
+  https://www.unicode.org/Public/17.0.0/ucd/NormalizationTest.txt
 echo "spec suites ready in $TP"

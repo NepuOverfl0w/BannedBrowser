@@ -25,13 +25,13 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Tests that pass now; a run with fewer fails.
-const FLOOR: usize = 48_782;
+const FLOOR: usize = 48_803;
 
 /// Instructions per test variant before it counts as hung (TEST262_FUEL overrides it
-/// for experiments). The heaviest legitimate tests, the generated RegExp property-escape
-/// tests (they build strings of all 1.1M code points in JavaScript), need about 25M,
-/// a second or two; a hung test stops here.
-const FUEL: u64 = 30_000_000;
+/// for experiments). The heaviest legitimate tests are decodeURI's and
+/// decodeURIComponent's exhaustive four-byte UTF-8 checks (S15.1.3.*_A2.5_T1: a million
+/// iterations, between 100M and 300M instructions); a hung test stops here.
+const FUEL: u64 = 400_000_000;
 
 fn fuel() -> u64 {
     std::env::var("TEST262_FUEL").ok().and_then(|v| v.parse().ok()).unwrap_or(FUEL)

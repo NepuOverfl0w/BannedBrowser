@@ -111,6 +111,35 @@ const PUNCTS: &[&str] = &[
 pub struct Lexer {
     src: Vec<char>,
     pub pos: usize,
+    /// Source text with lone surrogates (eval of a JavaScript string) has them mapped to a
+    /// block of 0x800 private-use code points from this base, none of which occur in the
+    /// text itself (`encode_source`); string and regular expression literals map them
+    /// back.
+    pub surrogates: Option<u32>,
+}
+
+/// Source text from UTF-16 that may hold lone surrogates: a Rust string with them mapped
+/// to private-use code points (`Lexer::surrogates`), and that block's base if any.
+pub fn encode_source(units: &[u16]) -> (String, Option<u32>) {
+    if String::from_utf16(units).is_ok() {
+        return (String::from_utf16_lossy(units), None);
+    }
+    let cps: Vec<u32> = char::decode_utf16(units.iter().copied())
+        .map(|r| r.map(|c| c as u32).unwrap_or_else(|e| e.unpaired_surrogate() as u32))
+        .collect();
+    // A block in planes 15–16 that the text doesn't use.
+    let base = (0xF0000..0x10F800)
+        .step_by(0x800)
+        .find(|b| !cps.iter().any(|c| (*b..b + 0x800).contains(c)))
+        .unwrap_or(0xF0000);
+    let s = cps
+        .iter()
+        .map(|&c| match c {
+            0xD800..=0xDFFF => char::from_u32(base + c - 0xD800).unwrap_or('\u{FFFD}'),
+            c => char::from_u32(c).unwrap_or('\u{FFFD}'),
+        })
+        .collect();
+    (s, Some(base))
 }
 
 fn push_cp(out: &mut JsStr, cp: u32) {
@@ -124,8 +153,25 @@ fn push_cp(out: &mut JsStr, cp: u32) {
 }
 
 impl Lexer {
+    /// A source character into a literal's value (a mapped lone surrogate back to itself).
+    fn push_src(&self, out: &mut JsStr, c: char) {
+        match self.surrogates {
+            Some(b) if (b..b + 0x800).contains(&(c as u32)) => out.push((0xD800 + c as u32 - b) as u16),
+            _ => push_cp(out, c as u32),
+        }
+    }
+
+    /// A source text slice (a regular expression body) as UTF-16, lone surrogates restored.
+    pub fn units(&self, s: &str) -> JsStr {
+        let mut out = Vec::with_capacity(s.len());
+        for c in s.chars() {
+            self.push_src(&mut out, c);
+        }
+        out
+    }
+
     pub fn new(src: &str) -> Lexer {
-        Lexer { src: src.chars().collect(), pos: 0 }
+        Lexer { src: src.chars().collect(), pos: 0, surrogates: None }
     }
 
     pub fn source(&self) -> &[char] {
@@ -241,10 +287,10 @@ impl Lexer {
             Some('/') if regex_ok => self.regex()?,
             Some(_) => {
                 let rest = &self.src[self.pos..];
-                let p = PUNCTS.iter().find(|p| {
-                    let pc: Vec<char> = p.chars().collect();
-                    rest.starts_with(&pc)
-                });
+                // Punctuators are ASCII: compare in place, no allocation per candidate.
+                let p = PUNCTS
+                    .iter()
+                    .find(|p| p.len() <= rest.len() && p.bytes().zip(rest).all(|(a, &b)| a as char == b));
                 match p {
                     // `?.` followed by a digit is `?` then a number (`a?.5:b`).
                     Some(&"?.") if rest.get(2).is_some_and(|d| d.is_ascii_digit()) => {
@@ -252,7 +298,7 @@ impl Lexer {
                         TokKind::Punct("?")
                     }
                     Some(p) => {
-                        self.pos += p.chars().count();
+                        self.pos += p.len();
                         TokKind::Punct(p)
                     }
                     None => return self.err(format!("unexpected character {:?}", self.src[self.pos])),
@@ -348,7 +394,7 @@ impl Lexer {
             } else if c == '\n' || c == '\r' {
                 return self.err("line break in string");
             } else {
-                push_cp(&mut out, c as u32);
+                self.push_src(&mut out, c);
             }
         }
     }
@@ -464,7 +510,10 @@ impl Lexer {
             }
             raw.push(c);
             if let Some(s) = cooked.as_mut() {
-                push_cp(s, c as u32);
+                match self.surrogates {
+                    Some(b) if (b..b + 0x800).contains(&(c as u32)) => s.push((0xD800 + c as u32 - b) as u16),
+                    _ => push_cp(s, c as u32),
+                }
             }
         }
     }

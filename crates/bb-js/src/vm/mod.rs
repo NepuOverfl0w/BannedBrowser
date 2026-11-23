@@ -25,6 +25,7 @@ pub mod fx;
 mod generator;
 pub mod heap;
 pub mod module;
+pub mod normalize;
 pub mod object;
 pub mod ops;
 pub mod promise;
@@ -1714,6 +1715,10 @@ impl Vm {
                 let v = self.pop();
                 self.top().completion = v;
             }
+            Op::GetCompletion => {
+                let v = self.top().completion.clone();
+                self.push(v);
+            }
             Op::Unsupported(i) => {
                 let s = to_rust(&self.top().code.strings[i as usize]);
                 if let Some(m) = s.strip_prefix("ReferenceError:") {
@@ -1841,6 +1846,19 @@ impl Vm {
                 Resume::Throw => return Err(self.pop()),
                 Resume::Return => self.jump(t),
             },
+            Op::JumpIfResumeReturn(t) => {
+                if self.top().resume == Resume::Return {
+                    self.top().resume = Resume::Next;
+                    self.jump(t);
+                }
+            }
+            Op::SetResume(m) => {
+                self.top().resume = match m {
+                    1 => Resume::Throw,
+                    2 => Resume::Return,
+                    _ => Resume::Next,
+                };
+            }
             Op::YieldStar(done, ret) => return self.yield_star(done, ret, base),
             Op::NewPrivateName(i) => {
                 let d = to_rust(&self.top().code.strings[i as usize]);
@@ -2019,8 +2037,9 @@ impl Vm {
         let strict = self.strict();
         let env = self.top().env;
         let var_env = self.top().var_env;
-        let ctx = self.eval_context(env, strict);
-        let src = to_rust(&src);
+        let mut ctx = self.eval_context(env, strict);
+        let (src, surrogates) = crate::lexer::encode_source(&src);
+        ctx.surrogates = surrogates;
         let prog = match crate::parser::parse_eval(&src, ctx) {
             Ok(p) => p,
             Err(e) => return self.syntax_error(&e.msg),
@@ -2068,8 +2087,9 @@ impl Vm {
     /// Indirect eval (§19.2.1.1 PerformEval with direct = false).
     pub fn indirect_eval(&mut self, x: Value) -> JsResult<Value> {
         let Value::String(src) = x else { return Ok(x) };
-        let src = to_rust(&src);
-        let prog = match crate::parser::parse_eval(&src, Default::default()) {
+        let (src, surrogates) = crate::lexer::encode_source(&src);
+        let ctx = crate::parser::EvalContext { surrogates, ..Default::default() };
+        let prog = match crate::parser::parse_eval(&src, ctx) {
             Ok(p) => p,
             Err(e) => return self.syntax_error(&e.msg),
         };

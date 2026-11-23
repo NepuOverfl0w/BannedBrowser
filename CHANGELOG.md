@@ -25,7 +25,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   offset time zones), [[IsHTMLDDA]] for `document.all` and the legacy RegExp statics
   (`RegExp.$1`, `RegExp.lastMatch`, …), proper tail calls, decorators and auto-accessors,
   JSON, text and bytes modules (`import … with { type: "json" }`) and source-phase imports:
-  99.96 % of test262 runs correctly so far.
+  all of test262 (`language`, `built-ins`, `annexB`: 48803 tests, sloppy and strict) passes,
+  and so does Unicode's normalization conformance test.
   The browser doesn't run page scripts with it yet (that's milestone E).
 - **HTTP/2** (RFC 9113) with our own HPACK (RFC 7541, incl. Huffman coding), negotiated with
   ALPN `h2` over TLS (also through CONNECT proxies); HTTP/1.1 otherwise. One connection per

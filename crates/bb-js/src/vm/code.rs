@@ -235,6 +235,8 @@ pub enum Op {
     IterCloseThrow,
     /// `[v] → []` completion value of script/eval code.
     SetCompletion,
+    /// `[] → [v]` the completion value so far.
+    GetCompletion,
     /// Parameter initializers run between these: a direct eval there may not declare
     /// `var arguments` (§19.2.1.3 step 3).
     ParamsStart,
@@ -284,6 +286,11 @@ pub enum Op {
     /// After a yield: the resumed value is on the stack; a `throw()` throws it and a
     /// `return()` jumps to the return path at the target.
     Resume(u32),
+    /// After an async generator's yield inside `yield*`: a `return()` resumption jumps to
+    /// the target (where its value is awaited first, AsyncGeneratorYield step 13).
+    JumpIfResumeReturn(u32),
+    /// Set how the frame counts as resumed (0 next, 1 throw, 2 return), for `yield*`.
+    SetResume(u8),
     /// `[rec received] →` one step of `yield*` (§14.4.14): suspends (re-running this
     /// instruction on resumption) or leaves the result and jumps to the first target (inner
     /// iterator done) or the second (return completion).

@@ -483,6 +483,9 @@ pub(super) fn install(vm: &mut Vm) {
     method(vm, sp, "localeCompare", 1, |vm, c| {
         let s = this_str(vm, &c)?;
         let t = arg_string(vm, &c, 0)?;
+        // §22.1.3.12: canonically equivalent strings compare equal; compare the NFD forms.
+        use super::super::normalize::{normalize, Form};
+        let (s, t) = (normalize(&s, Form::Nfd), normalize(&t, Form::Nfd));
         Ok(Value::Number(match s[..].cmp(&t[..]) {
             std::cmp::Ordering::Less => -1.0,
             std::cmp::Ordering::Equal => 0.0,
@@ -507,14 +510,19 @@ pub(super) fn install(vm: &mut Vm) {
     method(vm, sp, "normalize", 0, |vm, c| {
         let s = this_str(vm, &c)?;
         let f = if c.arg(0).is_undefined() { js_str("NFC") } else { vm.to_string(&c.arg(0))? };
-        let form = String::from_utf16_lossy(&f);
-        if !["NFC", "NFD", "NFKC", "NFKD"].contains(&form.as_str()) {
-            return vm.range_error("The normalization form should be one of NFC, NFD, NFKC, NFKD.");
-        }
-        if s.iter().all(|&u| u < 0x300) {
+        use super::super::normalize::{normalize, Form};
+        let form = match String::from_utf16_lossy(&f).as_str() {
+            "NFC" => Form::Nfc,
+            "NFD" => Form::Nfd,
+            "NFKC" => Form::Nfkc,
+            "NFKD" => Form::Nfkd,
+            _ => return vm.range_error("The normalization form should be one of NFC, NFD, NFKC, NFKD."),
+        };
+        // ASCII is the same in every form.
+        if s.iter().all(|&u| u < 0x80) {
             return Ok(Value::String(s));
         }
-        vm.syntax_error("String.prototype.normalize beyond Latin-1 is not supported yet")
+        Ok(Value::String(normalize(&s, form).into()))
     });
     let si = vm.realm.sym_iterator.clone();
     method_sym(vm, sp, si, "[Symbol.iterator]", 0, |vm, c| {
