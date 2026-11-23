@@ -1,0 +1,495 @@
+//! The Window global (HTML §7.2) and WindowOrWorkerGlobalScope (HTML §8.1.7): timers,
+//! microtasks, animation frames, console, location, navigator, screen, performance,
+//! base64. Window is a [Global] interface, so its members live on the global object itself
+//! (WebIDL §3.7.6).
+
+use bb_js::vm::heap::{NativeCall, ObjRef};
+use bb_js::vm::PropKey;
+use bb_js::{JsResult, Value, Vm};
+
+use crate::exception::throw;
+use crate::host::*;
+use crate::idl::{attr, constant, op};
+
+type R = JsResult<Value>;
+
+fn window_value(vm: &mut Vm) -> R {
+    let h = host(vm)?;
+    Ok(h.window.get().map_or(Value::Undefined, Value::Object))
+}
+
+pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
+    let g = vm.realm.global;
+    for name in ["window", "self", "frames", "top", "parent"] {
+        attr(vm, g, name, |vm, _| window_value(vm), None);
+    }
+    attr(vm, g, "opener", |_, _| Ok(Value::Null), Some(|_, _| Ok(Value::Undefined)));
+    attr(vm, g, "frameElement", |_, _| Ok(Value::Null), None);
+    attr(vm, g, "closed", |_, _| Ok(Value::Bool(false)), None);
+    attr(vm, g, "length", |_, _| Ok(Value::Number(0.0)), None);
+    attr(
+        vm,
+        g,
+        "isSecureContext",
+        |vm, _| {
+            let h = host(vm)?;
+            let s = h.url.borrow().scheme().to_string();
+            Ok(Value::Bool(matches!(s.as_str(), "https" | "file" | "about")))
+        },
+        None,
+    );
+    attr(
+        vm,
+        g,
+        "origin",
+        |vm, _| {
+            let h = host(vm)?;
+            let o = origin_of(&h.url.borrow());
+            Ok(js(&o))
+        },
+        None,
+    );
+    attr(
+        vm,
+        g,
+        "name",
+        |vm, _| {
+            let h = host(vm)?;
+            let n = h.misc_str("window.name");
+            Ok(js(&n))
+        },
+        Some(|vm, c| {
+            let v = rstr(vm, &c.arg(0))?;
+            let h = host(vm)?;
+            h.set_misc_str("window.name", &v);
+            Ok(Value::Undefined)
+        }),
+    );
+    attr(
+        vm,
+        g,
+        "document",
+        |vm, _| {
+            let h = host(vm)?;
+            wrap(vm, &h, NodeRef { doc: 0, id: bb_dom::Document::ROOT })
+        },
+        None,
+    );
+    attr(vm, g, "event", |_, _| Ok(Value::Undefined), Some(|_, _| Ok(Value::Undefined)));
+    for (name, f) in [
+        ("innerWidth", (|vm, _| viewport(vm, 0)) as bb_js::vm::heap::NativeFn),
+        ("innerHeight", |vm, _| viewport(vm, 1)),
+        ("outerWidth", |vm, _| viewport(vm, 0)),
+        ("outerHeight", |vm, _| viewport(vm, 1)),
+    ] {
+        attr(vm, g, name, f, None);
+    }
+    for name in
+        ["scrollX", "scrollY", "pageXOffset", "pageYOffset", "screenX", "screenY", "screenLeft", "screenTop"]
+    {
+        attr(vm, g, name, |_, _| Ok(Value::Number(0.0)), None);
+    }
+    attr(vm, g, "devicePixelRatio", |_, _| Ok(Value::Number(1.0)), None);
+    op(vm, g, "setTimeout", 1, |vm, c| set_timer(vm, &c, false));
+    op(vm, g, "setInterval", 1, |vm, c| set_timer(vm, &c, true));
+    for name in ["clearTimeout", "clearInterval"] {
+        op(vm, g, name, 0, |vm, c| {
+            let id = vm.to_int32(&c.arg(0))?;
+            let h = host(vm)?;
+            h.timers.borrow_mut().retain(|t| t.id as i32 != id);
+            Ok(Value::Undefined)
+        });
+    }
+    op(vm, g, "queueMicrotask", 1, |vm, c| {
+        let f = c.arg(0);
+        if !vm.is_callable(&f) {
+            return vm.type_error("queueMicrotask needs a function");
+        }
+        vm.enqueue_microtask(f);
+        Ok(Value::Undefined)
+    });
+    op(vm, g, "requestAnimationFrame", 1, |vm, c| {
+        let f = c.arg(0);
+        if !vm.is_callable(&f) {
+            return vm.type_error("requestAnimationFrame needs a function");
+        }
+        let h = host(vm)?;
+        let id = h.next_timer.get();
+        h.next_timer.set(id + 1);
+        h.frame_callbacks.borrow_mut().push((id, f));
+        Ok(Value::Number(id as f64))
+    });
+    op(vm, g, "cancelAnimationFrame", 1, |vm, c| {
+        let id = vm.to_uint32(&c.arg(0))?;
+        let h = host(vm)?;
+        h.frame_callbacks.borrow_mut().retain(|x| x.0 != id);
+        Ok(Value::Undefined)
+    });
+    op(vm, g, "alert", 0, |vm, c| {
+        let m = if c.args.is_empty() { String::new() } else { rstr(vm, &c.arg(0))? };
+        let h = host(vm)?;
+        h.console.borrow_mut().push(format!("[alert] {m}"));
+        Ok(Value::Undefined)
+    });
+    op(vm, g, "confirm", 0, |_, _| Ok(Value::Bool(false)));
+    op(vm, g, "prompt", 0, |_, _| Ok(Value::Null));
+    op(vm, g, "print", 0, |_, _| Ok(Value::Undefined));
+    for name in [
+        "focus", "blur", "stop", "close", "scroll", "scrollTo", "scrollBy", "moveTo", "moveBy", "resizeTo",
+        "resizeBy",
+    ] {
+        op(vm, g, name, 0, |_, _| Ok(Value::Undefined));
+    }
+    op(vm, g, "btoa", 1, |vm, c| {
+        let s = vm.to_string(&c.arg(0))?;
+        if s.iter().any(|&u| u > 0xFF) {
+            return throw(vm, "InvalidCharacterError", "btoa: a character is outside Latin-1");
+        }
+        let bytes: Vec<u8> = s.iter().map(|&u| u as u8).collect();
+        Ok(js(&base64_encode(&bytes)))
+    });
+    op(vm, g, "atob", 1, |vm, c| {
+        let s = rstr(vm, &c.arg(0))?;
+        match base64_decode(&s) {
+            Some(b) => Ok(Value::String(b.into_iter().map(u16::from).collect::<Vec<u16>>().into())),
+            None => throw(vm, "InvalidCharacterError", "atob: not valid base64"),
+        }
+    });
+    crate::events::setup_window_handlers(vm, g);
+    install_console(vm, g);
+    install_location(vm, g);
+    install_navigator(vm, g);
+    install_screen_and_performance(vm, g);
+}
+
+fn viewport(vm: &mut Vm, i: usize) -> R {
+    let h = host(vm)?;
+    let (w, ht) = h.embedder.viewport();
+    Ok(Value::Number(if i == 0 { w } else { ht }))
+}
+
+/// The serialized origin of a URL (HTML §7.1.1).
+pub fn origin_of(u: &bb_url::Url) -> String {
+    u.origin().serialize()
+}
+
+/// setTimeout / setInterval (HTML §8.6 "timer initialization steps").
+fn set_timer(vm: &mut Vm, c: &NativeCall, repeat: bool) -> R {
+    let handler = c.arg(0);
+    let handler = if vm.is_callable(&handler) { handler } else { js(&rstr(vm, &handler)?) };
+    let timeout = vm.to_int32(&c.arg(1))?.max(0) as f64;
+    let args = c.args.iter().skip(2).cloned().collect();
+    let h = host(vm)?;
+    let id = h.next_timer.get();
+    h.next_timer.set(id + 1);
+    let seq = h.timer_seq.get();
+    h.timer_seq.set(seq + 1);
+    let due = h.embedder.now_ms() + timeout;
+    h.timers.borrow_mut().push(Timer {
+        id,
+        due,
+        interval: repeat.then_some(timeout),
+        callback: handler,
+        args,
+        seq,
+    });
+    Ok(Value::Number(id as f64))
+}
+
+// ---- console ----
+
+fn console_line(vm: &mut Vm, c: &NativeCall, level: &str) -> R {
+    let mut parts = Vec::with_capacity(c.args.len());
+    for a in &c.args {
+        parts.push(match a {
+            Value::String(_) => rstr(vm, a)?,
+            _ => vm.describe(a),
+        });
+    }
+    let line = parts.join(" ");
+    let h = host(vm)?;
+    log::debug!("console.{level}: {line}");
+    h.console.borrow_mut().push(if level == "log" { line } else { format!("[{level}] {line}") });
+    Ok(Value::Undefined)
+}
+
+fn install_console(vm: &mut Vm, g: ObjRef) {
+    let con = vm.new_object();
+    for (name, f) in [
+        ("log", (|vm, c| console_line(vm, &c, "log")) as bb_js::vm::heap::NativeFn),
+        ("info", |vm, c| console_line(vm, &c, "info")),
+        ("warn", |vm, c| console_line(vm, &c, "warn")),
+        ("error", |vm, c| console_line(vm, &c, "error")),
+        ("debug", |vm, c| console_line(vm, &c, "debug")),
+        ("trace", |vm, c| console_line(vm, &c, "trace")),
+        ("dir", |vm, c| console_line(vm, &c, "dir")),
+        ("dirxml", |vm, c| console_line(vm, &c, "dir")),
+        ("table", |vm, c| console_line(vm, &c, "table")),
+        ("group", |vm, c| console_line(vm, &c, "group")),
+        ("groupCollapsed", |vm, c| console_line(vm, &c, "group")),
+        ("groupEnd", |_, _| Ok(Value::Undefined)),
+        ("time", |_, _| Ok(Value::Undefined)),
+        ("timeEnd", |_, _| Ok(Value::Undefined)),
+        ("timeLog", |_, _| Ok(Value::Undefined)),
+        ("count", |_, _| Ok(Value::Undefined)),
+        ("countReset", |_, _| Ok(Value::Undefined)),
+        ("clear", |_, _| Ok(Value::Undefined)),
+        ("assert", |vm, c| {
+            if vm.to_boolean(&c.arg(0)) {
+                return Ok(Value::Undefined);
+            }
+            let rest = NativeCall {
+                callee: c.callee,
+                this: c.this.clone(),
+                args: c.args.iter().skip(1).cloned().collect(),
+                new_target: None,
+            };
+            console_line(vm, &rest, "assert")
+        }),
+    ] {
+        bb_js::vm::realm::method(vm, con, name, 0, f);
+    }
+    bb_js::vm::realm::value(vm, g, "console", Value::Object(con));
+}
+
+// ---- location ----
+
+fn url_part(vm: &mut Vm, part: &str) -> R {
+    let h = host(vm)?;
+    let u = h.url.borrow().clone();
+    let s = match part {
+        "href" => u.href(),
+        "protocol" => u.protocol(),
+        "host" => u.host_with_port(),
+        "hostname" => u.hostname(),
+        "port" => u.port().map(|p| p.to_string()).unwrap_or_default(),
+        "pathname" => u.pathname(),
+        "search" => u.search(),
+        "hash" => u.hash(),
+        "origin" => u.origin().serialize(),
+        _ => String::new(),
+    };
+    Ok(js(&s))
+}
+
+/// Ask the embedder to navigate (HTML §7.4.2 "navigate"), resolving `to` first.
+fn navigate(vm: &mut Vm, to: &str) -> R {
+    let h = host(vm)?;
+    let base = h.url.borrow().clone();
+    match bb_url::Url::parse_with_base(to, Some(&base)) {
+        Ok(u) => {
+            *h.pending_navigation.borrow_mut() = Some(u.href());
+            Ok(Value::Undefined)
+        }
+        Err(_) => throw(vm, "SyntaxError", &format!("'{to}' is not a valid URL")),
+    }
+}
+
+fn install_location(vm: &mut Vm, g: ObjRef) {
+    let loc = vm.new_object();
+    for part in ["protocol", "host", "hostname", "port", "pathname", "search", "hash", "origin"] {
+        let f: bb_js::vm::heap::NativeFn = match part {
+            "protocol" => |vm, _| url_part(vm, "protocol"),
+            "host" => |vm, _| url_part(vm, "host"),
+            "hostname" => |vm, _| url_part(vm, "hostname"),
+            "port" => |vm, _| url_part(vm, "port"),
+            "pathname" => |vm, _| url_part(vm, "pathname"),
+            "search" => |vm, _| url_part(vm, "search"),
+            "hash" => |vm, _| url_part(vm, "hash"),
+            _ => |vm, _| url_part(vm, "origin"),
+        };
+        attr(vm, loc, part, f, None);
+    }
+    attr(
+        vm,
+        loc,
+        "href",
+        |vm, _| url_part(vm, "href"),
+        Some(|vm, c| {
+            let to = rstr(vm, &c.arg(0))?;
+            navigate(vm, &to)
+        }),
+    );
+    for name in ["assign", "replace"] {
+        op(vm, loc, name, 1, |vm, c| {
+            let to = rstr(vm, &c.arg(0))?;
+            navigate(vm, &to)
+        });
+    }
+    op(vm, loc, "reload", 0, |vm, _| {
+        let h = host(vm)?;
+        let u = h.url.borrow().href();
+        *h.pending_navigation.borrow_mut() = Some(u);
+        Ok(Value::Undefined)
+    });
+    op(vm, loc, "toString", 0, |vm, _| url_part(vm, "href"));
+    attr(
+        vm,
+        g,
+        "location",
+        |vm, _| {
+            let h = host(vm)?;
+            let loc = h.misc.borrow().get("location").copied();
+            Ok(loc.map_or(Value::Undefined, Value::Object))
+        },
+        Some(|vm, c| {
+            let to = rstr(vm, &c.arg(0))?;
+            navigate(vm, &to)
+        }),
+    );
+    if let Ok(h) = host(vm) {
+        h.misc.borrow_mut().insert("location", loc);
+    }
+    // document.location is the same object.
+    let dp = host(vm).ok().map(|h| h.proto(crate::class::C::Document));
+    if let Some(dp) = dp {
+        attr(
+            vm,
+            dp,
+            "location",
+            |vm, _| {
+                let h = host(vm)?;
+                let loc = h.misc.borrow().get("location").copied();
+                Ok(loc.map_or(Value::Null, Value::Object))
+            },
+            Some(|vm, c| {
+                let to = rstr(vm, &c.arg(0))?;
+                navigate(vm, &to)
+            }),
+        );
+    }
+}
+
+// ---- navigator, screen, performance ----
+
+fn install_navigator(vm: &mut Vm, g: ObjRef) {
+    let nav = vm.new_object();
+    let ua = host(vm).map(|h| h.embedder.user_agent()).unwrap_or_default();
+    let app_version = ua.strip_prefix("Mozilla/").unwrap_or(&ua).to_string();
+    for (k, v) in [
+        ("userAgent", ua.as_str()),
+        ("appVersion", app_version.as_str()),
+        ("appName", "Netscape"),
+        ("appCodeName", "Mozilla"),
+        ("product", "Gecko"),
+        ("productSub", "20030107"),
+        ("vendor", ""),
+        ("vendorSub", ""),
+        ("language", "en-US"),
+        ("platform", platform()),
+        ("oscpu", platform()),
+        ("doNotTrack", "unspecified"),
+    ] {
+        constant(vm, nav, k, js(v));
+    }
+    let langs = vec![js("en-US"), js("en")];
+    let langs = vm.new_array(langs);
+    constant(vm, nav, "languages", Value::Object(langs));
+    constant(vm, nav, "onLine", Value::Bool(true));
+    constant(vm, nav, "cookieEnabled", Value::Bool(true));
+    constant(vm, nav, "webdriver", Value::Bool(false));
+    constant(vm, nav, "pdfViewerEnabled", Value::Bool(false));
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    constant(vm, nav, "hardwareConcurrency", Value::Number(cores as f64));
+    constant(vm, nav, "maxTouchPoints", Value::Number(0.0));
+    op(vm, nav, "javaEnabled", 0, |_, _| Ok(Value::Bool(false)));
+    bb_js::vm::realm::to_string_tag(vm, nav, "Navigator");
+    constant(vm, g, "navigator", Value::Object(nav));
+    if let Some(p) = vm.heap.obj_mut(g).props.get_mut(&PropKey::lit("navigator")) {
+        p.configurable = true;
+    }
+}
+
+/// navigator.platform (HTML §8.10.1.1: the values browsers report).
+fn platform() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Win32"
+    } else if cfg!(target_os = "macos") {
+        "MacIntel"
+    } else {
+        "Linux x86_64"
+    }
+}
+
+fn install_screen_and_performance(vm: &mut Vm, g: ObjRef) {
+    let scr = vm.new_object();
+    let (w, h) = host(vm).map(|h| h.embedder.viewport()).unwrap_or((1024.0, 768.0));
+    for (k, v) in [
+        ("width", w),
+        ("height", h),
+        ("availWidth", w),
+        ("availHeight", h),
+        ("colorDepth", 24.0),
+        ("pixelDepth", 24.0),
+        ("availLeft", 0.0),
+        ("availTop", 0.0),
+    ] {
+        constant(vm, scr, k, Value::Number(v));
+    }
+    bb_js::vm::realm::to_string_tag(vm, scr, "Screen");
+    bb_js::vm::realm::value(vm, g, "screen", Value::Object(scr));
+    let perf = vm.new_object();
+    op(vm, perf, "now", 0, |vm, _| {
+        let h = host(vm)?;
+        Ok(Value::Number(h.embedder.now_ms()))
+    });
+    let origin = host(vm).map(|h| h.embedder.time_origin_ms()).unwrap_or(0.0);
+    constant(vm, perf, "timeOrigin", Value::Number(origin));
+    for name in ["mark", "measure", "clearMarks", "clearMeasures"] {
+        op(vm, perf, name, 0, |_, _| Ok(Value::Undefined));
+    }
+    for name in ["getEntries", "getEntriesByName", "getEntriesByType"] {
+        op(vm, perf, name, 0, |vm, _| Ok(Value::Object(vm.new_array(Vec::new()))));
+    }
+    bb_js::vm::realm::to_string_tag(vm, perf, "Performance");
+    bb_js::vm::realm::value(vm, g, "performance", Value::Object(perf));
+}
+
+// ---- base64 (Infra §4.5 forgiving-base64) ----
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+pub fn base64_encode(b: &[u8]) -> String {
+    let mut s = String::with_capacity(b.len().div_ceil(3) * 4);
+    for ch in b.chunks(3) {
+        let n =
+            (ch[0] as u32) << 16 | (*ch.get(1).unwrap_or(&0) as u32) << 8 | *ch.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= ch.len() {
+                s.push(B64[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                s.push('=');
+            }
+        }
+    }
+    s
+}
+
+/// Infra §4.5 "forgiving-base64 decode".
+pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    let mut d: Vec<u8> = s.bytes().filter(|c| !matches!(c, b'\t' | b'\n' | b'\x0C' | b'\r' | b' ')).collect();
+    if d.len() % 4 == 0 {
+        if d.ends_with(b"==") {
+            d.truncate(d.len() - 2);
+        } else if d.ends_with(b"=") {
+            d.truncate(d.len() - 1);
+        }
+    }
+    if d.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(d.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0;
+    for c in d {
+        let v = B64.iter().position(|&x| x == c)? as u32;
+        buf = buf << 6 | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+            buf &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}

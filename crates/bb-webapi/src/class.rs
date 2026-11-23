@@ -1,0 +1,371 @@
+//! The interfaces (WebIDL §3.7): their inheritance, interface objects and prototypes.
+//!
+//! A platform object's `class` in bb-js is a [`C`]; `implements` follows the parent chain.
+
+use bb_dom::{Document, Namespace, NodeData, NodeId};
+use bb_js::vm::heap::{NativeCall, NativeFn, ObjRef, Prop};
+use bb_js::vm::{realm, PropKey};
+use bb_js::{JsResult, Value, Vm};
+
+use crate::host::Host;
+
+macro_rules! parent {
+    (None) => {
+        None
+    };
+    ($p:ident) => {
+        Some(C::$p)
+    };
+}
+
+macro_rules! interfaces {
+    ($($c:ident : $parent:tt;)*) => {
+        /// Interfaces, parents before children.
+        #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+        #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+        #[repr(u32)]
+        pub enum C { $($c),* }
+        pub const ALL: &[C] = &[$(C::$c),*];
+        const PARENTS: &[Option<C>] = &[$(parent!($parent)),*];
+        const NAMES: &[&str] = &[$(stringify!($c)),*];
+    };
+}
+
+interfaces! {
+    EventTarget: None;
+    Node: EventTarget;
+    Document: Node;
+    HTMLDocument: Document;
+    XMLDocument: Document;
+    DocumentType: Node;
+    DocumentFragment: Node;
+    CharacterData: Node;
+    Text: CharacterData;
+    CDATASection: Text;
+    Comment: CharacterData;
+    ProcessingInstruction: CharacterData;
+    Attr: Node;
+    Element: Node;
+    HTMLElement: Element;
+    HTMLUnknownElement: HTMLElement;
+    HTMLHtmlElement: HTMLElement;
+    HTMLHeadElement: HTMLElement;
+    HTMLTitleElement: HTMLElement;
+    HTMLBaseElement: HTMLElement;
+    HTMLLinkElement: HTMLElement;
+    HTMLMetaElement: HTMLElement;
+    HTMLStyleElement: HTMLElement;
+    HTMLBodyElement: HTMLElement;
+    HTMLHeadingElement: HTMLElement;
+    HTMLParagraphElement: HTMLElement;
+    HTMLHRElement: HTMLElement;
+    HTMLPreElement: HTMLElement;
+    HTMLQuoteElement: HTMLElement;
+    HTMLOListElement: HTMLElement;
+    HTMLUListElement: HTMLElement;
+    HTMLMenuElement: HTMLElement;
+    HTMLLIElement: HTMLElement;
+    HTMLDListElement: HTMLElement;
+    HTMLDivElement: HTMLElement;
+    HTMLAnchorElement: HTMLElement;
+    HTMLDataElement: HTMLElement;
+    HTMLTimeElement: HTMLElement;
+    HTMLSpanElement: HTMLElement;
+    HTMLBRElement: HTMLElement;
+    HTMLModElement: HTMLElement;
+    HTMLPictureElement: HTMLElement;
+    HTMLSourceElement: HTMLElement;
+    HTMLImageElement: HTMLElement;
+    HTMLIFrameElement: HTMLElement;
+    HTMLEmbedElement: HTMLElement;
+    HTMLObjectElement: HTMLElement;
+    HTMLMediaElement: HTMLElement;
+    HTMLVideoElement: HTMLMediaElement;
+    HTMLAudioElement: HTMLMediaElement;
+    HTMLTrackElement: HTMLElement;
+    HTMLMapElement: HTMLElement;
+    HTMLAreaElement: HTMLElement;
+    HTMLTableElement: HTMLElement;
+    HTMLTableCaptionElement: HTMLElement;
+    HTMLTableColElement: HTMLElement;
+    HTMLTableSectionElement: HTMLElement;
+    HTMLTableRowElement: HTMLElement;
+    HTMLTableCellElement: HTMLElement;
+    HTMLFormElement: HTMLElement;
+    HTMLLabelElement: HTMLElement;
+    HTMLInputElement: HTMLElement;
+    HTMLButtonElement: HTMLElement;
+    HTMLSelectElement: HTMLElement;
+    HTMLDataListElement: HTMLElement;
+    HTMLOptGroupElement: HTMLElement;
+    HTMLOptionElement: HTMLElement;
+    HTMLTextAreaElement: HTMLElement;
+    HTMLOutputElement: HTMLElement;
+    HTMLProgressElement: HTMLElement;
+    HTMLMeterElement: HTMLElement;
+    HTMLFieldSetElement: HTMLElement;
+    HTMLLegendElement: HTMLElement;
+    HTMLDetailsElement: HTMLElement;
+    HTMLDialogElement: HTMLElement;
+    HTMLScriptElement: HTMLElement;
+    HTMLTemplateElement: HTMLElement;
+    HTMLSlotElement: HTMLElement;
+    HTMLCanvasElement: HTMLElement;
+    HTMLFrameSetElement: HTMLElement;
+    HTMLFrameElement: HTMLElement;
+    HTMLDirectoryElement: HTMLElement;
+    HTMLFontElement: HTMLElement;
+    HTMLMarqueeElement: HTMLElement;
+    HTMLParamElement: HTMLElement;
+    SVGElement: Element;
+    MathMLElement: Element;
+    NodeList: None;
+    HTMLCollection: None;
+    DOMTokenList: None;
+    NamedNodeMap: None;
+    DOMStringMap: None;
+    DOMImplementation: None;
+    DOMException: None;
+    Event: None;
+    CustomEvent: Event;
+    UIEvent: Event;
+    MouseEvent: UIEvent;
+    KeyboardEvent: UIEvent;
+    FocusEvent: UIEvent;
+    ErrorEvent: Event;
+    Window: EventTarget;
+}
+
+pub fn name(c: C) -> &'static str {
+    NAMES[c as usize]
+}
+
+pub fn parent(c: C) -> Option<C> {
+    PARENTS[c as usize]
+}
+
+pub fn from_u32(c: u32) -> Option<C> {
+    ALL.get(c as usize).copied()
+}
+
+/// Whether an object of class `c` implements interface `iface`.
+pub fn implements(c: u32, iface: C) -> bool {
+    let mut cur = from_u32(c);
+    while let Some(x) = cur {
+        if x == iface {
+            return true;
+        }
+        cur = parent(x);
+    }
+    false
+}
+
+/// The interface of an HTML element (HTML §3.2.2 "element interface").
+pub fn html_class(name: &str) -> C {
+    match name {
+        "html" => C::HTMLHtmlElement,
+        "head" => C::HTMLHeadElement,
+        "title" => C::HTMLTitleElement,
+        "base" => C::HTMLBaseElement,
+        "link" => C::HTMLLinkElement,
+        "meta" => C::HTMLMetaElement,
+        "style" => C::HTMLStyleElement,
+        "body" => C::HTMLBodyElement,
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => C::HTMLHeadingElement,
+        "p" => C::HTMLParagraphElement,
+        "hr" => C::HTMLHRElement,
+        "pre" | "listing" | "xmp" => C::HTMLPreElement,
+        "blockquote" | "q" => C::HTMLQuoteElement,
+        "ol" => C::HTMLOListElement,
+        "ul" => C::HTMLUListElement,
+        "menu" => C::HTMLMenuElement,
+        "li" => C::HTMLLIElement,
+        "dl" => C::HTMLDListElement,
+        "div" => C::HTMLDivElement,
+        "a" => C::HTMLAnchorElement,
+        "data" => C::HTMLDataElement,
+        "time" => C::HTMLTimeElement,
+        "span" => C::HTMLSpanElement,
+        "br" => C::HTMLBRElement,
+        "ins" | "del" => C::HTMLModElement,
+        "picture" => C::HTMLPictureElement,
+        "source" => C::HTMLSourceElement,
+        "img" => C::HTMLImageElement,
+        "iframe" => C::HTMLIFrameElement,
+        "embed" => C::HTMLEmbedElement,
+        "object" => C::HTMLObjectElement,
+        "video" => C::HTMLVideoElement,
+        "audio" => C::HTMLAudioElement,
+        "track" => C::HTMLTrackElement,
+        "map" => C::HTMLMapElement,
+        "area" => C::HTMLAreaElement,
+        "table" => C::HTMLTableElement,
+        "caption" => C::HTMLTableCaptionElement,
+        "colgroup" | "col" => C::HTMLTableColElement,
+        "tbody" | "thead" | "tfoot" => C::HTMLTableSectionElement,
+        "tr" => C::HTMLTableRowElement,
+        "td" | "th" => C::HTMLTableCellElement,
+        "form" => C::HTMLFormElement,
+        "label" => C::HTMLLabelElement,
+        "input" => C::HTMLInputElement,
+        "button" => C::HTMLButtonElement,
+        "select" => C::HTMLSelectElement,
+        "datalist" => C::HTMLDataListElement,
+        "optgroup" => C::HTMLOptGroupElement,
+        "option" => C::HTMLOptionElement,
+        "textarea" => C::HTMLTextAreaElement,
+        "output" => C::HTMLOutputElement,
+        "progress" => C::HTMLProgressElement,
+        "meter" => C::HTMLMeterElement,
+        "fieldset" => C::HTMLFieldSetElement,
+        "legend" => C::HTMLLegendElement,
+        "details" => C::HTMLDetailsElement,
+        "dialog" => C::HTMLDialogElement,
+        "script" => C::HTMLScriptElement,
+        "template" => C::HTMLTemplateElement,
+        "slot" => C::HTMLSlotElement,
+        "canvas" => C::HTMLCanvasElement,
+        "frameset" => C::HTMLFrameSetElement,
+        "frame" => C::HTMLFrameElement,
+        "dir" => C::HTMLDirectoryElement,
+        "font" => C::HTMLFontElement,
+        "marquee" => C::HTMLMarqueeElement,
+        "param" => C::HTMLParamElement,
+        // Elements of HTML's index whose interface is HTMLElement itself.
+        "article" | "section" | "nav" | "aside" | "hgroup" | "header" | "footer" | "address" | "dt"
+        | "dd" | "figure" | "figcaption" | "main" | "search" | "em" | "strong" | "small" | "s" | "cite"
+        | "dfn" | "abbr" | "ruby" | "rt" | "rp" | "code" | "var" | "samp" | "kbd" | "sub" | "sup" | "i"
+        | "b" | "u" | "mark" | "bdi" | "bdo" | "wbr" | "summary" | "noscript" | "acronym" | "basefont"
+        | "big" | "center" | "nobr" | "noembed" | "noframes" | "plaintext" | "rb" | "rtc" | "strike"
+        | "tt" => C::HTMLElement,
+        n if is_valid_custom_element_name(n) => C::HTMLElement,
+        _ => C::HTMLUnknownElement,
+    }
+}
+
+/// HTML §4.13.2 valid custom element name (the parts that matter for the interface).
+pub fn is_valid_custom_element_name(n: &str) -> bool {
+    let mut cs = n.chars();
+    matches!(cs.next(), Some('a'..='z'))
+        && n.contains('-')
+        && !n.chars().any(|c| c.is_ascii_uppercase())
+        && !matches!(
+            n,
+            "annotation-xml"
+                | "color-profile"
+                | "font-face"
+                | "font-face-src"
+                | "font-face-uri"
+                | "font-face-format"
+                | "font-face-name"
+                | "missing-glyph"
+        )
+}
+
+/// The interface of a node.
+pub fn node_class(doc: &Document, id: NodeId) -> C {
+    match &doc.node(id).data {
+        NodeData::Document => C::Document,
+        NodeData::DocumentFragment => C::DocumentFragment,
+        NodeData::Doctype { .. } => C::DocumentType,
+        NodeData::Element(e) => match e.ns {
+            Namespace::Html => html_class(&e.name),
+            Namespace::Svg => C::SVGElement,
+            Namespace::MathMl => C::MathMLElement,
+            _ => C::Element,
+        },
+        NodeData::Text(_) => C::Text,
+        NodeData::Comment(_) => C::Comment,
+        NodeData::ProcessingInstruction { .. } => C::ProcessingInstruction,
+    }
+}
+
+fn illegal(vm: &mut Vm, _c: NativeCall) -> JsResult<Value> {
+    vm.type_error("Illegal constructor")
+}
+
+/// Constructors of the interfaces that have one.
+fn constructor(c: C) -> Option<(NativeFn, u32)> {
+    Some(match c {
+        C::EventTarget => (crate::events::event_target_ctor, 0),
+        C::Event => (crate::events::event_ctor, 1),
+        C::CustomEvent => (crate::events::custom_event_ctor, 1),
+        C::UIEvent | C::MouseEvent | C::KeyboardEvent | C::FocusEvent | C::ErrorEvent => {
+            (crate::events::event_ctor, 1)
+        }
+        C::Text => (crate::dom::text_ctor, 0),
+        C::Comment => (crate::dom::comment_ctor, 0),
+        C::DocumentFragment => (crate::dom::fragment_ctor, 0),
+        C::Document => (crate::dom::document_ctor, 0),
+        C::DOMException => (crate::exception::ctor, 0),
+        _ => return None,
+    })
+}
+
+/// Create every interface object and prototype (WebIDL §3.7.1–3.7.3) and expose them on
+/// the global object, which becomes a Window.
+pub fn install(vm: &mut Vm, h: &Host) {
+    let g = vm.realm.global;
+    let mut protos: Vec<ObjRef> = Vec::with_capacity(ALL.len());
+    let mut ctors: Vec<ObjRef> = Vec::with_capacity(ALL.len());
+    for &c in ALL {
+        let parent_proto = match parent(c) {
+            Some(p) => protos[p as usize],
+            None if c == C::DOMException => vm.realm.error_proto(bb_js::vm::ErrorKind::Error),
+            None => vm.realm.object_proto,
+        };
+        let proto = vm.new_object_with_proto(Some(parent_proto));
+        let (f, len) = constructor(c).unwrap_or((illegal, 0));
+        let ctor = realm::native_with(vm, name(c), len, f, true, Vec::new());
+        if let Some(p) = parent(c) {
+            vm.heap.obj_mut(ctor).proto = Some(ctors[p as usize]);
+        }
+        vm.heap
+            .obj_mut(ctor)
+            .props
+            .insert(PropKey::lit("prototype"), Prop::data(Value::Object(proto), false, false, false));
+        vm.heap.obj_mut(proto).props.insert(PropKey::lit("constructor"), Prop::method(Value::Object(ctor)));
+        realm::to_string_tag(vm, proto, name(c));
+        realm::value(vm, g, name(c), Value::Object(ctor));
+        protos.push(proto);
+        ctors.push(ctor);
+    }
+    *h.protos.borrow_mut() = protos.clone();
+    *h.ctors.borrow_mut() = ctors.clone();
+    for &c in ALL {
+        let (p, k) = (protos[c as usize], ctors[c as usize]);
+        setup(vm, c, p, k);
+    }
+    // The global object is the Window (HTML §7.2); its prototype chain is Window's.
+    vm.heap.obj_mut(g).proto = Some(protos[C::Window as usize]);
+}
+
+fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
+    match c {
+        C::EventTarget => crate::events::setup_event_target(vm, proto),
+        C::Node => crate::dom::setup_node(vm, proto, ctor),
+        C::Document => crate::dom::setup_document(vm, proto),
+        C::DocumentType => crate::dom::setup_doctype(vm, proto),
+        C::DocumentFragment => crate::dom::setup_fragment(vm, proto),
+        C::CharacterData => crate::dom::setup_chardata(vm, proto),
+        C::Text => crate::dom::setup_text(vm, proto),
+        C::ProcessingInstruction => crate::dom::setup_pi(vm, proto),
+        C::Attr => crate::attr::setup_attr(vm, proto),
+        C::Element => crate::dom::setup_element(vm, proto),
+        C::HTMLElement => crate::html::setup_html_element(vm, proto),
+        C::NodeList => crate::collections::setup_node_list(vm, proto),
+        C::HTMLCollection => crate::collections::setup_html_collection(vm, proto),
+        C::DOMTokenList => crate::collections::setup_token_list(vm, proto),
+        C::NamedNodeMap => crate::attr::setup_named_node_map(vm, proto),
+        C::DOMImplementation => crate::dom::setup_implementation(vm, proto),
+        C::DOMException => crate::exception::setup(vm, proto, ctor),
+        C::Event => crate::events::setup_event(vm, proto, ctor),
+        C::CustomEvent => crate::events::setup_custom_event(vm, proto),
+        C::UIEvent => crate::events::setup_ui_event(vm, proto),
+        C::MouseEvent => crate::events::setup_mouse_event(vm, proto),
+        C::KeyboardEvent => crate::events::setup_keyboard_event(vm, proto),
+        C::ErrorEvent => crate::events::setup_error_event(vm, proto),
+        C::Window => crate::window::setup_window(vm, proto),
+        _ => crate::html::setup_element_interface(vm, c, proto),
+    }
+}

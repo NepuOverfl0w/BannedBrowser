@@ -200,6 +200,13 @@ impl Vm {
         self.type_error("object.constructor[Symbol.species] is not a constructor")
     }
 
+    /// Queue a microtask that calls `f` (HTML §8.1.7.3 queueMicrotask); its errors go to
+    /// the host's `host_report` hook.
+    pub fn enqueue_microtask(&mut self, f: Value) {
+        let r = Reaction { capability: None, fulfill: true, handler: f };
+        self.jobs.push_back(Job::Reaction { reaction: r, argument: Value::Undefined });
+    }
+
     /// Run queued jobs until the queue is empty (a microtask checkpoint).
     pub fn run_jobs(&mut self) {
         loop {
@@ -242,9 +249,14 @@ impl Vm {
             };
             self.roots.truncate(base);
             if let Err(e) = r {
-                // HostReportErrors: uncaught errors in jobs go to the host's output.
-                let d = self.describe(&e);
-                self.output.push(format!("Uncaught (in promise) {d}"));
+                // HostReportErrors: uncaught errors in jobs go to the host (or its output).
+                match self.host_report {
+                    Some(report) if !self.terminated => report(self, e),
+                    _ => {
+                        let d = self.describe(&e);
+                        self.output.push(format!("Uncaught (in promise) {d}"));
+                    }
+                }
             }
         }
     }

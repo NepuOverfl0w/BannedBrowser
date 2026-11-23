@@ -24,6 +24,7 @@ mod env;
 pub mod fx;
 mod generator;
 pub mod heap;
+pub mod host;
 pub mod jsstring;
 pub mod module;
 pub mod normalize;
@@ -166,6 +167,15 @@ pub struct Vm {
     local_zone: Option<Option<&'static tz::Zone>>,
     /// Values hosts keep alive across calls.
     pub roots: Vec<Value>,
+    /// The host's state for its natives (`host.rs`).
+    pub host: Option<Rc<dyn std::any::Any>>,
+    /// Reports errors no script caught (jobs' errors; HTML §8.1.4.6 "report an exception").
+    pub host_report: Option<fn(&mut Vm, Value)>,
+    /// The host's legacy platform object hooks.
+    pub host_exotic: Option<Rc<dyn host::HostExotic>>,
+    /// Objects the host keeps (e.g. its wrapper cache), reported at each collection.
+    #[allow(clippy::type_complexity)]
+    pub host_trace: Option<Box<dyn Fn(&mut Vec<ObjRef>)>>,
     /// Pending Atomics.waitAsync promises of this agent.
     async_waits: Vec<atomics::AsyncWait>,
     /// [[CanBlock]]: whether Atomics.wait may suspend this agent (hosts like a browser's
@@ -201,6 +211,10 @@ impl Vm {
             registry: HashMap::default(),
             templates: HashMap::default(),
             roots: Vec::new(),
+            host: None,
+            host_exotic: None,
+            host_report: None,
+            host_trace: None,
             async_waits: Vec::new(),
             can_block: true,
             realms: vec![None],
@@ -397,6 +411,9 @@ impl Vm {
         }
         roots.objects.extend(self.templates.values());
         roots.values.extend(self.roots.iter().cloned());
+        if let Some(t) = &self.host_trace {
+            t(&mut roots.objects);
+        }
         roots.values.extend(self.async_waits.iter().map(|w| w.resolve.clone()));
         for j in &self.jobs {
             j.trace(&mut roots.objects);

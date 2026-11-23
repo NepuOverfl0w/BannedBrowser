@@ -1,0 +1,361 @@
+//! DOM §4.2.3 mutation algorithms: pre-insert, insert, replace, remove, and adopting nodes
+//! into another document (DOM §4.5 "adopt").
+
+use bb_dom::{Document, NodeData, NodeId};
+use bb_js::{JsResult, Value, Vm};
+
+use crate::exception::throw;
+use crate::host::{with_doc, with_doc_mut, Host, NodeRef};
+
+fn is_parent_kind(d: &NodeData) -> bool {
+    matches!(d, NodeData::Document | NodeData::DocumentFragment | NodeData::Element(_))
+}
+
+fn is_doctype(doc: &Document, id: NodeId) -> bool {
+    matches!(doc.node(id).data, NodeData::Doctype { .. })
+}
+
+fn is_element(doc: &Document, id: NodeId) -> bool {
+    doc.node(id).is_element()
+}
+
+/// Whether `a` is an inclusive ancestor of `b` (template contents count as children of
+/// their template: "host-including").
+pub fn is_inclusive_ancestor(doc: &Document, a: NodeId, b: NodeId) -> bool {
+    let mut cur = Some(b);
+    while let Some(c) = cur {
+        if c == a {
+            return true;
+        }
+        cur = doc.parent(c).or_else(|| template_host(doc, c));
+    }
+    false
+}
+
+/// The template whose contents fragment `frag` is.
+fn template_host(doc: &Document, frag: NodeId) -> Option<NodeId> {
+    if !matches!(doc.node(frag).data, NodeData::DocumentFragment) {
+        return None;
+    }
+    // Templates are rare; a scan is fine.
+    (0..doc.len() as u32).map(NodeId).find(|&t| doc.template_of(t) == Some(frag))
+}
+
+/// DOM §4.2.3 "ensure pre-insertion validity" (for insertion, `replace` is None) or the
+/// replace checks (DOM §4.2.3 "replace" steps 1–6): the DOMException name on failure.
+fn validity(
+    docs: &[Document],
+    node: NodeRef,
+    parent: NodeRef,
+    child: Option<NodeId>,
+    replace: Option<NodeId>,
+) -> Result<(), &'static str> {
+    let pd = &docs[parent.doc as usize];
+    let nd = &docs[node.doc as usize];
+    if !is_parent_kind(&pd.node(parent.id).data) {
+        return Err("HierarchyRequestError");
+    }
+    if node.doc == parent.doc && is_inclusive_ancestor(pd, node.id, parent.id) {
+        return Err("HierarchyRequestError");
+    }
+    let reference = replace.or(child);
+    if let Some(c) = reference {
+        if pd.parent(c) != Some(parent.id) {
+            return Err("NotFoundError");
+        }
+    }
+    let ndata = &nd.node(node.id).data;
+    if !matches!(
+        ndata,
+        NodeData::DocumentFragment
+            | NodeData::Doctype { .. }
+            | NodeData::Element(_)
+            | NodeData::Text(_)
+            | NodeData::Comment(_)
+            | NodeData::ProcessingInstruction { .. }
+    ) {
+        return Err("HierarchyRequestError");
+    }
+    let parent_is_doc = matches!(pd.node(parent.id).data, NodeData::Document);
+    if (matches!(ndata, NodeData::Text(_)) && parent_is_doc)
+        || (matches!(ndata, NodeData::Doctype { .. }) && !parent_is_doc)
+    {
+        return Err("HierarchyRequestError");
+    }
+    if !parent_is_doc {
+        return Ok(());
+    }
+    // The parent is a document: at most one element and one doctype, doctype first.
+    let kids: Vec<NodeId> = pd.children(parent.id).collect();
+    let others = |f: &dyn Fn(NodeId) -> bool| kids.iter().any(|&k| Some(k) != replace && f(k));
+    let doctype_after = |c: NodeId| {
+        let mut cur = pd.next_sibling(c);
+        while let Some(x) = cur {
+            if is_doctype(pd, x) {
+                return true;
+            }
+            cur = pd.next_sibling(x);
+        }
+        false
+    };
+    let element_before = |c: NodeId| {
+        let mut cur = pd.prev_sibling(c);
+        while let Some(x) = cur {
+            if is_element(pd, x) {
+                return true;
+            }
+            cur = pd.prev_sibling(x);
+        }
+        false
+    };
+    match ndata {
+        NodeData::DocumentFragment => {
+            let fk: Vec<NodeId> = nd.children(node.id).collect();
+            let elems = fk.iter().filter(|&&k| is_element(nd, k)).count();
+            if elems > 1 || fk.iter().any(|&k| matches!(nd.node(k).data, NodeData::Text(_))) {
+                return Err("HierarchyRequestError");
+            }
+            if elems == 1 {
+                let bad = match replace {
+                    Some(r) => others(&|k| is_element(pd, k)) || doctype_after(r),
+                    None => {
+                        kids.iter().any(|&k| is_element(pd, k))
+                            || child.is_some_and(|c| is_doctype(pd, c) || doctype_after(c))
+                    }
+                };
+                if bad {
+                    return Err("HierarchyRequestError");
+                }
+            }
+        }
+        NodeData::Element(_) => {
+            let bad = match replace {
+                Some(r) => others(&|k| is_element(pd, k)) || doctype_after(r),
+                None => {
+                    kids.iter().any(|&k| is_element(pd, k))
+                        || child.is_some_and(|c| is_doctype(pd, c) || doctype_after(c))
+                }
+            };
+            if bad {
+                return Err("HierarchyRequestError");
+            }
+        }
+        NodeData::Doctype { .. } => {
+            let bad = match replace {
+                Some(r) => others(&|k| is_doctype(pd, k)) || element_before(r),
+                None => {
+                    kids.iter().any(|&k| is_doctype(pd, k))
+                        || match child {
+                            Some(c) => element_before(c),
+                            None => kids.iter().any(|&k| is_element(pd, k)),
+                        }
+                }
+            };
+            if bad {
+                return Err("HierarchyRequestError");
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Throw unless `node` may be inserted into `parent` before `child`.
+pub fn check_pre_insert(
+    vm: &mut Vm,
+    h: &Host,
+    node: NodeRef,
+    parent: NodeRef,
+    child: Option<NodeRef>,
+) -> JsResult<()> {
+    let r = {
+        let docs = match h.docs.try_borrow() {
+            Ok(d) => d,
+            Err(_) => return throw(vm, "InvalidStateError", "the document is busy"),
+        };
+        validity(&docs, node, parent, child.map(|c| c.id), None)
+    };
+    match r {
+        Ok(()) => Ok(()),
+        Err(name) => throw(vm, name, "the node can't be inserted here"),
+    }
+}
+
+/// DOM §4.2.3 "pre-insert" `node` into `parent` before `child`; returns the node.
+pub fn pre_insert(
+    vm: &mut Vm,
+    h: &Host,
+    node: NodeRef,
+    parent: NodeRef,
+    child: Option<NodeRef>,
+) -> JsResult<NodeRef> {
+    if let Some(c) = child {
+        if c.doc != parent.doc {
+            return throw(vm, "NotFoundError", "the reference node is not a child of this node");
+        }
+    }
+    let r = {
+        let docs = match h.docs.try_borrow() {
+            Ok(d) => d,
+            Err(_) => return throw(vm, "InvalidStateError", "the document is busy"),
+        };
+        validity(&docs, node, parent, child.map(|c| c.id), None)
+    };
+    if let Err(name) = r {
+        return throw(vm, name, "the node can't be inserted here");
+    }
+    let mut reference = child.map(|c| c.id);
+    if reference == Some(node.id) && node.doc == parent.doc {
+        reference = with_doc(vm, h, parent.doc, |d| d.next_sibling(node.id))?;
+    }
+    insert(vm, h, node, parent, reference)?;
+    Ok(node)
+}
+
+/// DOM §4.2.3 "insert" (validity already checked).
+pub fn insert(vm: &mut Vm, h: &Host, node: NodeRef, parent: NodeRef, child: Option<NodeId>) -> JsResult<()> {
+    let is_frag = with_doc(vm, h, node.doc, |d| matches!(d.node(node.id).data, NodeData::DocumentFragment))?;
+    let nodes: Vec<NodeRef> = if is_frag {
+        let kids = with_doc(vm, h, node.doc, |d| d.children(node.id).collect::<Vec<_>>())?;
+        kids.into_iter().map(|k| node.with(k)).collect()
+    } else {
+        vec![node]
+    };
+    for n in nodes {
+        let n = adopt(vm, h, n, parent.doc)?;
+        with_doc_mut(vm, h, parent.doc, |d| {
+            d.detach(n.id);
+            d.insert_before(parent.id, n.id, child);
+        })?;
+    }
+    Ok(())
+}
+
+/// DOM §4.2.3 "append".
+pub fn append(vm: &mut Vm, h: &Host, node: NodeRef, parent: NodeRef) -> JsResult<NodeRef> {
+    pre_insert(vm, h, node, parent, None)
+}
+
+/// DOM §4.2.3 "replace" `child` with `node` in `parent`.
+pub fn replace(vm: &mut Vm, h: &Host, child: NodeRef, node: NodeRef, parent: NodeRef) -> JsResult<NodeRef> {
+    if child.doc != parent.doc {
+        return throw(vm, "NotFoundError", "the node to replace is not a child of this node");
+    }
+    let r = {
+        let docs = match h.docs.try_borrow() {
+            Ok(d) => d,
+            Err(_) => return throw(vm, "InvalidStateError", "the document is busy"),
+        };
+        validity(&docs, node, parent, None, Some(child.id))
+    };
+    if let Err(name) = r {
+        return throw(vm, name, "the node can't replace that child");
+    }
+    let mut reference = with_doc(vm, h, parent.doc, |d| d.next_sibling(child.id))?;
+    if reference == Some(node.id) && node.doc == parent.doc {
+        reference = with_doc(vm, h, parent.doc, |d| d.next_sibling(node.id))?;
+    }
+    if !(node.doc == child.doc && node.id == child.id) {
+        with_doc_mut(vm, h, parent.doc, |d| d.detach(child.id))?;
+    }
+    insert(vm, h, node, parent, reference)?;
+    Ok(child)
+}
+
+/// DOM §4.2.3 "pre-remove".
+pub fn pre_remove(vm: &mut Vm, h: &Host, child: NodeRef, parent: NodeRef) -> JsResult<NodeRef> {
+    let ok =
+        child.doc == parent.doc && with_doc(vm, h, parent.doc, |d| d.parent(child.id) == Some(parent.id))?;
+    if !ok {
+        return throw(vm, "NotFoundError", "the node is not a child of this node");
+    }
+    with_doc_mut(vm, h, parent.doc, |d| d.detach(child.id))?;
+    Ok(child)
+}
+
+/// Replace all children of `parent` with `node` (DOM §4.2.3 "replace all").
+pub fn replace_all(vm: &mut Vm, h: &Host, node: Option<NodeRef>, parent: NodeRef) -> JsResult<()> {
+    let kids = with_doc(vm, h, parent.doc, |d| d.children(parent.id).collect::<Vec<_>>())?;
+    with_doc_mut(vm, h, parent.doc, |d| {
+        for k in kids {
+            d.detach(k);
+        }
+    })?;
+    if let Some(n) = node {
+        insert(vm, h, n, parent, None)?;
+    }
+    Ok(())
+}
+
+/// DOM §4.5 "adopt" `node` into document `doc`: nodes live in their document's arena, so a
+/// node from another document is copied over, and its wrappers (and those of its
+/// descendants) now point at the copies. Returns where the node is now.
+pub fn adopt(vm: &mut Vm, h: &Host, node: NodeRef, doc: u32) -> JsResult<NodeRef> {
+    if node.doc == doc {
+        return Ok(node);
+    }
+    let mut docs = match h.docs.try_borrow_mut() {
+        Ok(d) => d,
+        Err(_) => return throw(vm, "InvalidStateError", "the document is busy"),
+    };
+    if doc as usize >= docs.len() || node.doc as usize >= docs.len() {
+        drop(docs);
+        return vm.type_error("no such document");
+    }
+    // Detach from the old parent, then copy the subtree across.
+    docs[node.doc as usize].detach(node.id);
+    let (copy, pairs) = {
+        let (src, dst) = two_docs(&mut docs, node.doc, doc);
+        dst.import_node(src, node.id, true)
+    };
+    drop(docs);
+    h.mark_dirty();
+    // Move wrappers to the copies, keeping identity (and anything stored on them).
+    let mut wrappers = h.wrappers.borrow_mut();
+    for (old, new) in pairs {
+        let (ok, nk) = (node.with(old).pack(), NodeRef { doc, id: new }.pack());
+        if let Some(o) = wrappers.remove(&ok) {
+            if let Some(ho) = vm.host_obj_mut(o) {
+                ho.id = nk;
+            }
+            wrappers.insert(nk, o);
+        }
+    }
+    Ok(NodeRef { doc, id: copy })
+}
+
+fn two_docs(docs: &mut [Document], a: u32, b: u32) -> (&Document, &mut Document) {
+    let (a, b) = (a as usize, b as usize);
+    if a < b {
+        let (l, r) = docs.split_at_mut(b);
+        (&l[a], &mut r[0])
+    } else {
+        let (l, r) = docs.split_at_mut(a);
+        (&r[0], &mut l[b])
+    }
+}
+
+/// Convert a `(Node or DOMString)...` argument list into one node (DOM §4.2.6 "convert
+/// nodes into a node"): strings become Text nodes, several nodes a fragment.
+pub fn nodes_into_node(vm: &mut Vm, h: &Host, doc: u32, args: &[Value]) -> JsResult<NodeRef> {
+    let mut nodes = Vec::with_capacity(args.len());
+    for a in args {
+        match crate::host::node_of(vm, a) {
+            Some(n) => nodes.push(n),
+            None => {
+                let s = crate::host::rstr(vm, a)?;
+                let id = with_doc_mut(vm, h, doc, |d| d.create_text(&s))?;
+                nodes.push(NodeRef { doc, id });
+            }
+        }
+    }
+    if nodes.len() == 1 {
+        return Ok(nodes[0]);
+    }
+    let frag = with_doc_mut(vm, h, doc, |d| d.create_fragment())?;
+    let frag = NodeRef { doc, id: frag };
+    for n in nodes {
+        append(vm, h, n, frag)?;
+    }
+    Ok(frag)
+}

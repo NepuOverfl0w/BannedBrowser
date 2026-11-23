@@ -13,6 +13,7 @@ members = [
     "crates/bb-paint",
     "crates/bb-layout",
     "crates/bb-js",
+    "crates/bb-webapi",
     "crates/bb-engine",
     "crates/bb-profile",
     "crates/bb-ui",
@@ -42,6 +43,7 @@ bb-image = { path = "crates/bb-image" }
 bb-paint = { path = "crates/bb-paint" }
 bb-layout = { path = "crates/bb-layout" }
 bb-engine = { path = "crates/bb-engine" }
+bb-js = { path = "crates/bb-js" }
 bb-ui = { path = "crates/bb-ui" }
 bb-profile = { path = "crates/bb-profile" }
 

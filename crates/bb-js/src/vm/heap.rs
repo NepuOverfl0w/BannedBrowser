@@ -549,6 +549,8 @@ pub enum Kind {
         index: usize,
         kind: IterKind,
     },
+    /// A host's platform object (`host.rs`).
+    Host(Box<super::host::HostObj>),
 }
 
 /// Insertion-ordered map for Map/Set (§24.1): deleted entries leave holes so live iterators
@@ -1040,6 +1042,11 @@ fn trace_object(o: &Object, os: &mut Vec<ObjRef>, es: &mut Vec<EnvRef>) {
         Kind::MappedArguments(m) => es.push(m.env),
         Kind::DisposeCap(c) => c.trace(os),
         Kind::Slots(_, a) => os.push(*a),
+        Kind::Host(h) => {
+            for v in &h.slots {
+                push_val(v, os);
+            }
+        }
         Kind::DisposableStack(s) => s.cap.trace(os),
         Kind::TypedArray(t) => os.push(t.buffer),
         Kind::IterHelper(h) => h.trace(os),

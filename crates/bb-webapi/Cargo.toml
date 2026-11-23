@@ -1,0 +1,21 @@
+[package]
+name = "bb-webapi"
+description = "Web APIs for BannedBrowser's JavaScript engine: DOM bindings, events, timers, script loading"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bb-js.workspace = true
+bb-dom.workspace = true
+bb-html.workspace = true
+bb-css.workspace = true
+bb-style.workspace = true
+bb-url.workspace = true
+log.workspace = true

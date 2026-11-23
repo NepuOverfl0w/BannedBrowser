@@ -513,6 +513,9 @@ impl Document {
         let copy = match data {
             NodeData::Element(e) => {
                 let copy = self.create_element(e.ns, &e.name, e.attrs.clone());
+                if let Some(el) = self.element_mut(copy) {
+                    el.prefix = e.prefix.clone();
+                }
                 if deep {
                     if let (Some(from), Some(to)) =
                         (e.template_contents, self.element(copy).and_then(|c| c.template_contents))

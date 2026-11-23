@@ -44,11 +44,43 @@ pub enum Namespace {
     XLink,
     Xml,
     Xmlns,
+    /// Any other namespace (scripts can use any URL): an index into the interned URLs.
+    Other(u32),
 }
 
+/// Interned namespace URLs for `Namespace::Other`. They live for the process (scripts can
+/// add new ones; each is a short string).
+static OTHER_NAMESPACES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+
 impl Namespace {
+    /// The namespace with URL `url` ("" is no namespace).
+    pub fn from_url(url: &str) -> Namespace {
+        const KNOWN: [Namespace; 7] = [
+            Namespace::None,
+            Namespace::Html,
+            Namespace::Svg,
+            Namespace::MathMl,
+            Namespace::XLink,
+            Namespace::Xml,
+            Namespace::Xmlns,
+        ];
+        if let Some(k) = KNOWN.iter().find(|k| k.url() == url) {
+            return *k;
+        }
+        let mut t = OTHER_NAMESPACES.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = t.iter().position(|u| *u == url) {
+            return Namespace::Other(i as u32);
+        }
+        t.push(Box::leak(url.to_string().into_boxed_str()));
+        Namespace::Other(t.len() as u32 - 1)
+    }
+
     pub fn url(self) -> &'static str {
         match self {
+            Namespace::Other(i) => {
+                let t = OTHER_NAMESPACES.lock().unwrap_or_else(|e| e.into_inner());
+                t.get(i as usize).copied().unwrap_or("")
+            }
             Namespace::None => "",
             Namespace::Html => "http://www.w3.org/1999/xhtml",
             Namespace::Svg => "http://www.w3.org/2000/svg",
@@ -94,6 +126,8 @@ pub struct ElementData {
     pub attrs: Vec<Attribute>,
     /// For `<template>`: the DocumentFragment holding its contents.
     pub template_contents: Option<NodeId>,
+    /// The namespace prefix (elements made with `createElementNS("…", "p:x")`).
+    pub prefix: Option<String>,
 }
 
 impl ElementData {
@@ -272,6 +306,7 @@ impl Document {
             name: name.to_string(),
             attrs,
             template_contents: None,
+            prefix: None,
         }));
         if is_template {
             let frag = self.alloc(NodeData::DocumentFragment);
@@ -478,6 +513,63 @@ impl Document {
         self.mark_style_dirty(child);
         self.mark_layout_dirty(parent);
         self.select_after_insert(child);
+    }
+
+    /// A copy of node `id` of document `src` (and its descendants, for `deep`) in this one,
+    /// not inserted anywhere. Returns the copy and the (source, copy) pairs of every node
+    /// copied, in tree order.
+    pub fn import_node(&mut self, src: &Document, id: NodeId, deep: bool) -> (NodeId, Vec<(NodeId, NodeId)>) {
+        let mut pairs = Vec::new();
+        let copy = self.import_rec(src, id, deep, &mut pairs);
+        (copy, pairs)
+    }
+
+    fn import_rec(
+        &mut self,
+        src: &Document,
+        id: NodeId,
+        deep: bool,
+        pairs: &mut Vec<(NodeId, NodeId)>,
+    ) -> NodeId {
+        let copy = self.alloc_copy(src.nodes[id.index()].data.clone());
+        pairs.push((id, copy));
+        if deep {
+            let kids: Vec<NodeId> = src.children(id).collect();
+            for k in kids {
+                let c = self.import_rec(src, k, true, pairs);
+                self.append_child(copy, c);
+            }
+            if let (Some(s), Some(d)) = (src.template_of(id), self.template_of(copy)) {
+                let kids: Vec<NodeId> = src.children(s).collect();
+                for k in kids {
+                    let c = self.import_rec(src, k, true, pairs);
+                    self.append_child(d, c);
+                }
+            }
+        }
+        copy
+    }
+
+    /// A new node with `data` (a template gets fresh, empty contents).
+    fn alloc_copy(&mut self, data: NodeData) -> NodeId {
+        match data {
+            NodeData::Element(e) => {
+                let id = self.create_element(e.ns, &e.name, e.attrs);
+                if let Some(pfx) = e.prefix {
+                    if let Some(el) = self.element_mut(id) {
+                        el.prefix = Some(pfx);
+                    }
+                }
+                id
+            }
+            NodeData::Document => self.alloc(NodeData::DocumentFragment),
+            d => self.alloc(d),
+        }
+    }
+
+    /// A `<template>`'s contents fragment.
+    pub fn template_of(&self, id: NodeId) -> Option<NodeId> {
+        self.element(id).and_then(|e| e.template_contents)
     }
 
     /// Move all children of `from` to the end of `to`.

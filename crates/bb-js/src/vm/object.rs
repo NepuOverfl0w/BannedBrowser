@@ -218,6 +218,11 @@ impl Vm {
         if let Some(n) = self.ta_numeric(o, k) {
             return Ok(self.ta_get_own(o, n));
         }
+        if let Some((h, class, id)) = self.host_exotic_of(o) {
+            if let Some(d) = h.get_own(self, o, class, id, k)? {
+                return Ok(Some(d));
+            }
+        }
         let obj = self.heap.obj(o);
         if let Some(p) = obj.props.get(k) {
             let mut d = PropDesc::from_prop(p);
@@ -237,6 +242,11 @@ impl Vm {
 
     /// [[DefineOwnProperty]] (§10.1.6, §10.4.2.1, §10.4.3.2).
     pub fn define_own_property(&mut self, o: ObjRef, k: PropKey, d: PropDesc) -> JsResult<bool> {
+        if let Some((h, class, id)) = self.host_exotic_of(o) {
+            if let Some(r) = h.define(self, o, class, id, &k, &d)? {
+                return Ok(r);
+            }
+        }
         match &self.heap.obj(o).kind {
             Kind::Proxy(_) => return self.proxy_define_own_property(o, k, d),
             Kind::ModuleNamespace(..) => return self.ns_define(o, k, d),
@@ -427,6 +437,13 @@ impl Vm {
     /// [[Set]] (§10.1.9 OrdinarySet).
     pub fn set(&mut self, o: ObjRef, k: PropKey, v: Value, receiver: Value) -> JsResult<bool> {
         if matches!(receiver, Value::Object(r) if r == o) {
+            if let Some((h, class, id)) = self.host_exotic_of(o) {
+                if let Some(r) = h.set(self, o, class, id, &k, &v)? {
+                    return Ok(r);
+                }
+            }
+        }
+        if matches!(receiver, Value::Object(r) if r == o) {
             match self.ordinary_set_fast(o, &k, v) {
                 Ok(done) => return Ok(done),
                 Err(back) => return self.set_general(o, k, back, receiver),
@@ -570,6 +587,11 @@ impl Vm {
         if let Some(n) = self.ta_numeric(o, k) {
             return Ok(!self.ta_has(o, n));
         }
+        if let Some((h, class, id)) = self.host_exotic_of(o) {
+            if let Some(r) = h.delete(self, o, class, id, k)? {
+                return Ok(r);
+            }
+        }
         match self.get_own_property(o, k)? {
             None => Ok(true),
             Some(d) if d.configurable == Some(true) => {
@@ -641,6 +663,13 @@ impl Vm {
         }
         if self.is_namespace(o) {
             return self.ns_keys(o);
+        }
+        if let Some((h, class, id)) = self.host_exotic_of(o) {
+            let mut keys = h.own_keys(self, o, class, id)?;
+            let own = self.heap.obj(o).props.keys();
+            let extra: Vec<PropKey> = own.into_iter().filter(|k| !keys.contains(k)).collect();
+            keys.extend(extra);
+            return Ok(keys);
         }
         if matches!(self.heap.obj(o).kind, Kind::TypedArray(_)) {
             let mut keys = self.ta_keys(o);
@@ -1081,12 +1110,13 @@ pub fn validate_and_apply(
 /// Kinds whose [[GetOwnProperty]], [[DefineOwnProperty]] for non-`length` keys and
 /// [[GetPrototypeOf]] are ordinary (arrays included: only `length` is special for [[Set]]).
 pub(super) fn ordinary_get_own(k: &Kind) -> bool {
-    !matches!(
-        k,
+    match k {
         Kind::Proxy(_)
-            | Kind::ModuleNamespace(..)
-            | Kind::TypedArray(_)
-            | Kind::MappedArguments(_)
-            | Kind::String(_)
-    )
+        | Kind::ModuleNamespace(..)
+        | Kind::TypedArray(_)
+        | Kind::MappedArguments(_)
+        | Kind::String(_) => false,
+        Kind::Host(h) => !h.exotic,
+        _ => true,
+    }
 }

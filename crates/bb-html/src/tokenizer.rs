@@ -269,6 +269,45 @@ impl Tokenizer {
         }
     }
 
+    /// The insertion point (HTML §13.2.5): where `document.write` text goes, as an index
+    /// into the input.
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+
+    /// Insert `text` at the insertion point (HTML §8.4.3 `document.write`), preprocessed
+    /// like the rest of the input; returns the position just after it.
+    pub fn insert_input(&mut self, text: &str) -> usize {
+        let mut chars: Vec<char> = Vec::with_capacity(text.len());
+        let mut it = text.chars().peekable();
+        while let Some(c) = it.next() {
+            if c == '\r' {
+                if it.peek() == Some(&'\n') {
+                    it.next();
+                }
+                chars.push('\n');
+            } else {
+                chars.push(c);
+            }
+        }
+        let n = chars.len();
+        if n > 0 {
+            // Lone surrogates after the insertion point move along.
+            if !self.surrogates.is_empty() {
+                let moved: HashMap<usize, u32> = self
+                    .surrogates
+                    .drain()
+                    .map(|(k, v)| (if k >= self.pos { k + n } else { k }, v))
+                    .collect();
+                self.surrogates = moved;
+            }
+            self.input.splice(self.pos..self.pos, chars);
+            // Input written after the end was reached is tokenized too.
+            self.eof_emitted = false;
+        }
+        self.pos + n
+    }
+
     /// Set the "last start tag" (used for appropriate end tags in tests and fragments).
     pub fn set_last_start_tag(&mut self, name: Option<&str>) {
         self.last_start_tag = name.map(Wtf8Buf::from);

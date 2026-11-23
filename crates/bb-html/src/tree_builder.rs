@@ -210,6 +210,8 @@ pub struct TreeBuilder {
     ignore_lf: bool,
     scripting: bool,
     stopped: bool,
+    /// A `<script>` whose end tag was just processed (HTML §13.2.6.4.8), for `pump`.
+    pending_script: Option<NodeId>,
     /// Parse error count (tree construction errors).
     pub errors: usize,
 }
@@ -233,8 +235,56 @@ impl TreeBuilder {
             ignore_lf: false,
             scripting: false,
             stopped: false,
+            pending_script: None,
             errors: 0,
         }
+    }
+
+    /// Turn the scripting flag on (HTML §13.2.6.5: `<noscript>` is then raw text).
+    pub fn set_scripting(&mut self, on: bool) {
+        self.scripting = on;
+    }
+
+    /// Parse until a `<script>` element's end tag has been processed (HTML §13.2.6.4.8
+    /// "An end tag whose tag name is script"): returns that element, for the host to
+    /// prepare and run before pumping again, or `None` when parsing has stopped.
+    pub fn pump(&mut self) -> Option<NodeId> {
+        while !self.stopped {
+            let token = self.tokenizer.next_token();
+            self.dispatch_token(token);
+            if let Some(s) = self.pending_script.take() {
+                return Some(s);
+            }
+        }
+        None
+    }
+
+    /// Parse tokens until the tokenizer has passed `end` (the end of text `document.write`
+    /// inserted) or a script end tag stops it.
+    pub fn pump_until(&mut self, end: usize) -> Option<NodeId> {
+        while !self.stopped && self.tokenizer.position() < end {
+            let token = self.tokenizer.next_token();
+            self.dispatch_token(token);
+            if let Some(s) = self.pending_script.take() {
+                return Some(s);
+            }
+        }
+        None
+    }
+
+    /// Whether parsing has stopped (the end of the input was processed).
+    pub fn is_stopped(&self) -> bool {
+        self.stopped
+    }
+
+    /// The tokenizer, for the insertion point (`document.write`).
+    pub fn tokenizer_mut(&mut self) -> &mut Tokenizer {
+        &mut self.tokenizer
+    }
+
+    /// The parser's document once parsing is done.
+    pub fn into_document(self) -> Document {
+        self.doc
     }
 
     /// Run the parser to completion.
@@ -1764,8 +1814,11 @@ impl TreeBuilder {
                 let m = self.original_mode;
                 self.reprocess(m, Tok::Eof);
             }
-            Tok::End(_) => {
-                self.pop();
+            Tok::End(ref t) => {
+                let node = self.pop();
+                if t.name == "script" {
+                    self.pending_script = node;
+                }
                 self.mode = self.original_mode;
             }
             _ => {}
