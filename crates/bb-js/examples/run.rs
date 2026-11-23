@@ -7,6 +7,10 @@ fn main() {
         std::fs::read_to_string(args.get(1).expect("usage: run FILE | -e CODE")).expect("read")
     };
     let mut vm = bb_js::Vm::new();
+    // The host picks the time zone; here, the TZ variable (a tz database name).
+    if let Ok(tz) = std::env::var("TZ") {
+        vm.set_time_zone(&tz);
+    }
     let r = vm.run_script(&src);
     vm.run_jobs();
     for line in std::mem::take(&mut vm.output) {

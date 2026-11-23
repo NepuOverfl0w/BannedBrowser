@@ -114,6 +114,42 @@ pub(super) fn install(vm: &mut Vm) {
             .add(&BigInt::from_u64(d.subsec_nanos() as u64));
         Ok(Value::BigInt(Rc::new(ns)))
     });
+    // The time zone database (vm/tz.rs). Instants are whole seconds since the epoch as
+    // Numbers (exact: Temporal's range is within ±2^53 s); Temporal adds the nanoseconds.
+    helper(vm, i, "tzId", |vm, c| {
+        let n = vm.to_string(&c.arg(0))?;
+        Ok(match super::super::tz::lookup(&String::from_utf16_lossy(&n)) {
+            Some((id, primary)) => Value::Object(vm.new_array(vec![Value::str(id), Value::str(primary)])),
+            None => Value::Undefined,
+        })
+    });
+    fn tz_of(vm: &mut Vm, c: &NativeCall) -> JsResult<(&'static super::super::tz::Zone, i64)> {
+        let n = vm.to_string(&c.arg(0))?;
+        let t = vm.to_number(&c.arg(1))?;
+        match super::super::tz::zone(&String::from_utf16_lossy(&n)) {
+            // Clamped far beyond Temporal's range (±8.64e12 s) so tz.rs's date math stays small.
+            Some(z) if t.is_finite() => Ok((z, t.clamp(-1e14, 1e14) as i64)),
+            _ => vm.range_error("unknown time zone"),
+        }
+    }
+    helper(vm, i, "tzOffset", |vm, c| {
+        let (z, t) = tz_of(vm, &c)?;
+        Ok(Value::Number(z.offset_at(t) as f64))
+    });
+    helper(vm, i, "tzPossible", |vm, c| {
+        let (z, t) = tz_of(vm, &c)?;
+        let v = z.possible(t).into_iter().map(|x| Value::Number(x as f64)).collect();
+        Ok(Value::Object(vm.new_array(v)))
+    });
+    helper(vm, i, "tzNext", |vm, c| {
+        let (z, t) = tz_of(vm, &c)?;
+        Ok(z.next_transition(t).map_or(Value::Null, |x| Value::Number(x as f64)))
+    });
+    helper(vm, i, "tzPrevious", |vm, c| {
+        let (z, t) = tz_of(vm, &c)?;
+        Ok(z.previous_transition(t).map_or(Value::Null, |x| Value::Number(x as f64)))
+    });
+    helper(vm, i, "tzSystem", |vm, _| Ok(Value::str(vm.time_zone())));
     helper(vm, i, "thisTimeValue", |vm, c| Ok(Value::Number(super::date::this_time(vm, &c.arg(0))?)));
     helper(vm, i, "codeUnit", |vm, c| {
         let s = vm.to_string(&c.arg(0))?;

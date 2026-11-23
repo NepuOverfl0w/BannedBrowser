@@ -35,6 +35,7 @@ pub mod realm;
 pub mod regex;
 mod shadow;
 pub mod typed;
+pub mod tz;
 pub mod value;
 
 use crate::vm::fx::HashMap;
@@ -158,6 +159,12 @@ pub struct Vm {
     pub(crate) module_async_count: u64,
     /// Emptied operand stacks of returned frames, for the next calls.
     stack_pool: Vec<Vec<Value>>,
+    /// The host's time zone (a primary tz database identifier or "UTC"), for Date's local
+    /// time and Temporal.Now. The engine has no OS code (AGENTS.md rule 6): hosts find the
+    /// system's zone and call `set_time_zone`; until then it is UTC.
+    time_zone: String,
+    /// Its database entry, cached for Date's LocalTime and UTC.
+    local_zone: Option<Option<&'static tz::Zone>>,
     /// Values hosts keep alive across calls.
     pub roots: Vec<Value>,
     /// Pending Atomics.waitAsync promises of this agent.
@@ -206,6 +213,8 @@ impl Vm {
             loader: None,
             module_async_count: 0,
             stack_pool: Vec::new(),
+            time_zone: "UTC".to_string(),
+            local_zone: None,
             name_keys: HashMap::default(),
             output: Vec::new(),
             fuel: None,
@@ -301,6 +310,29 @@ impl Vm {
         let genv = self.realm.global_env;
         let frame = self.frame(code, genv, genv);
         self.execute(frame)
+    }
+
+    /// The host time zone (SystemTimeZoneIdentifier, ECMA-262 §21.4.1): a tz database
+    /// identifier, or "UTC".
+    pub fn time_zone(&self) -> &str {
+        &self.time_zone
+    }
+
+    /// Set the host time zone; names the tz database doesn't know mean UTC.
+    pub fn set_time_zone(&mut self, name: &str) {
+        let id = tz::lookup(name).map_or("UTC", |x| x.1);
+        self.time_zone = id.to_string();
+        self.local_zone = None;
+    }
+
+    /// The host time zone's database entry (None only if the database lacks it).
+    pub(crate) fn local_zone(&mut self) -> Option<&'static tz::Zone> {
+        if let Some(z) = self.local_zone {
+            return z;
+        }
+        let z = tz::zone(&self.time_zone);
+        self.local_zone = Some(z);
+        z
     }
 
     /// The message of a thrown value, for hosts: `Name: message` for errors.

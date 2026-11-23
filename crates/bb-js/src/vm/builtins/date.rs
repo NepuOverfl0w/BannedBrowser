@@ -1,5 +1,5 @@
-//! Date (§21.4). Local time is UTC for now (LocalTZA = 0, an implementation choice the spec
-//! allows); time zone support comes with the browser integration.
+//! Date (§21.4). Local time is the host time zone's (SystemTimeZoneIdentifier, from the tz
+//! database in vm/tz.rs; `Vm::set_time_zone` overrides it).
 
 use super::super::heap::*;
 use super::super::ops::Hint;
@@ -127,12 +127,45 @@ fn time_clip(t: f64) -> f64 {
     to_int(t)
 }
 
-// Local time = UTC (see the module comment).
-fn local(t: f64) -> f64 {
-    t
+/// The local time zone: None (no database entry) behaves as UTC.
+type Zone = Option<&'static crate::vm::tz::Zone>;
+
+/// Time values this far out are beyond TimeClip's range whatever the offset (offsets are
+/// under a day), so the zone needn't be asked.
+const FAR: f64 = 8.64e15 + 2.0 * MS_PER_DAY;
+
+/// The local time zone's offset at time value `t`, in ms.
+fn offset_ms(z: Zone, t: f64) -> f64 {
+    match z {
+        Some(z) if t.is_finite() && t.abs() <= FAR => {
+            z.offset_at((t / 1000.0).floor() as i64) as f64 * 1000.0
+        }
+        _ => 0.0,
+    }
 }
-fn utc(t: f64) -> f64 {
-    t
+
+/// LocalTime(t) (§21.4.1.25).
+fn local(z: Zone, t: f64) -> f64 {
+    t + offset_ms(z, t)
+}
+
+/// UTC(t) (§21.4.1.26): local time `t` as a time value. A repeated local time takes its
+/// earlier instant; a skipped one takes the offset from before the transition.
+fn utc(z: Zone, t: f64) -> f64 {
+    let Some(z) = z else { return t };
+    if !t.is_finite() {
+        return f64::NAN;
+    }
+    if t.abs() > FAR {
+        return t;
+    }
+    let s = (t / 1000.0).floor() as i64;
+    let off = match z.possible(s).first() {
+        Some(&i) => s - i,
+        // In a gap: the offset in force before it (a day earlier; transitions are rarer).
+        None => z.offset_at(s - 86_400) as i64,
+    };
+    t - off as f64 * 1000.0
 }
 
 fn now() -> f64 {
@@ -165,14 +198,30 @@ fn date_string(t: f64) -> String {
     )
 }
 
-/// TimeString + TimeZoneString (§21.4.4.41.1, .3).
-fn time_string(t: f64) -> String {
+/// TimeString + TimeZoneString (§21.4.4.41.1, .3) of time value `tv`: the local time, and
+/// the offset with the zone's name (its tz database identifier).
+fn time_string(z: Zone, tv: f64) -> String {
+    let off = offset_ms(z, tv);
+    let t = tv + off;
+    let m = (off.abs() / 60_000.0).floor() as i64;
+    let name = match z.map(|z| z.name) {
+        None | Some("Etc/UTC") => "Coordinated Universal Time",
+        Some(n) => n,
+    };
     format!(
-        "{:02}:{:02}:{:02} GMT+0000 (Coordinated Universal Time)",
+        "{:02}:{:02}:{:02} GMT{}{:02}{:02} ({name})",
         hour_from_time(t) as i64,
         min_from_time(t) as i64,
-        sec_from_time(t) as i64
+        sec_from_time(t) as i64,
+        if off < 0.0 { '-' } else { '+' },
+        m / 60,
+        m % 60
     )
+}
+
+/// DateString + " " + TimeString + TimeZoneString: ToDateString (§21.4.4.41.4).
+fn to_date_string(z: Zone, tv: f64) -> String {
+    format!("{} {}", date_string(local(z, tv)), time_string(z, tv))
 }
 
 fn iso_string(t: f64) -> String {
@@ -196,11 +245,11 @@ fn iso_string(t: f64) -> String {
 }
 
 /// Date.parse: the Date Time String Format (§21.4.1.32) and the toString/toUTCString forms.
-fn parse_date(s: &str) -> f64 {
-    parse_iso(s).or_else(|| parse_to_string_form(s)).unwrap_or(f64::NAN)
+fn parse_date(z: Zone, s: &str) -> f64 {
+    parse_iso(z, s).or_else(|| parse_to_string_form(z, s)).unwrap_or(f64::NAN)
 }
 
-fn parse_iso(s: &str) -> Option<f64> {
+fn parse_iso(z: Zone, s: &str) -> Option<f64> {
     let b = s.as_bytes();
     let mut i = 0;
     let num = |i: &mut usize, n: usize| -> Option<f64> {
@@ -304,7 +353,7 @@ fn parse_iso(s: &str) -> Option<f64> {
     // Date-only forms are UTC; date-time forms without an offset are local time.
     let t = match offset {
         Some(o) => t - o,
-        None if has_time => utc(t),
+        None if has_time => utc(z, t),
         None => t,
     };
     let c = time_clip(t);
@@ -315,7 +364,7 @@ fn parse_iso(s: &str) -> Option<f64> {
 }
 
 /// "Tue Feb 01 2022 00:00:00 GMT+0000 (…)" and "Tue, 01 Feb 2022 00:00:00 GMT".
-fn parse_to_string_form(s: &str) -> Option<f64> {
+fn parse_to_string_form(z: Zone, s: &str) -> Option<f64> {
     let s = s.replace(',', "");
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() < 4 {
@@ -330,7 +379,8 @@ fn parse_to_string_form(s: &str) -> Option<f64> {
     };
     let d: f64 = d.parse().ok()?;
     let y: f64 = y.parse().ok()?;
-    let (mut h, mut mi, mut sec, mut off) = (0.0, 0.0, 0.0, 0.0);
+    // Without a "GMT…" part the time is local.
+    let (mut h, mut mi, mut sec, mut off) = (0.0, 0.0, 0.0, None);
     if let Some(t) = rest.first() {
         let hms: Vec<&str> = t.split(':').collect();
         if hms.len() != 3 {
@@ -339,8 +389,9 @@ fn parse_to_string_form(s: &str) -> Option<f64> {
         h = hms[0].parse().ok()?;
         mi = hms[1].parse().ok()?;
         sec = hms[2].parse().ok()?;
-        if let Some(z) = rest.get(1) {
-            if let Some(o) = z.strip_prefix("GMT") {
+        if let Some(zs) = rest.get(1) {
+            if let Some(o) = zs.strip_prefix("GMT") {
+                off = Some(0.0);
                 if !o.is_empty() {
                     let sign = if o.starts_with('-') { -1.0 } else { 1.0 };
                     let digits: String = o.chars().filter(|c| c.is_ascii_digit()).collect();
@@ -348,12 +399,16 @@ fn parse_to_string_form(s: &str) -> Option<f64> {
                         return None;
                     }
                     let v: f64 = digits.parse().ok()?;
-                    off = sign * ((v / 100.0).floor() * 60.0 + v % 100.0) * 60_000.0;
+                    off = Some(sign * ((v / 100.0).floor() * 60.0 + v % 100.0) * 60_000.0);
                 }
             }
         }
     }
-    let t = make_date(make_day(y, m as f64, d), make_time(h, mi, sec, 0.0)) - off;
+    let t = make_date(make_day(y, m as f64, d), make_time(h, mi, sec, 0.0));
+    let t = match off {
+        Some(o) => t - o,
+        None => utc(z, t),
+    };
     let c = time_clip(t);
     (!c.is_nan()).then_some(c)
 }
@@ -410,7 +465,7 @@ fn setter(vm: &mut Vm, c: NativeCall, field: Field, is_utc: bool) -> JsResult<Va
     } else if is_utc {
         t0
     } else {
-        local(t0)
+        local(vm.local_zone(), t0)
     };
     let (mut y, mut mo, mut d) = (year_from_time(base), month_from_time(base), date_from_time(base));
     let (mut h, mut mi, mut s, mut ms) =
@@ -445,7 +500,7 @@ fn setter(vm: &mut Vm, c: NativeCall, field: Field, is_utc: bool) -> JsResult<Va
         }
     }
     let nd = make_date(make_day(y, mo, d), make_time(h, mi, s, ms));
-    let v = time_clip(if is_utc { nd } else { utc(nd) });
+    let v = time_clip(if is_utc { nd } else { utc(vm.local_zone(), nd) });
     Ok(set_time(vm, &c.this, v))
 }
 
@@ -474,7 +529,7 @@ fn date_value_args(vm: &mut Vm, c: &NativeCall) -> JsResult<f64> {
 fn ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let Some(nt) = c.new_target else {
         let t = now();
-        return Ok(Value::str(&format!("{} {}", date_string(local(t)), time_string(local(t)))));
+        return Ok(Value::str(&to_date_string(vm.local_zone(), t)));
     };
     let tv = match c.args.len() {
         0 => now(),
@@ -485,7 +540,7 @@ fn ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
                 _ => {
                     let p = vm.to_primitive(&v, Hint::Default)?;
                     if let Value::String(s) = &p {
-                        parse_date(&String::from_utf16_lossy(s))
+                        parse_date(vm.local_zone(), &String::from_utf16_lossy(s))
                     } else {
                         vm.to_number(&p)?
                     }
@@ -493,7 +548,10 @@ fn ctor(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
             };
             time_clip(tv)
         }
-        _ => time_clip(utc(date_value_args(vm, &c)?)),
+        _ => {
+            let t = date_value_args(vm, &c)?;
+            time_clip(utc(vm.local_zone(), t))
+        }
     };
     let proto = vm.prototype_from_ctor(nt, |r| r.date_proto)?;
     Ok(Value::Object(vm.heap.alloc(Object::new(Some(proto), Kind::Date(tv)))))
@@ -507,7 +565,7 @@ pub(super) fn install(vm: &mut Vm) {
     method(vm, dc, "now", 0, |_, _| Ok(Value::Number(now())));
     method(vm, dc, "parse", 1, |vm, c| {
         let s = super::arg_string(vm, &c, 0)?;
-        Ok(Value::Number(parse_date(&String::from_utf16_lossy(&s))))
+        Ok(Value::Number(parse_date(vm.local_zone(), &String::from_utf16_lossy(&s))))
     });
     method(vm, dc, "UTC", 7, |vm, c| {
         if c.args.is_empty() {
@@ -523,7 +581,7 @@ pub(super) fn install(vm: &mut Vm) {
                 if t.is_nan() {
                     return Ok(Value::Number(f64::NAN));
                 }
-                let t = if $local { local(t) } else { t };
+                let t = if $local { local(vm.local_zone(), t) } else { t };
                 let f: fn(f64) -> f64 = $f;
                 Ok(Value::Number(f(t)))
             });)*
@@ -547,8 +605,15 @@ pub(super) fn install(vm: &mut Vm) {
         "getUTCMinutes" => min_from_time, false;
         "getUTCMonth" => month_from_time, false;
         "getUTCSeconds" => sec_from_time, false;
-        "getTimezoneOffset" => |_| 0.0, false;
     );
+    // getTimezoneOffset (§21.4.4.11): (t − LocalTime(t)) / msPerMinute.
+    method(vm, dp, "getTimezoneOffset", 0, |vm, c| {
+        let t = this_time(vm, &c.this)?;
+        if t.is_nan() {
+            return Ok(Value::Number(f64::NAN));
+        }
+        Ok(Value::Number((t - local(vm.local_zone(), t)) / 60_000.0))
+    });
     method(vm, dp, "getTime", 0, |vm, c| Ok(Value::Number(this_time(vm, &c.this)?)));
     method(vm, dp, "valueOf", 0, |vm, c| Ok(Value::Number(this_time(vm, &c.this)?)));
     method(vm, dp, "setTime", 1, |vm, c| {
@@ -586,9 +651,10 @@ pub(super) fn install(vm: &mut Vm) {
         }
         let yi = to_int(y);
         let yyyy = if (0.0..=99.0).contains(&yi) { yi + 1900.0 } else { y };
-        let base = if t.is_nan() { 0.0 } else { local(t) };
+        let z = vm.local_zone();
+        let base = if t.is_nan() { 0.0 } else { local(z, t) };
         let d = make_day(yyyy, month_from_time(base), date_from_time(base));
-        let v = time_clip(utc(make_date(d, time_within_day(base))));
+        let v = time_clip(utc(z, make_date(d, time_within_day(base))));
         Ok(set_time(vm, &c.this, v))
     });
     macro_rules! strings {
@@ -598,18 +664,18 @@ pub(super) fn install(vm: &mut Vm) {
                 if t.is_nan() {
                     return Ok(Value::str("Invalid Date"));
                 }
-                let f: fn(f64) -> String = $f;
-                Ok(Value::str(&f(t)))
+                let f: fn(Zone, f64) -> String = $f;
+                Ok(Value::str(&f(vm.local_zone(), t)))
             });)*
         };
     }
     strings!(
-        "toString" => |t| format!("{} {}", date_string(local(t)), time_string(local(t)));
-        "toDateString" => |t| date_string(local(t));
-        "toTimeString" => |t| time_string(local(t));
-        "toLocaleString" => |t| format!("{} {}", date_string(local(t)), time_string(local(t)));
-        "toLocaleDateString" => |t| date_string(local(t));
-        "toLocaleTimeString" => |t| time_string(local(t));
+        "toString" => to_date_string;
+        "toDateString" => |z, t| date_string(local(z, t));
+        "toTimeString" => time_string;
+        "toLocaleString" => to_date_string;
+        "toLocaleDateString" => |z, t| date_string(local(z, t));
+        "toLocaleTimeString" => time_string;
     );
     let utc_fn = method(vm, dp, "toUTCString", 0, |vm, c| {
         let t = this_time(vm, &c.this)?;
@@ -679,12 +745,31 @@ mod tests {
         assert_eq!((year_from_time(t), month_from_time(t), date_from_time(t)), (2024.0, 1.0, 29.0));
         assert_eq!(week_day(t), 4.0);
         assert_eq!(iso_string(t), "2024-02-29T12:30:00.005Z");
-        assert_eq!(parse_date("2024-02-29T12:30:00.005Z"), t);
-        assert_eq!(parse_date("1970-01-01"), 0.0);
-        assert!(parse_date("2023-02-29").is_nan());
-        assert_eq!(parse_date("Thu, 01 Jan 1970 00:00:00 GMT"), 0.0);
-        assert_eq!(parse_date("Thu Jan 01 1970 00:00:00 GMT+0100 (CET)"), -3_600_000.0);
+        assert_eq!(parse_date(None, "2024-02-29T12:30:00.005Z"), t);
+        assert_eq!(parse_date(None, "1970-01-01"), 0.0);
+        assert!(parse_date(None, "2023-02-29").is_nan());
+        assert_eq!(parse_date(None, "Thu, 01 Jan 1970 00:00:00 GMT"), 0.0);
+        assert_eq!(parse_date(None, "Thu Jan 01 1970 00:00:00 GMT+0100 (CET)"), -3_600_000.0);
         assert_eq!(year_from_time(-1.0), 1969.0);
         assert_eq!(iso_string(-62198755200000.0), "-000001-01-01T00:00:00.000Z");
+    }
+
+    #[test]
+    fn local_time() {
+        let ny = crate::vm::tz::zone("America/New_York");
+        let at = |y, mo, d, h, mi| make_date(make_day(y, mo - 1.0, d), make_time(h, mi, 0.0, 0.0));
+        // 2024-01-15T12:00Z is 07:00 EST; 2024-07-15T12:00Z is 08:00 EDT.
+        assert_eq!(local(ny, at(2024.0, 1.0, 15.0, 12.0, 0.0)), at(2024.0, 1.0, 15.0, 7.0, 0.0));
+        assert_eq!(utc(ny, at(2024.0, 7.0, 15.0, 8.0, 0.0)), at(2024.0, 7.0, 15.0, 12.0, 0.0));
+        // 2024-03-10 02:30 doesn't exist: the EST offset applies (07:30Z, shown as 03:30 EDT).
+        assert_eq!(utc(ny, at(2024.0, 3.0, 10.0, 2.0, 30.0)), at(2024.0, 3.0, 10.0, 7.0, 30.0));
+        // 2024-11-03 01:30 happens twice: the earlier (EDT, 05:30Z).
+        assert_eq!(utc(ny, at(2024.0, 11.0, 3.0, 1.0, 30.0)), at(2024.0, 11.0, 3.0, 5.0, 30.0));
+        let t = at(2024.0, 1.0, 15.0, 12.0, 0.0);
+        assert_eq!(to_date_string(ny, t), "Mon Jan 15 2024 07:00:00 GMT-0500 (America/New_York)");
+        assert_eq!(parse_date(ny, &to_date_string(ny, t)), t);
+        assert_eq!(parse_date(ny, "2024-01-15T07:00"), t);
+        assert!(utc(ny, f64::INFINITY).is_nan());
+        assert_eq!(offset_ms(ny, 1e300), 0.0);
     }
 }

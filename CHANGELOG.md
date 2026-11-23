@@ -21,8 +21,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   covers (Array.fromAsync, Error.isError, Math.sumPrecise, Uint8Array base64/hex,
   JSON.rawJSON, iterator chunks/windows/includes/join/zip, Promise.allKeyed); then mapped
   `arguments`, `import defer`, ShadowRealm, immutable ArrayBuffers, Atomics.wait/waitAsync
-  across `$262.agent` threads, `Error.prototype.stack`, Temporal (ISO calendar; UTC and
-  offset time zones), [[IsHTMLDDA]] for `document.all` and the legacy RegExp statics
+  across `$262.agent` threads, `Error.prototype.stack`, Temporal (ISO calendar; the IANA
+  time zone database, tzdata 2026e, which Date's local time uses too), [[IsHTMLDDA]] for `document.all` and the legacy RegExp statics
   (`RegExp.$1`, `RegExp.lastMatch`, …), proper tail calls, decorators and auto-accessors,
   JSON, text and bytes modules (`import … with { type: "json" }`) and source-phase imports:
   all of test262 (`language`, `built-ins`, `annexB`: 48803 tests, sloppy and strict) passes,

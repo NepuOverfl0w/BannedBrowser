@@ -23,8 +23,8 @@
 > **Status: [v0.1.0 "Hello, Old Web"](https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0) released.**
 > BannedBrowser renders example.com, theoldnet.com and archived 1990s sites convincingly.
 > Since then `main` (on its way to v0.2) has gained working forms, a persistent profile, an HTTP
-> cache, HTTP/2 and the first part of its own JavaScript engine (the parser). It doesn't run
-> JavaScript yet, and has no bookmarks or sandboxing. See [PROGRESS.md](PROGRESS.md) for the
+> cache, HTTP/2 and its own JavaScript engine (passing all of test262), which isn't hooked up
+> to pages yet. It doesn't run page scripts, and has no bookmarks or sandboxing. See [PROGRESS.md](PROGRESS.md) for the
 > honest details.
 
 ## 📑 Contents

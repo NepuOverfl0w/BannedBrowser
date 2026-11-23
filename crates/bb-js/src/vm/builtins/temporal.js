@@ -959,11 +959,22 @@
     return formatOffsetNs(o.ns, true);
   }
 
-  // GetAvailableNamedTimeZoneIdentifier: without a time zone database only UTC.
+  // GetAvailableNamedTimeZoneIdentifier(name).[[Identifier]]: the IANA tz
+  // database (vm/tz.rs) matches names ASCII case-insensitively and gives each its
+  // database spelling; "UTC", "Etc/UTC" and "Etc/GMT" share the primary identifier "UTC".
   function namedZone(name) {
-    const l = asciiLower(name);
-    if (l === "utc" || l === "etc/utc" || l === "etc/gmt") return "UTC";
-    throw new RangeError(`unsupported time zone ${name}`);
+    const r = I.tzId(name);
+    if (r === undefined) throw new RangeError(`unknown time zone ${name}`);
+    return r[0];
+  }
+
+  const isOffsetZone = (tz) => isSign(cu(tz, 0));
+
+  // TimeZoneEquals: the same zone after resolving links.
+  function tzEquals(one, two) {
+    if (one === two) return true;
+    if (isOffsetZone(one) || isOffsetZone(two)) return false;
+    return I.tzId(one)[1] === I.tzId(two)[1];
   }
 
   // ToTemporalTimeZoneIdentifier.
@@ -998,23 +1009,99 @@
     throw new RangeError(`invalid time zone ${s}`);
   }
 
-  // The offset of a fixed time zone in nanoseconds.
-  function zoneOffset(tz) {
+  // The database works in whole seconds: offsets are whole seconds and transitions fall
+  // on whole seconds, so the nanoseconds within a second ride along unchanged.
+  const NS_PER_S = 1000000000n;
+
+  // GetOffsetNanosecondsFor(timeZone, epochNs).
+  function offsetNs(tz, epochNs) {
     if (tz === "UTC") return 0;
-    const p = scanner(tz);
-    return utcOffset(p, true).ns;
+    if (isOffsetZone(tz)) return utcOffset(scanner(tz), true).ns;
+    return I.tzOffset(tz, NumberF(bdiv(epochNs, NS_PER_S))) * 1e9;
   }
 
-  // GetEpochNanosecondsFor (fixed offsets have one possibility).
-  function zonedEpochNs(tz, y, m, d, t) {
-    const e = utcEpochNs(y, m, d, t[0], t[1], t[2], t[3], t[4], t[5]) - BigIntF(zoneOffset(tz));
-    checkEpochNs(e);
-    return e;
+  // GetPossibleEpochNanoseconds for the wall-clock time `local`, given as the
+  // nanoseconds it would be in UTC: none in a gap, two in an overlap.
+  function possibleNs(tz, local) {
+    let out;
+    if (tz === "UTC" || isOffsetZone(tz)) {
+      const e = local - BigIntF(offsetNs(tz, 0n));
+      if (babs(bdiv(e, NS_PER_DAY)) > 100000000n) throw new RangeError("the date is out of range");
+      out = [e];
+    } else {
+      // No day-range check on the wall-clock date: west of UTC, the earliest instant's
+      // local date is a day before the range, and the instants themselves are checked.
+      const sec = bdiv(local, NS_PER_S);
+      const frac = local - sec * NS_PER_S;
+      const p = I.tzPossible(tz, NumberF(sec));
+      out = [];
+      for (let i = 0; i < p.length; i++) out[i] = BigIntF(p[i]) * NS_PER_S + frac;
+    }
+    for (let i = 0; i < out.length; i++) checkEpochNs(out[i]);
+    return out;
+  }
+
+  // DisambiguatePossibleEpochNanoseconds.
+  function disambiguate(possible, tz, local, disamb) {
+    const n = possible.length;
+    if (n === 1) return possible[0];
+    if (n !== 0) {
+      if (disamb === "reject") throw new RangeError("the time is ambiguous in the time zone");
+      return disamb === "later" ? possible[n - 1] : possible[0];
+    }
+    if (disamb === "reject") throw new RangeError("the time doesn't exist in the time zone");
+    // A gap: shift the wall-clock time by its length (the offsets a day either side).
+    const before = local - NS_PER_DAY;
+    checkEpochNs(before);
+    const after = local + NS_PER_DAY;
+    checkEpochNs(after);
+    const gap = BigIntF(offsetNs(tz, after) - offsetNs(tz, before));
+    if (disamb === "earlier") {
+      const p = possibleNs(tz, local - gap);
+      if (p.length === 0) throw new RangeError("the time doesn't exist in the time zone");
+      return p[0];
+    }
+    const p = possibleNs(tz, local + gap);
+    if (p.length === 0) throw new RangeError("the time doesn't exist in the time zone");
+    return p[p.length - 1];
+  }
+
+  // GetEpochNanosecondsFor for date + time `t`.
+  function zonedEpochNs(tz, y, m, d, t, disamb = "compatible") {
+    const local = utcEpochNs(y, m, d, t[0], t[1], t[2], t[3], t[4], t[5]);
+    return disambiguate(possibleNs(tz, local), tz, local, disamb);
+  }
+
+  // GetStartOfDay: midnight, or when midnight falls in a gap, the transition
+  // that makes it.
+  function startOfDayNs(tz, d) {
+    const local = utcEpochNs(d[0], d[1], d[2], 0, 0, 0, 0, 0, 0);
+    const p = possibleNs(tz, local);
+    if (p.length !== 0) return p[0];
+    const before = local - NS_PER_DAY;
+    checkEpochNs(before);
+    const t = transitionNs(tz, before, "next");
+    if (t === null) throw new RangeError("the day has no start in the time zone");
+    return t;
+  }
+
+  // GetNamedTimeZoneNextTransition / GetNamedTimeZonePreviousTransition:
+  // strictly after or before `epochNs`, null when there is none in Temporal's range.
+  function transitionNs(tz, epochNs, dir) {
+    if (tz === "UTC" || isOffsetZone(tz)) return null;
+    const sec = bdiv(epochNs, NS_PER_S);
+    let t;
+    if (dir === "next") t = I.tzNext(tz, NumberF(sec));
+    // A transition at `sec` itself is strictly before epochNs when there's a fraction.
+    else t = I.tzPrevious(tz, NumberF(epochNs === sec * NS_PER_S ? sec : sec + 1n));
+    if (t === null) return null;
+    const r = BigIntF(t) * NS_PER_S;
+    return babs(r) > NS_MAX_INSTANT ? null : r;
   }
 
   // GetISODateTimeFor: [y, m, d, h, mi, s, ms, us, ns].
   function zonedDateTime(tz, epochNs) {
-    const local = epochNs + BigIntF(zoneOffset(tz));
+    const local = epochNs + BigIntF(offsetNs(tz, epochNs));
     const days = bdiv(local, NS_PER_DAY);
     const t = balanceTimeNs(local - days * NS_PER_DAY);
     const d = fromEpochDays(NumberF(days));
@@ -1349,15 +1436,17 @@
     return !r1Even;
   }
 
-  // NudgeToCalendarUnit: { duration, nudged, expanded, total }.
-  function nudgeCalendar(sign, d, dest, date, time, tz, inc, unit, mode) {
+  // ComputeNudgeWindow: the calendar-unit span around the duration's end, as
+  // { r1, r2, start, end, startNs, endNs }; `shift` moves it one increment outwards.
+  // `origin` is the starting point's epoch nanoseconds.
+  function nudgeWindow(sign, d, origin, date, time, tz, inc, unit, shift) {
     const y = d.date[0], mo = d.date[1], w = d.date[2], dy = d.date[3];
     let r1, r2, start, end;
     const rt = (x) => NumberF(roundBig(BigIntF(x), BigIntF(inc), "trunc"));
     if (unit === "year") {
-      r1 = rt(y); r2 = r1 + inc * sign; start = [r1, 0, 0, 0]; end = [r2, 0, 0, 0];
+      r1 = rt(y) + (shift ? inc * sign : 0); r2 = r1 + inc * sign; start = [r1, 0, 0, 0]; end = [r2, 0, 0, 0];
     } else if (unit === "month") {
-      r1 = rt(mo); r2 = r1 + inc * sign; start = [y, r1, 0, 0]; end = [y, r2, 0, 0];
+      r1 = rt(mo) + (shift ? inc * sign : 0); r2 = r1 + inc * sign; start = [y, r1, 0, 0]; end = [y, r2, 0, 0];
     } else if (unit === "week") {
       const ws = dateAdd(date, [y, mo, 0, 0], "constrain");
       const we = addDays(ws, dy);
@@ -1366,23 +1455,42 @@
     } else {
       r1 = rt(dy); r2 = r1 + inc * sign; start = [y, mo, w, r1]; end = [y, mo, w, r2];
     }
-    const sd = dateAdd(date, start, "constrain");
-    const ed = dateAdd(date, end, "constrain");
-    const startNs = epochOf(sd, time, tz);
-    const endNs = epochOf(ed, time, tz);
-    if (sign === 1 ? (startNs > dest || dest > endNs) : (startNs < dest || dest < endNs)) {
-      throw new RangeError("the duration can't be rounded relative to this date");
+    // A window starting at the origin itself takes its exact instant: going through the
+    // wall-clock time could pick the other of two instants in a repeated hour
+    // (tc39/proposal-temporal#3148). The draft tests r1 = 0 for this; a zero start
+    // duration is what makes the start the origin (and what the reference polyfill tests).
+    const zeroStart = start[0] === 0 && start[1] === 0 && start[2] === 0 && start[3] === 0;
+    const startNs = zeroStart ? origin : epochOf(dateAdd(date, start, "constrain"), time, tz);
+    const endNs = epochOf(dateAdd(date, end, "constrain"), time, tz);
+    return { r1, r2, start, end, startNs, endNs };
+  }
+
+  const inWindow = (sign, w, dest) => (sign === 1 ? w.startNs <= dest && dest <= w.endNs
+    : w.endNs <= dest && dest <= w.startNs);
+
+  // NudgeToCalendarUnit: { duration, nudged, expanded, total }.
+  function nudgeCalendar(sign, d, dest, date, time, tz, inc, unit, mode, origin) {
+    if (origin === undefined) origin = epochOf(date, time, undefined);
+    let win = nudgeWindow(sign, d, origin, date, time, tz, inc, unit, false);
+    let shifted = false;
+    if (!inWindow(sign, win, dest)) {
+      win = nudgeWindow(sign, d, origin, date, time, tz, inc, unit, true);
+      if (!inWindow(sign, win, dest)) throw new RangeError("the duration can't be rounded relative to this date");
+      shifted = true;
     }
+    const { r1, r2, start, end, startNs, endNs } = win;
+    if (startNs === endNs) throw new RangeError("the duration can't be rounded relative to this date");
     const num = babs(dest - startNs);
     const den = babs(endNs - startNs);
     const total = I.bigDiv(BigIntF(r1) * den + BigIntF(inc * sign) * num, den);
     const um = unsignedMode(mode, sign < 0);
     const r1Even = mod(abs(r1) / inc, 2) === 0;
     // progress = 1 (the destination is the end) rounds to r2.
-    const expand = num === den || pickR2(num, den, um, r1Even);
+    const toR2 = num === den || pickR2(num, den, um, r1Even);
+    const expand = shifted || toR2;
     return {
-      duration: { date: expand ? end : start, time: 0n },
-      nudged: expand ? endNs : startNs,
+      duration: { date: toR2 ? end : start, time: 0n },
+      nudged: toR2 ? endNs : startNs,
       expanded: expand,
       total,
     };
@@ -1454,11 +1562,12 @@
   }
 
   // RoundRelativeDuration.
-  function roundRelative(d, dest, date, time, tz, largest, inc, smallest, mode) {
+  // `origin` is the starting point's epoch nanoseconds when `tz` is set.
+  function roundRelative(d, dest, date, time, tz, largest, inc, smallest, mode, origin) {
     const irregular = unitIndex(smallest) <= 2 || (tz !== undefined && smallest === "day");
     const sign = internalSign(d) < 0 ? -1 : 1;
     let n;
-    if (irregular) n = nudgeCalendar(sign, d, dest, date, time, tz, inc, smallest, mode);
+    if (irregular) n = nudgeCalendar(sign, d, dest, date, time, tz, inc, smallest, mode, origin);
     else if (tz !== undefined) n = nudgeZoned(sign, d, date, time, tz, inc, smallest, mode);
     else n = nudgeDayOrTime(d, dest, largest, inc, smallest, mode);
     let out = n.duration;
@@ -1474,10 +1583,10 @@
   }
 
   // TotalRelativeDuration.
-  function totalRelative(d, dest, date, time, tz, unit) {
+  function totalRelative(d, dest, date, time, tz, unit, origin) {
     if (unitIndex(unit) <= 2 || (tz !== undefined && unit === "day")) {
       const sign = internalSign(d) < 0 ? -1 : 1;
-      return nudgeCalendar(sign, d, dest, date, time, tz, 1, unit, "trunc").total;
+      return nudgeCalendar(sign, d, dest, date, time, tz, 1, unit, "trunc", origin).total;
     }
     return totalTime(d.time + BigIntF(d.date[3]) * NS_PER_DAY, unit);
   }
@@ -1889,7 +1998,7 @@
       } else tz = toTimeZone(item);
       const d = [s[0], s[1], s[2]];
       let ns;
-      if (time === undefined) ns = zonedEpochNs(tz, d[0], d[1], d[2], [0, 0, 0, 0, 0, 0]);
+      if (time === undefined) ns = startOfDayNs(tz, d);
       else {
         const t = toTime(time);
         checkDateTime(d[0], d[1], d[2], t[0], t[1], t[2], t[3], t[4], t[5]);
@@ -2136,9 +2245,9 @@
     toZonedDateTime(temporalTimeZoneLike, options = undefined) {
       const s = slots(this, DATETIME);
       const tz = toTimeZone(temporalTimeZoneLike);
-      disambiguationOpt(getOptionsObject(options));
+      const disamb = disambiguationOpt(getOptionsObject(options));
       const a = dtOf(this);
-      return makeZoned(zonedEpochNs(tz, a[0], a[1], a[2], dtTime(a)), tz, s[9]);
+      return makeZoned(zonedEpochNs(tz, a[0], a[1], a[2], dtTime(a), disamb), tz, s[9]);
     }
     toPlainDate() {
       const s = slots(this, DATETIME);
@@ -2236,7 +2345,8 @@
         if (r.z) offsetBehaviour = "exact";
         else if (r.offset === undefined) offsetBehaviour = "wall";
         else offset = r.offset;
-        match = "minutes";
+        // An offset written with seconds must match exactly (ToRelativeTemporalObject).
+        match = offset !== undefined && offset.hasSubMinute ? "exactly" : "minutes";
       }
     }
     if (tz === undefined) {
@@ -2254,10 +2364,12 @@
     return utcOffset(p, false).ns;
   }
 
-  // InterpretISODateTimeOffset (fixed-offset zones have one candidate).
+  // InterpretISODateTimeOffset.
   function interpretOffset(date, time, behaviour, offNs, tz, disambiguation, offsetOption, match) {
-    if (time === undefined) return zonedEpochNs(tz, date[0], date[1], date[2], [0, 0, 0, 0, 0, 0]);
-    if (behaviour === "wall" || offsetOption === "ignore") return zonedEpochNs(tz, date[0], date[1], date[2], time);
+    if (time === undefined) return startOfDayNs(tz, date);
+    if (behaviour === "wall" || offsetOption === "ignore") {
+      return zonedEpochNs(tz, date[0], date[1], date[2], time, disambiguation);
+    }
     if (behaviour === "exact" || offsetOption === "use") {
       const e = utcEpochNs(date[0], date[1], date[2], time[0], time[1], time[2], time[3], time[4], time[5]) - BigIntF(offNs);
       if (babs(bdiv(e, NS_PER_DAY)) > 100000000n) throw new RangeError("the date is out of range");
@@ -2266,12 +2378,15 @@
     }
     checkDaysRange(date);
     const utc = utcEpochNs(date[0], date[1], date[2], time[0], time[1], time[2], time[3], time[4], time[5]);
-    const cand = zonedEpochNs(tz, date[0], date[1], date[2], time);
-    const candOff = NumberF(utc - cand);
-    if (candOff === offNs) return cand;
-    if (match === "minutes" && NumberF(roundBig(BigIntF(candOff), 60000000000n, "halfExpand")) === offNs) return cand;
+    const possible = possibleNs(tz, utc);
+    for (let i = 0; i < possible.length; i++) {
+      const cand = possible[i];
+      const candOff = NumberF(utc - cand);
+      if (candOff === offNs) return cand;
+      if (match === "minutes" && NumberF(roundBig(BigIntF(candOff), 60000000000n, "halfExpand")) === offNs) return cand;
+    }
     if (offsetOption === "reject") throw new RangeError("the offset doesn't match the time zone");
-    return cand;
+    return disambiguate(possible, tz, utc, disambiguation);
   }
 
   // CheckISODaysRange.
@@ -2331,14 +2446,14 @@
     const d = diffZoned(ns1, ns2, tz, largest);
     if (smallest === "nanosecond" && inc === 1) return d;
     const a = zonedDateTime(tz, ns1);
-    return roundRelative(d, ns2, dtDate(a), dtTime(a), tz, largest, inc, smallest, mode);
+    return roundRelative(d, ns2, dtDate(a), dtTime(a), tz, largest, inc, smallest, mode, ns1);
   }
 
   function diffZonedTotal(ns1, ns2, tz, unit) {
     if (unitIndex(unit) > 3) return totalTime(ns2 - ns1, unit);
     const d = diffZoned(ns1, ns2, tz, unit);
     const a = zonedDateTime(tz, ns1);
-    return totalRelative(d, ns2, dtDate(a), dtTime(a), tz, unit);
+    return totalRelative(d, ns2, dtDate(a), dtTime(a), tz, unit, ns1);
   }
 
   // The plain-relative target of a duration: [start date-time, target date-time].
@@ -2621,7 +2736,7 @@
     const a = zonedDateTime(out, ns);
     const s = dateTimeToString(a, "iso8601", precision, "never");
     if (tz === undefined) return `${s}Z`;
-    return `${s}${formatOffsetRounded(zoneOffset(out))}`;
+    return `${s}${formatOffsetRounded(offsetNs(out, ns))}`;
   }
 
   // FormatDateTimeUTCOffsetRounded.
@@ -2783,7 +2898,8 @@
       if (r.z) behaviour = "exact";
       else if (offset === undefined) behaviour = "wall";
       cal = r.calendar === undefined ? "iso8601" : canonCalendar(r.calendar);
-      match = "minutes";
+      // An offset written with seconds must match exactly (ToTemporalZonedDateTime).
+      match = offset !== undefined && offset.hasSubMinute ? "exactly" : "minutes";
       const o = getOptionsObject(options);
       disamb = disambiguationOpt(o);
       offsetOption = offsetOpt(o, "reject");
@@ -2802,7 +2918,7 @@
     checkEpochNs(ns);
     const a = zonedDateTime(z[1], ns);
     let s = dateTimeToString(a, "iso8601", precision, "never");
-    if (showOffset !== "never") s += formatOffsetRounded(zoneOffset(z[1]));
+    if (showOffset !== "never") s += formatOffsetRounded(offsetNs(z[1], ns));
     if (showTz !== "never") s += `[${showTz === "critical" ? "!" : ""}${z[1]}]`;
     return s + calendarAnnotation(z[2], showCal);
   }
@@ -2854,8 +2970,8 @@
       const a = zonedDateTime(z[1], z[0]);
       const today = dtDate(a);
       const tomorrow = addDays(today, 1);
-      const s = zonedEpochNs(z[1], today[0], today[1], today[2], [0, 0, 0, 0, 0, 0]);
-      const e = zonedEpochNs(z[1], tomorrow[0], tomorrow[1], tomorrow[2], [0, 0, 0, 0, 0, 0]);
+      const s = startOfDayNs(z[1], today);
+      const e = startOfDayNs(z[1], tomorrow);
       return totalTime(e - s, "hour");
     }
     get daysInWeek() { slots(this, ZONED); return 7; }
@@ -2863,8 +2979,8 @@
     get daysInYear() { return daysInYear(zLocal(this)[0]); }
     get monthsInYear() { slots(this, ZONED); return 12; }
     get inLeapYear() { return isLeap(zLocal(this)[0]); }
-    get offsetNanoseconds() { return zoneOffset(slots(this, ZONED)[1]); }
-    get offset() { return formatOffsetNs(zoneOffset(slots(this, ZONED)[1]), false); }
+    get offsetNanoseconds() { const z = slots(this, ZONED); return offsetNs(z[1], z[0]); }
+    get offset() { const z = slots(this, ZONED); return formatOffsetNs(offsetNs(z[1], z[0]), false); }
     with(temporalZonedDateTimeLike, options = undefined) {
       const z = zOf(this);
       checkPartial(temporalZonedDateTimeLike);
@@ -2872,7 +2988,7 @@
       const base = dateFields(dtDate(a));
       base.hour = a[3]; base.minute = a[4]; base.second = a[5];
       base.millisecond = a[6]; base.microsecond = a[7]; base.nanosecond = a[8];
-      base.offset = formatOffsetNs(zoneOffset(z[1]), false);
+      base.offset = formatOffsetNs(offsetNs(z[1], z[0]), false);
       const p = prepareFields(temporalZonedDateTimeLike, concatList(DATETIME_FIELDS, ["offset"]), "partial");
       const f = mergeFields(base, p);
       const o = getOptionsObject(options);
@@ -2887,6 +3003,7 @@
     withPlainTime(plainTimeLike = undefined) {
       const z = zOf(this);
       const d = dtDate(zonedDateTime(z[1], z[0]));
+      if (plainTimeLike === undefined) return makeZoned(startOfDayNs(z[1], d), z[1], z[2]);
       const t = timeOrMidnight(plainTimeLike);
       return makeZoned(zonedEpochNs(z[1], d[0], d[1], d[2], t), z[1], z[2]);
     }
@@ -2924,19 +3041,23 @@
       if (unit === "day") {
         const ds = dtDate(a);
         const de = addDays(ds, 1);
-        const start = zonedEpochNs(z[1], ds[0], ds[1], ds[2], [0, 0, 0, 0, 0, 0]);
-        const end = zonedEpochNs(z[1], de[0], de[1], de[2], [0, 0, 0, 0, 0, 0]);
-        ns = start + roundBig(z[0] - start, end - start, mode);
+        const start = startOfDayNs(z[1], ds);
+        const end = startOfDayNs(z[1], de);
+        // Where a transition after midnight falls back to before it, two pieces of each
+        // day interleave and this instant can lie past the next day's start; count it
+        // as the last instant of its own day (tc39/proposal-temporal#3312).
+        const here = z[0] < end ? z[0] : end - 1n;
+        ns = start + roundBig(here - start, end - start, mode);
       } else {
         const r = roundDateTime(a, inc, unit, mode);
-        ns = interpretOffset(dtDate(r), dtTime(r), "option", zoneOffset(z[1]), z[1], "compatible", "prefer", "exactly");
+        ns = interpretOffset(dtDate(r), dtTime(r), "option", offsetNs(z[1], z[0]), z[1], "compatible", "prefer", "exactly");
       }
       return makeZoned(ns, z[1], z[2]);
     }
     equals(other) {
       const z = zOf(this);
       const o = toZoned(other);
-      return z[0] === o[0] && z[1] === o[1] && z[2] === o[2];
+      return z[0] === o[0] && tzEquals(z[1], o[1]) && z[2] === o[2];
     }
     toString(options = undefined) {
       const z = zOf(this);
@@ -2964,7 +3085,7 @@
     startOfDay() {
       const z = zOf(this);
       const d = dtDate(zonedDateTime(z[1], z[0]));
-      return makeZoned(zonedEpochNs(z[1], d[0], d[1], d[2], [0, 0, 0, 0, 0, 0]), z[1], z[2]);
+      return makeZoned(startOfDayNs(z[1], d), z[1], z[2]);
     }
     getTimeZoneTransition(directionParam) {
       slots(this, ZONED);
@@ -2976,8 +3097,9 @@
       } else o = getOptionsObject(directionParam);
       const dir = getStringOption(o, "direction", ["next", "previous"], undefined);
       if (dir === undefined) throw new RangeError("direction is required");
-      // Fixed-offset zones and UTC have no transitions.
-      return null;
+      const z = slots(this, ZONED);
+      const t = transitionNs(z[1], z[0], dir);
+      return t === null ? null : makeZoned(t, z[1], z[2]);
     }
     toInstant() {
       return makeInstant(slots(this, ZONED)[0]);
@@ -3013,7 +3135,7 @@
       const t = roundTimeDuration(w[0] - z[0], st.inc, st.smallest, st.mode);
       r = fromInternal({ date: [0, 0, 0, 0], time: t }, st.largest);
     } else {
-      if (w[1] !== z[1]) throw new RangeError("the time zones differ");
+      if (!tzEquals(w[1], z[1])) throw new RangeError("the time zones differ");
       if (w[0] === z[0]) return makeDuration([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
       const d = diffZonedRounded(z[0], w[0], z[1], st.largest, st.inc, st.smallest, st.mode);
       r = fromInternal(d, "hour");
@@ -3293,7 +3415,8 @@
 
   // ---- Temporal.Now and the namespace ----
 
-  const systemZone = () => "UTC";
+  // SystemTimeZoneIdentifier (ECMA-262 §21.4.1).
+  const systemZone = () => I.tzSystem();
   const nowDT = (tz) => zonedDateTime(tz === undefined ? systemZone() : toTimeZone(tz), I.nowNs());
 
   const Now = I.objectCreate(ObjectProto);
