@@ -221,12 +221,40 @@ pub fn insert(vm: &mut Vm, h: &Host, node: NodeRef, parent: NodeRef, child: Opti
     } else {
         vec![node]
     };
+    let mut inserted = Vec::with_capacity(nodes.len());
     for n in nodes {
         let n = adopt(vm, h, n, parent.doc)?;
         with_doc_mut(vm, h, parent.doc, |d| {
             d.detach(n.id);
             d.insert_before(parent.id, n.id, child);
         })?;
+        inserted.push(n);
+    }
+    // HTML §4.12.1 "node insertion steps": connected script elements are prepared (in tree
+    // order); a script whose text was added to a connected script element is too.
+    if parent.doc == 0 {
+        let scripts: Vec<NodeRef> = with_doc(vm, h, 0, |d| {
+            let connected =
+                |x: NodeId| std::iter::once(x).chain(d.ancestors(x)).last() == Some(Document::ROOT);
+            let mut out: Vec<NodeRef> = Vec::new();
+            for n in &inserted {
+                if !connected(n.id) {
+                    continue;
+                }
+                for x in d.descendants(n.id) {
+                    if d.is_html(x, "script") {
+                        out.push(n.with(x));
+                    }
+                }
+            }
+            if d.is_html(parent.id, "script") && connected(parent.id) {
+                out.push(parent);
+            }
+            out
+        })?;
+        for s in scripts {
+            crate::loader::script_inserted(vm, h, s);
+        }
     }
     Ok(())
 }

@@ -184,7 +184,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 |---|---|
 | WPT urltestdata | **904 / 904 (100 %)** |
 | html5lib tokenizer | **7046 / 7046 (100 %)** |
-| WPT tree construction | **1959 / 1959 (100 %)** |
+| WPT tree construction | **1959 / 1959 (100 %)**, + 14 / 14 `#script-on` |
 | Reftests | **50 / 50** |
 | test262 parse phase (`language`, `built-ins`, `annexB`) | **48803 / 48803 (100 %)** |
 | test262 execution | **48803 / 48803 (100 %)** |

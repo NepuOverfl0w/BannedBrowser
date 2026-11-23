@@ -155,6 +155,7 @@ pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
             None => throw(vm, "InvalidCharacterError", "atob: not valid base64"),
         }
     });
+    install_factories(vm, g);
     crate::events::setup_window_handlers(vm, g);
     op(vm, g, "getComputedStyle", 1, crate::css::get_computed_style);
     op(vm, g, "fetch", 1, crate::net::fetch);
@@ -162,6 +163,106 @@ pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
     install_location(vm, g);
     install_navigator(vm, g);
     install_screen_and_performance(vm, g);
+}
+
+/// A new HTML element of the window's document.
+fn create_html(vm: &mut Vm, name: &str) -> JsResult<(std::rc::Rc<Host>, NodeRef)> {
+    let h = host(vm)?;
+    let id = with_doc_mut(vm, &h, 0, |d| d.create_html_element(name))?;
+    Ok((h, NodeRef { doc: 0, id }))
+}
+
+/// The legacy factory functions Image (HTML §4.8.3), Option (§4.10.10) and Audio
+/// (§4.8.11.1): constructors whose prototype is the element interface's.
+fn install_factories(vm: &mut Vm, g: ObjRef) {
+    use crate::class::C;
+    let Ok(h) = host(vm) else { return };
+    for (name, len, f, iface) in [
+        (
+            "Image",
+            0,
+            (|vm, c| {
+                if c.new_target.is_none() {
+                    return vm.type_error("Image requires 'new'");
+                }
+                let (w, ht) = (c.arg(0), c.arg(1));
+                let w = if w.is_undefined() { None } else { Some(vm.to_uint32(&w)?) };
+                let ht = if ht.is_undefined() { None } else { Some(vm.to_uint32(&ht)?) };
+                let (h, n) = create_html(vm, "img")?;
+                with_doc_mut(vm, &h, 0, |d| {
+                    if let Some(w) = w {
+                        d.set_attr(n.id, "width", &w.to_string());
+                    }
+                    if let Some(ht) = ht {
+                        d.set_attr(n.id, "height", &ht.to_string());
+                    }
+                })?;
+                wrap(vm, &h, n)
+            }) as bb_js::vm::heap::NativeFn,
+            C::HTMLImageElement,
+        ),
+        (
+            "Option",
+            0,
+            |vm, c| {
+                if c.new_target.is_none() {
+                    return vm.type_error("Option requires 'new'");
+                }
+                let text = if c.arg(0).is_undefined() { String::new() } else { rstr(vm, &c.arg(0))? };
+                let value = if c.arg(1).is_undefined() { None } else { Some(rstr(vm, &c.arg(1))?) };
+                let default_selected = vm.to_boolean(&c.arg(2));
+                let selected = vm.to_boolean(&c.arg(3));
+                let (h, n) = create_html(vm, "option")?;
+                with_doc_mut(vm, &h, 0, |d| {
+                    if !text.is_empty() {
+                        let t = d.create_text(&text);
+                        d.append_child(n.id, t);
+                    }
+                    if let Some(v) = &value {
+                        d.set_attr(n.id, "value", v);
+                    }
+                    if default_selected {
+                        d.set_attr(n.id, "selected", "");
+                    }
+                })?;
+                let o = wrap(vm, &h, n)?;
+                if selected {
+                    if let Value::Object(oo) = o {
+                        vm.set(oo, PropKey::lit("selected"), Value::Bool(true), Value::Object(oo))?;
+                    }
+                }
+                Ok(o)
+            },
+            C::HTMLOptionElement,
+        ),
+        (
+            "Audio",
+            0,
+            |vm, c| {
+                if c.new_target.is_none() {
+                    return vm.type_error("Audio requires 'new'");
+                }
+                let src = if c.arg(0).is_undefined() { None } else { Some(rstr(vm, &c.arg(0))?) };
+                let (h, n) = create_html(vm, "audio")?;
+                with_doc_mut(vm, &h, 0, |d| {
+                    d.set_attr(n.id, "preload", "auto");
+                    if let Some(s) = &src {
+                        d.set_attr(n.id, "src", s);
+                    }
+                })?;
+                wrap(vm, &h, n)
+            },
+            C::HTMLAudioElement,
+        ),
+    ] {
+        let ctor = bb_js::vm::realm::native_with(vm, name, len, f, true, Vec::new());
+        let proto = h.proto(iface);
+        vm.heap.obj_mut(ctor).props.insert(
+            PropKey::lit("prototype"),
+            bb_js::vm::heap::Prop::data(Value::Object(proto), false, false, false),
+        );
+        bb_js::vm::realm::value(vm, g, name, Value::Object(ctor));
+    }
 }
 
 fn viewport(vm: &mut Vm, i: usize) -> R {

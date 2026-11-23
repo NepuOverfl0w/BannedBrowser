@@ -111,6 +111,10 @@ impl Window {
                 host::Task::Event(t, ty, bubbles, cancelable) => {
                     events::fire(&mut self.vm, &h, t, &ty, bubbles, cancelable).map(|_| ())
                 }
+                host::Task::Script(s) => {
+                    loader::run_script_task(&mut self.vm, &h, s);
+                    Ok(())
+                }
                 host::Task::Fetch(id, req) => {
                     let r = h.embedder.fetch_sync(*req);
                     net::complete(&mut self.vm, &h, id, r)

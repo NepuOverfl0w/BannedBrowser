@@ -167,3 +167,28 @@ fn fetch_xhr_and_url_from_scripts() {
     wait_for_change(&mut p, "x", "waiting");
     assert_eq!(text(&p, "x"), "4 200 from xhr");
 }
+
+#[test]
+fn inserted_scripts_and_images() {
+    // A 2×3 PNG.
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAEElEQVR4nGP4z8AARAwoFABE0AX7pM/egAAAAABJRU5ErkJggg==";
+    let html = format!(
+        "<!doctype html><p id=a>no</p><p id=b>no</p>\
+         <script>var s = document.createElement('script'); s.textContent = \"document.getElementById('a').textContent = 'inline ran'\";\
+         document.body.appendChild(s);\
+         var e = document.createElement('script'); e.src = \"data:text/javascript,document.getElementById('b').textContent = 'external ran'\";\
+         document.body.appendChild(e);\
+         var i = document.createElement('img'); i.id = 'img'; i.src = 'data:image/png;base64,{png}'; document.body.appendChild(i);\
+         setTimeout(function () {{ var j = new Image(); j.id = 'img2'; j.src = i.src + '#later'; document.body.appendChild(j);\
+           document.getElementById('a').textContent = 'timer ran'; }}, 0);</script>"
+    );
+    let mut p = page(&html);
+    assert_eq!(text(&p, "a"), "inline ran", "an inserted inline script runs at once");
+    wait_for_change(&mut p, "b", "no");
+    assert_eq!(text(&p, "b"), "external ran", "an inserted external script runs as a task");
+    let [_, _, w, h] = rect(&p, "img");
+    assert_eq!((w, h), (2.0, 3.0), "the inserted image was loaded");
+    wait_for_change(&mut p, "a", "inline ran");
+    let [_, _, w, h] = rect(&p, "img2");
+    assert_eq!((w, h), (2.0, 3.0), "an image inserted later loads too");
+}

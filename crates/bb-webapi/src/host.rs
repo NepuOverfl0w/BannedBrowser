@@ -130,6 +130,9 @@ pub enum Task {
     Event(Value, String, bool, bool),
     /// A request the embedder can only do synchronously: do it now (`fetch_sync`).
     Fetch(u64, Box<crate::net::HttpRequest>),
+    /// Fetch and run a script element a script inserted (HTML §4.12.1.1: such external
+    /// scripts are async).
+    Script(NodeRef),
 }
 
 /// What a live (or static) collection object lists.
@@ -343,7 +346,7 @@ impl Host {
                     }
                 }
                 Task::Event(t, ..) => push(t, out),
-                Task::Fetch(..) => {}
+                Task::Fetch(..) | Task::Script(..) => {}
             }
         }
         for (_, f) in self.frame_callbacks.borrow().iter() {

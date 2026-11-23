@@ -669,6 +669,15 @@ impl TreeBuilder {
     }
 
     fn insert_at(&mut self, (parent, before): (NodeId, Option<NodeId>), node: NodeId) {
+        // HTML §13.2.6.1 "insert an element at the adjusted insertion location": if it can't
+        // be inserted there (a script moved things so a second element would go into the
+        // Document node), it isn't.
+        if parent == Document::ROOT
+            && self.doc.node(node).is_element()
+            && self.doc.children(Document::ROOT).any(|c| self.doc.node(c).is_element())
+        {
+            return;
+        }
         self.doc.insert_before(parent, node, before);
     }
 

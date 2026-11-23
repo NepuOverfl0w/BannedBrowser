@@ -184,6 +184,16 @@ pub fn prepare_script(vm: &mut Vm, h: &Host, s: NodeRef, parser_inserted: bool) 
         h.deferred.borrow_mut().push(s);
         return;
     }
+    // A script-inserted external script runs when fetched, as a task.
+    if !parser_inserted && src.is_some() {
+        h.tasks.borrow_mut().push_back(Task::Script(s));
+        return;
+    }
+    execute_element(vm, h, s);
+}
+
+/// Run a queued script element (Task::Script).
+pub fn run_script_task(vm: &mut Vm, h: &Host, s: NodeRef) {
     execute_element(vm, h, s);
 }
 
@@ -303,6 +313,7 @@ pub fn document_write(vm: &mut Vm, c: &NativeCall, newline: bool) -> JsResult<Va
 }
 
 /// A script element inserted by a script (HTML §4.12.1 "node insertion steps"): it runs.
+/// The parser's own insertions don't come here: it prepares scripts at their end tags.
 pub fn script_inserted(vm: &mut Vm, h: &Host, s: NodeRef) {
     prepare_script(vm, h, s, false);
 }

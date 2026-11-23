@@ -829,7 +829,33 @@ impl Page {
         let ts = Instant::now();
         self.styles = Stylist::new(&self.sheets, media).compute(&self.doc, &env);
         self.stats.style_ms = ts.elapsed().as_millis();
+        if self.script.is_some() {
+            self.load_new_images();
+        }
         self.relayout_styles_ready();
+    }
+
+    /// Fetch images the page now uses that weren't loaded (scripts added `<img>` elements,
+    /// changed `src`, or styles with new backgrounds).
+    fn load_new_images(&mut self) {
+        if !self.config.load_images {
+            return;
+        }
+        let urls: Vec<Url> = image_urls(&self.doc, &self.styles, &self.base_url)
+            .into_iter()
+            .filter(|u| !self.images.contains_key(&u.href()))
+            .collect();
+        if urls.is_empty() {
+            return;
+        }
+        let deadline = Instant::now() + self.config.subresource_timeout;
+        for (k, v) in fetch_bytes(&self.client, &urls, deadline, &self.url) {
+            let st = match v.ok().and_then(|b| bb_image::decode(&b).ok()) {
+                Some(img) => ImageState::Ready(Arc::new(img)),
+                None => ImageState::Broken,
+            };
+            self.images.insert(k, st);
+        }
     }
 
     fn relayout_styles_ready(&mut self) {

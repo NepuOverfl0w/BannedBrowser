@@ -2,7 +2,7 @@
 //!
 //! * Tokenizer: html5lib-tests; compares token streams (parse *errors* are not compared).
 //! * Tree construction: WPT `html/syntax/parsing/resources/*.dat` (the tests moved there from
-//!   html5lib-tests); compares the html5lib tree dump. `#script-on` cases need our JS engine
+//!   html5lib-tests); compares the html5lib tree dump. `#script-on` cases need our JS engine and run in bb-webapi's tests/tree_script_on.rs
 //!   (milestone E) and are not run yet; they are counted and reported.
 
 use bb_html::tokenizer::{RawToken, State, Token, Tokenizer};
@@ -347,7 +347,7 @@ fn html5lib_tree_construction() {
         }
     }
     let rate = pass as f64 * 100.0 / total as f64;
-    println!("tree construction (WPT): {pass}/{total} passed ({rate:.2}%), {script_on} #script-on cases not run (need JS, milestone E)");
+    println!("tree construction (WPT): {pass}/{total} passed ({rate:.2}%), {script_on} #script-on cases run by bb-webapi's tree_script_on test");
     assert!(!failures.iter().any(|f| f.starts_with("PANIC")), "tree builder panicked");
     assert!(failures.is_empty(), "{} tree-construction cases failed (v0.2 requires 100 %)", failures.len());
 }
