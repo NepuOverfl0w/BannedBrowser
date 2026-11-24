@@ -149,6 +149,14 @@ fn billion_laughs_is_refused() {
 fn deep_nesting_is_an_error_not_a_crash() {
     let src = "<a>".repeat(100_000);
     assert!(fails(&src).contains("too deeply"));
+    // Just under the limit parses, without deep recursion (Windows threads have small stacks).
+    let ok = format!("{}{}", "<a>".repeat(2000), "</a>".repeat(2000));
+    let d = parse(&ok).unwrap();
+    assert_eq!(d.descendants(Document::ROOT).count(), 2001);
+    // Elements inside entities nest and close like any others.
+    let e = parse("<!DOCTYPE r [<!ENTITY e '<b><c/></b>'>]><r>&e;&e;</r>").unwrap();
+    assert_eq!(e.descendants(Document::ROOT).count(), 7, "root, doctype, r and two b and c");
+    assert!(fails("<!DOCTYPE r [<!ENTITY e '<b>'>]><r>&e;</b></r>").contains("isn't closed"));
 }
 
 #[test]

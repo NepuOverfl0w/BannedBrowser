@@ -131,7 +131,9 @@ struct Parser {
     expanded: usize,
     /// In-scope namespace bindings (prefix, URI), innermost last.
     ns: Vec<(Option<String>, String)>,
-    depth: usize,
+    /// The elements started and not yet ended, innermost last (an explicit stack, so deep
+    /// nesting costs heap rather than call stack).
+    open: Vec<Open>,
     /// Character data waiting to become a Text node of `text_parent`.
     text: String,
     text_parent: NodeId,
@@ -162,7 +164,7 @@ pub fn parse_fragment(markup: &str, in_scope: &[(Option<String>, String)]) -> Re
         return p.err(format!("U+{:04X} is not allowed in XML", p.s[c] as u32));
     }
     p.ns.extend(in_scope.iter().cloned());
-    p.content(Document::ROOT)?;
+    p.content_in(Document::ROOT, 0)?;
     p.flush_text();
     if !p.eof() {
         return p.err("an end tag without a start tag");
@@ -201,7 +203,7 @@ impl Parser {
             skip_decls: false,
             expanded: 0,
             ns: vec![(Some("xml".to_string()), XML_NS.to_string())],
-            depth: 0,
+            open: Vec::new(),
             text: String::new(),
             text_parent: Document::ROOT,
             decl: XmlDecl { version: "1.0".to_string(), ..Default::default() },
@@ -927,13 +929,25 @@ impl Parser {
         self.ns.iter().rev().find(|(p, _)| p.as_deref() == prefix).map(|(_, u)| u.as_str())
     }
 
-    /// element (XML §3.1, with Namespaces in XML §5–6).
+    /// element (XML §3.1, with Namespaces in XML §5–6): its start tag, content and end tag.
     fn element(&mut self, parent: NodeId) -> R<()> {
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
+        self.flush_text();
+        match self.start_tag(parent)? {
+            Some(o) => {
+                let target = o.target;
+                self.open.push(o);
+                self.content_in(target, self.open.len() - 1)
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// A start tag (or empty-element tag) whose element goes into `parent`: the element, and
+    /// unless it was empty, what its end tag needs.
+    fn start_tag(&mut self, parent: NodeId) -> R<Option<Open>> {
+        if self.open.len() >= MAX_DEPTH {
             return self.err("elements are nested too deeply");
         }
-        self.flush_text();
         self.expect("<")?;
         let qname = self.name()?;
         let mut raw: Vec<(String, String)> = Vec::new();
@@ -1035,36 +1049,61 @@ impl Parser {
         self.doc.append_child(parent, id);
         // Content goes into a template's contents, as in HTML documents.
         let target = self.doc.template_of(id).unwrap_or(id);
-        if !empty {
-            self.content(target)?;
-            self.flush_text();
-            if !self.at("</") {
-                return self.err(format!("the element '{qname}' isn't closed"));
-            }
-            self.i += 2;
-            let end = self.name()?;
-            if end != qname {
-                return self.err(format!("the end tag '{end}' doesn't match '{qname}'"));
-            }
-            self.space();
-            self.expect(">")?;
+        if empty {
+            self.ns.truncate(scope);
+            self.text_parent = parent;
+            return Ok(None);
         }
-        self.ns.truncate(scope);
-        self.text_parent = parent;
-        self.depth -= 1;
+        Ok(Some(Open { qname, scope, parent, target }))
+    }
+
+    /// An element's end tag (the parser is at `</`).
+    fn end_tag(&mut self, o: Open) -> R<()> {
+        self.flush_text();
+        self.i += 2;
+        let end = self.name()?;
+        if end != o.qname {
+            return self.err(format!("the end tag '{end}' doesn't match '{}'", o.qname));
+        }
+        self.space();
+        self.expect(">")?;
+        self.ns.truncate(o.scope);
+        self.text_parent = o.parent;
         Ok(())
     }
 
-    /// content (XML §3.1): up to an end tag (or the end of the entity being read).
-    fn content(&mut self, parent: NodeId) -> R<()> {
-        self.text_parent = parent;
+    /// content (XML §3.1) of the elements above `base` in the open stack (into `parent` while
+    /// none is open): up to the end tag that closes back to `base`, or the end of the entity
+    /// being read.
+    fn content_in(&mut self, parent: NodeId, base: usize) -> R<()> {
+        let cur = |p: &Self| p.open.last().filter(|_| p.open.len() > base).map_or(parent, |o| o.target);
+        self.text_parent = cur(self);
         loop {
+            let here = cur(self);
             match self.peek() {
-                None => return Ok(()),
+                None => {
+                    if self.open.len() > base {
+                        self.flush_text();
+                        let q = self.open.last().map(|o| o.qname.clone()).unwrap_or_default();
+                        return self.err(format!("the element '{q}' isn't closed"));
+                    }
+                    return Ok(());
+                }
                 Some('<') => {
                     if self.at("</") {
-                        return Ok(());
+                        if self.open.len() <= base {
+                            return Ok(());
+                        }
+                        let o = self.open.pop().expect("an open element");
+                        self.end_tag(o)?;
+                        // The element that just closed is done; is its parent's too?
+                        if self.open.len() == base {
+                            return Ok(());
+                        }
+                        self.text_parent = cur(self);
+                        continue;
                     }
+                    let parent = here;
                     self.flush_text();
                     if self.at("<!--") {
                         let c = self.comment()?;
@@ -1089,10 +1128,10 @@ impl Parser {
                         self.doc.append_child(parent, id);
                     } else if self.at("<!") {
                         return self.err("unexpected markup declaration in content");
-                    } else {
-                        self.element(parent)?;
+                    } else if let Some(o) = self.start_tag(parent)? {
+                        self.open.push(o);
                     }
-                    self.text_parent = parent;
+                    self.text_parent = cur(self);
                 }
                 Some('&') => {
                     if self.at("&#") {
@@ -1109,14 +1148,15 @@ impl Parser {
                     }
                     let Some(text) = self.general_entity(&name, false)? else { continue };
                     self.push_entity(&name, &text)?;
-                    let r = self.content(parent);
+                    let depth = self.open.len();
+                    let r = self.content_in(here, depth);
                     let balanced = self.eof();
                     self.pop_entity();
                     r?;
                     if !balanced {
                         return self.err(format!("the entity '{name}' ends an element it didn't start"));
                     }
-                    self.text_parent = parent;
+                    self.text_parent = here;
                 }
                 Some(c) => {
                     if c == ']' && self.at("]]>") {
@@ -1128,6 +1168,16 @@ impl Parser {
             }
         }
     }
+}
+
+/// An element whose end tag hasn't been read yet.
+struct Open {
+    qname: String,
+    /// The namespace declarations in scope before its own.
+    scope: usize,
+    parent: NodeId,
+    /// Where its content goes (a template's contents, else the element).
+    target: NodeId,
 }
 
 /// Normalization for attributes not of type CDATA (XML §3.3.3): trim, collapse spaces.
