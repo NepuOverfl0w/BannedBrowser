@@ -9,6 +9,10 @@ Everything on `main` after the 0.1.0 release commit counts toward v0.2.
 The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 
 ### Added
+- **International domain names follow UTS #46**: bb-url maps hosts with Unicode's IDNA
+  mapping table (generated from Unicode 18 data), with CheckBidi and CheckJoiners; all of WPT's
+  IdnaTestV2 and toascii cases pass (ASCII hosts are only lowercased, as the URL Standard's
+  tests expect).
 - Headless screenshots let the page's scripts run for a moment after load (`--script-wait <ms>`,
   default 1000), so pages that finish with timers or requests are captured as they settle.
 - **Pages run JavaScript** (milestone E, in progress): the new `bb-webapi` crate gives each page

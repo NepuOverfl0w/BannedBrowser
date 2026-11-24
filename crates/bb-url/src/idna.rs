@@ -1,140 +1,273 @@
-//! Domain to ASCII (URL §3.3) via a UTS #46 approximation, plus Punycode
-//! (RFC 3492).
+//! Domain to ASCII (URL §3.3): UTS #46 processing (§4) and ToASCII (§4.2) with the URL
+//! Standard's options (CheckHyphens, UseSTD3ASCIIRules, VerifyDnsLength and Transitional
+//! processing off; CheckBidi and CheckJoiners on), plus Punycode (RFC 3492).
 //!
-//! UTS #46 needs the full IDNA mapping table. We approximate the mapping
-//! step with `NFKC(case_fold(NFKC(x)))`, which is how the table is derived for
-//! the vast majority of code points, plus the explicit "ignored" set and the
-//! dot-like separators. TODO(UTS46 §4): bundle the real IdnaMappingTable,
-//! CheckBidi and CheckJoiners.
+//! The IDNA mapping table, joining types and combining marks come from Unicode's data files
+//! (`idna_data.txt`, made by `scripts/gen-idna.py`); NFC from `unicode-normalization`,
+//! canonical combining classes (viramas) from it too, and bidi classes from `unicode-bidi`.
 
-use unicode_normalization::{is_nfc, UnicodeNormalization};
+use std::sync::OnceLock;
 
-/// Code points UTS #46 maps to nothing.
-fn is_ignored(c: char) -> bool {
-    matches!(c,
-        '\u{AD}' | '\u{34F}' | '\u{180B}'..='\u{180F}' | '\u{200B}' | '\u{2060}' | '\u{2064}'
-        | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{1BCA0}'..='\u{1BCA3}'
-        | '\u{E0100}'..='\u{E01EF}')
+use unicode_bidi::BidiClass;
+use unicode_normalization::{char::canonical_combining_class, is_nfc, UnicodeNormalization};
+
+/// A code point's UTS #46 status (§5 IDNA Mapping Table).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Status {
+    Valid,
+    Ignored,
+    Mapped,
+    Deviation,
+    Disallowed,
 }
 
-/// Code points we treat as "disallowed" in UTS #46 (a conservative subset).
-fn is_disallowed(c: char) -> bool {
+struct Data {
+    /// (start, end, status, index into `mappings`, mapping length), sorted.
+    table: Vec<(u32, u32, Status, u32, u8)>,
+    mappings: Vec<char>,
+    /// Joining types L, D, R and T by range (others are U).
+    joining: Vec<(u32, u32, u8)>,
+    /// General_Category=Mark ranges.
+    marks: Vec<(u32, u32)>,
+}
+
+fn data() -> &'static Data {
+    static DATA: OnceLock<Data> = OnceLock::new();
+    DATA.get_or_init(|| {
+        let mut d = Data { table: Vec::new(), mappings: Vec::new(), joining: Vec::new(), marks: Vec::new() };
+        let hex = |s: &str| u32::from_str_radix(s, 16).unwrap_or(0);
+        for line in include_str!("idna_data.txt").lines() {
+            let mut f = line.split(' ');
+            match f.next() {
+                Some("T") => {
+                    let (a, b) = (hex(f.next().unwrap_or("0")), hex(f.next().unwrap_or("0")));
+                    let st = match f.next() {
+                        Some("v") => Status::Valid,
+                        Some("i") => Status::Ignored,
+                        Some("m") => Status::Mapped,
+                        Some("d") => Status::Deviation,
+                        _ => Status::Disallowed,
+                    };
+                    let start = d.mappings.len() as u32;
+                    d.mappings.extend(f.filter_map(|c| char::from_u32(hex(c))));
+                    let len = (d.mappings.len() as u32 - start) as u8;
+                    d.table.push((a, b, st, start, len));
+                }
+                Some("J") => {
+                    let (a, b) = (hex(f.next().unwrap_or("0")), hex(f.next().unwrap_or("0")));
+                    let t = f.next().and_then(|t| t.bytes().next()).unwrap_or(b'U');
+                    d.joining.push((a, b, t));
+                }
+                Some("M") => {
+                    let (a, b) = (hex(f.next().unwrap_or("0")), hex(f.next().unwrap_or("0")));
+                    d.marks.push((a, b));
+                }
+                _ => {}
+            }
+        }
+        d.joining.sort_unstable();
+        d
+    })
+}
+
+/// The status of `c`, and its mapping when it is mapped.
+fn lookup(c: char) -> (Status, &'static [char]) {
+    let d = data();
     let u = c as u32;
-    matches!(u,
-        0x80..=0x9F            // C1 controls
-        | 0xD800..=0xDFFF
-        | 0xE000..=0xF8FF      // private use
-        | 0xFDD0..=0xFDEF      // noncharacters
-        | 0xFFF9..=0xFFFF      // specials incl. U+FFFD
-        | 0xF0000..=0x10FFFF   // supplementary private use
-        | 0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069 // bidi controls
-        | 0x2028 | 0x2029 | 0x061C | 0x115F | 0x1160 | 0x3164 | 0xFFA0
-        | 0x1806 | 0x2061..=0x2063
-    ) || (u & 0xFFFE) == 0xFFFE
+    match d.table.binary_search_by(|&(a, b, ..)| {
+        if b < u {
+            std::cmp::Ordering::Less
+        } else if a > u {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    }) {
+        Ok(i) => {
+            let (_, _, st, start, len) = d.table[i];
+            (st, &d.mappings[start as usize..start as usize + len as usize])
+        }
+        Err(_) => (Status::Disallowed, &[]),
+    }
 }
 
-fn map_char(c: char, out: &mut String) -> bool {
-    if is_ignored(c) {
+fn in_ranges(r: &[(u32, u32)], u: u32) -> bool {
+    r.binary_search_by(|&(a, b)| {
+        if b < u {
+            std::cmp::Ordering::Less
+        } else if a > u {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    })
+    .is_ok()
+}
+
+fn is_mark(c: char) -> bool {
+    in_ranges(&data().marks, c as u32)
+}
+
+/// The Joining_Type (L, D, R, T, or U).
+fn joining_type(c: char) -> u8 {
+    let u = c as u32;
+    let j = &data().joining;
+    match j.binary_search_by(|&(a, b, _)| {
+        if b < u {
+            std::cmp::Ordering::Less
+        } else if a > u {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    }) {
+        Ok(i) => j[i].2,
+        Err(_) => b'U',
+    }
+}
+
+/// Whether a label starts with "xn--" (ASCII case-insensitively), compared as bytes.
+fn xn_prefix(label: &str) -> bool {
+    label.as_bytes().get(..4).is_some_and(|p| p.eq_ignore_ascii_case(b"xn--"))
+}
+
+/// Domain to ASCII with `beStrict = false` (URL §3.3). Returns `None` on failure.
+pub fn domain_to_ascii(domain: &str) -> Option<String> {
+    // An ASCII domain is lowercased without UTS #46 processing (its Punycode labels aren't
+    // validated), as the URL Standard's tests expect (WPT url/resources/IdnaTestV2.json,
+    // toascii.json).
+    if domain.is_ascii() {
+        let out = domain.to_ascii_lowercase();
+        return (!out.is_empty()).then_some(out);
+    }
+    let out = to_ascii(domain)?;
+    (!out.is_empty()).then_some(out)
+}
+
+/// UTS #46 §4.2 ToASCII.
+fn to_ascii(domain: &str) -> Option<String> {
+    let labels = process(domain)?;
+    let mut out = Vec::with_capacity(labels.len());
+    for (label, from_punycode) in labels {
+        if from_punycode.is_some() || label.is_ascii() {
+            out.push(from_punycode.unwrap_or(label));
+        } else {
+            out.push(format!("xn--{}", punycode_encode(&label)?));
+        }
+    }
+    Some(out.join("."))
+}
+
+/// UTS #46 §4 Processing: map, normalize, break into labels, convert and validate. Returns
+/// each label (decoded) with its original ASCII form when it came as Punycode, or None if
+/// any error was recorded.
+fn process(domain: &str) -> Option<Vec<(String, Option<String>)>> {
+    // Step 1: map.
+    let mut mapped = String::with_capacity(domain.len());
+    for c in domain.chars() {
+        match lookup(c) {
+            (Status::Ignored, _) => {}
+            (Status::Mapped, m) => mapped.extend(m.iter()),
+            // Disallowed code points stay; the validity criteria reject them.
+            _ => mapped.push(c),
+        }
+    }
+    // Step 2: normalize. Step 3: break.
+    let normalized: String = mapped.nfc().collect();
+    let mut labels = Vec::new();
+    for label in normalized.split('.') {
+        // Step 4: convert/validate.
+        if xn_prefix(label) {
+            if !label.is_ascii() {
+                return None;
+            }
+            let decoded = punycode_decode(&label[4..])?;
+            if decoded.is_empty() || decoded.is_ascii() {
+                return None;
+            }
+            if !valid_label(&decoded) {
+                return None;
+            }
+            labels.push((decoded, Some(label.to_string())));
+        } else {
+            if !valid_label(label) {
+                return None;
+            }
+            labels.push((label.to_string(), None));
+        }
+    }
+    // CheckBidi applies when the domain name is a Bidi domain name (RFC 5893 §1.4): one of
+    // its labels has a right-to-left character.
+    let rtl = |c: char| matches!(unicode_bidi::bidi_class(c), BidiClass::R | BidiClass::AL | BidiClass::AN);
+    if labels.iter().any(|(l, _)| l.chars().any(rtl)) && !labels.iter().all(|(l, _)| bidi_rule(l)) {
+        return None;
+    }
+    Some(labels)
+}
+
+/// UTS #46 §4.1 validity criteria (nontransitional, CheckHyphens off, CheckJoiners on).
+fn valid_label(label: &str) -> bool {
+    if label.is_empty() {
         return true;
     }
-    match c {
-        '\u{3002}' | '\u{FF0E}' | '\u{FF61}' => {
-            out.push('.');
-            return true;
-        }
-        _ => {}
-    }
-    if is_disallowed(c) {
+    // 1: NFC. 2: (CheckHyphens off) no "xn--" prefix. 3: no FULL STOP.
+    if !is_nfc(label) || (xn_prefix(label)) || label.contains('.') {
         return false;
     }
-    if c.is_ascii() {
-        out.push(c.to_ascii_lowercase());
-        return true;
+    // 4: no leading combining mark.
+    if label.chars().next().is_some_and(is_mark) {
+        return false;
     }
-    // Map ẞ / ß etc. through full lowercasing; NFKC handles compatibility forms.
-    let s: String = std::iter::once(c).nfkc().collect();
-    for ch in s.chars() {
-        if ch == 'ß' {
-            out.push('ß'); // non-transitional processing keeps ß
+    // 5: every code point valid (deviations are valid in nontransitional processing).
+    if !label.chars().all(|c| matches!(lookup(c).0, Status::Valid | Status::Deviation)) {
+        return false;
+    }
+    // 6: CheckJoiners (RFC 5892 Appendix A.1, A.2).
+    let cs: Vec<char> = label.chars().collect();
+    for (i, &c) in cs.iter().enumerate() {
+        if c != '\u{200C}' && c != '\u{200D}' {
             continue;
         }
-        for l in ch.to_lowercase() {
-            if is_ignored(l) {
-                continue;
-            }
-            if is_disallowed(l) {
-                return false;
-            }
-            out.push(l);
+        let virama = i > 0 && canonical_combining_class(cs[i - 1]) == 9;
+        if virama {
+            continue;
+        }
+        if c == '\u{200D}' {
+            return false;
+        }
+        // ZWNJ: (L|D) T* ZWNJ T* (R|D).
+        let before = cs[..i].iter().rev().find(|&&x| joining_type(x) != b'T');
+        let after = cs[i + 1..].iter().find(|&&x| joining_type(x) != b'T');
+        let ok = before.is_some_and(|&x| matches!(joining_type(x), b'L' | b'D'))
+            && after.is_some_and(|&x| matches!(joining_type(x), b'R' | b'D'));
+        if !ok {
+            return false;
         }
     }
     true
 }
 
-/// Domain to ASCII with `beStrict = false` (URL §3.3). Returns `None` on failure.
-pub fn domain_to_ascii(domain: &str) -> Option<String> {
-    // Fast path: plain ASCII without punycode labels.
-    if domain.is_ascii() && !domain.split('.').any(|l| l.len() >= 4 && l[..4].eq_ignore_ascii_case("xn--")) {
-        let out = domain.to_ascii_lowercase();
-        if out.is_empty() {
-            return None;
+/// RFC 5893 §2 the Bidi Rule.
+fn bidi_rule(label: &str) -> bool {
+    use BidiClass::*;
+    let classes: Vec<BidiClass> = label.chars().map(unicode_bidi::bidi_class).collect();
+    let Some(&first) = classes.first() else { return true };
+    // The last character that isn't a non-spacing mark.
+    let last = classes.iter().rev().find(|&&c| c != NSM).copied();
+    match first {
+        R | AL => {
+            // Rules 2–4.
+            classes.iter().all(|c| matches!(c, R | AL | AN | EN | ES | CS | ET | ON | BN | NSM))
+                && matches!(last, Some(R | AL | EN | AN))
+                && !(classes.contains(&EN) && classes.contains(&AN))
         }
-        return Some(out);
-    }
-    // UTS #46 §4 Processing: map, normalize, break, convert/validate.
-    let mut mapped = String::with_capacity(domain.len());
-    for c in domain.chars() {
-        if !map_char(c, &mut mapped) {
-            return None;
+        L => {
+            // Rules 5–6.
+            classes.iter().all(|c| matches!(c, L | EN | ES | CS | ET | ON | BN | NSM))
+                && matches!(last, Some(L | EN))
         }
+        _ => false,
     }
-    let normalized: String = mapped.nfc().collect();
-    let mut out_labels = Vec::new();
-    for label in normalized.split('.') {
-        if let Some(rest) = label.strip_prefix("xn--") {
-            if !label.is_ascii() {
-                return None;
-            }
-            let decoded = punycode_decode(rest)?;
-            if (!decoded.is_empty() && decoded.is_ascii()) || !is_nfc(&decoded) {
-                return None;
-            }
-            if !validate_label(&decoded) {
-                return None;
-            }
-            out_labels.push(label.to_string());
-        } else {
-            if !validate_label(label) {
-                return None;
-            }
-            if label.is_ascii() {
-                out_labels.push(label.to_string());
-            } else {
-                out_labels.push(format!("xn--{}", punycode_encode(label)?));
-            }
-        }
-    }
-    let out = out_labels.join(".");
-    if out.is_empty() {
-        return None;
-    }
-    Some(out)
-}
-
-/// UTS #46 §4.1 validity criteria (subset).
-fn validate_label(label: &str) -> bool {
-    if label.is_empty() {
-        return true;
-    }
-    let first = label.chars().next().unwrap_or(' ');
-    // Must not begin with a combining mark (common ranges).
-    let fu = first as u32;
-    if matches!(fu, 0x300..=0x36F | 0x483..=0x489 | 0x591..=0x5BD | 0x610..=0x61A
-        | 0x64B..=0x65F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F)
-    {
-        return false;
-    }
-    label.chars().all(|c| !is_disallowed(c))
 }
 
 // ---------------- Punycode (RFC 3492) ----------------
@@ -287,6 +420,10 @@ mod tests {
     fn to_ascii() {
         assert_eq!(domain_to_ascii("Bücher.example").unwrap(), "xn--bcher-kva.example");
         assert_eq!(domain_to_ascii("ＥＸＡＭＰＬＥ.com").unwrap(), "example.com");
+        // ASCII domains aren't processed; a non-ASCII one with an empty Punycode label fails.
         assert_eq!(domain_to_ascii("xn--").as_deref(), Some("xn--"));
+        assert_eq!(domain_to_ascii("xn--.ü"), None);
+        assert_eq!(domain_to_ascii("faß.de").unwrap(), "xn--fa-hia.de");
+        assert_eq!(domain_to_ascii("a\u{200D}b"), None, "a ZWJ needs a virama");
     }
 }

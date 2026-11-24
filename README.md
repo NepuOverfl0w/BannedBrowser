@@ -186,6 +186,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Test suite | Pass rate |
 |---|---|
 | WPT urltestdata | **904 / 904 (100 %)** |
+| WPT IDNA (IdnaTestV2 + toascii) | **2762 / 2762 (100 %)** |
 | html5lib tokenizer | **7046 / 7046 (100 %)** |
 | WPT tree construction | **1959 / 1959 (100 %)**, + 14 / 14 `#script-on` |
 | Reftests | **50 / 50** |

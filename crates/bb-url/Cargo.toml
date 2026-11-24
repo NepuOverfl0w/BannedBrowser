@@ -12,6 +12,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+unicode-bidi.workspace = true
 unicode-normalization.workspace = true
 
 [dev-dependencies]

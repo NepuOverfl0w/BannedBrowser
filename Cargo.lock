@@ -349,6 +349,7 @@ version = "0.2.0-dev"
 dependencies = [
  "proptest",
  "serde_json",
+ "unicode-bidi",
  "unicode-normalization",
 ]
 
