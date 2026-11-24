@@ -783,6 +783,8 @@ pub fn setup_element_interface(vm: &mut Vm, c: C, proto: ObjRef) {
             reflect(vm, proto, "name", "name", Str);
         }
         C::HTMLIFrameElement | C::HTMLFrameElement => {
+            attr(vm, proto, "contentWindow", crate::frames::content_window, None);
+            attr(vm, proto, "contentDocument", crate::frames::content_document, None);
             reflect(vm, proto, "src", "src", Url);
             s(
                 vm,

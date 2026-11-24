@@ -20,7 +20,12 @@ pub const PARSERERROR_NS: &str = "http://www.mozilla.org/newlayout/xml/parsererr
 /// Parse `text` as an XML document into a new document of type `ty`; a parse error gives a
 /// document with a `parsererror` element instead.
 pub fn parse_xml_document(h: &Host, text: &str, ty: &str, url: &str) -> u32 {
-    let doc = match bb_xml::parse(text) {
+    install(h, xml_or_error(text), ty, url)
+}
+
+/// `text` parsed as XML, or a document with a `parsererror` element if it isn't well formed.
+pub fn xml_or_error(text: &str) -> Document {
+    match bb_xml::parse(text) {
         Ok(d) => d,
         Err(e) => {
             let mut d = Document::new();
@@ -30,8 +35,7 @@ pub fn parse_xml_document(h: &Host, text: &str, ty: &str, url: &str) -> u32 {
             d.append_child(Document::ROOT, root);
             d
         }
-    };
-    install(h, doc, ty, url)
+    }
 }
 
 fn install(h: &Host, mut doc: Document, ty: &str, url: &str) -> u32 {

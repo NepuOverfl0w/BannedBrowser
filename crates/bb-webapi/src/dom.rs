@@ -1343,11 +1343,13 @@ pub fn setup_document(vm: &mut Vm, proto: ObjRef) {
     op(vm, proto, "write", 0, |vm, c| crate::loader::document_write(vm, &c, false));
     op(vm, proto, "writeln", 0, |vm, c| crate::loader::document_write(vm, &c, true));
     op(vm, proto, "open", 0, |vm, c| {
-        doc_this(vm, &c)?;
+        let (h, n) = doc_this(vm, &c)?;
+        crate::loader::document_open(vm, &h, n.doc)?;
         Ok(c.this.clone())
     });
     op(vm, proto, "close", 0, |vm, c| {
-        doc_this(vm, &c)?;
+        let (h, n) = doc_this(vm, &c)?;
+        crate::loader::document_close(vm, &h, n.doc)?;
         Ok(Value::Undefined)
     });
 }

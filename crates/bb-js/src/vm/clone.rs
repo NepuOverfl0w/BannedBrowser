@@ -140,7 +140,11 @@ impl Vm {
                 st.transfer.push(t);
                 continue;
             }
-            if self.host_transferable.is_some_and(|f| f(self, t)) {
+            let transferable = match (self.host_transferable, self.host_realm(t)) {
+                (Some(f), Some(r)) => self.try_in_realm(r, |vm| f(vm, t)).unwrap_or(false),
+                _ => false,
+            };
+            if transferable {
                 st.host_transfer.push(t);
                 continue;
             }
@@ -159,8 +163,9 @@ impl Vm {
         }
         let mut host_transferred = Vec::with_capacity(st.host_transfer.len());
         for &t in &st.host_transfer {
-            match self.host_transfer {
-                Some(f) => host_transferred.push(f(self, t)?),
+            let r = self.host_realm(t).unwrap_or(self.cur_realm);
+            match self.host_transfer.and_then(|f| self.try_in_realm(r, |vm| f(vm, t))) {
+                Some(x) => host_transferred.push(x?),
                 None => return self.clone_error("this object can't be transferred"),
             }
         }
@@ -322,11 +327,14 @@ impl Vm {
                 SerObj::Array { length, props: self.ser_props(o, st, true)? }
             }
             K::Ordinary => SerObj::Object(self.ser_props(o, st, false)?),
+            // The host's hooks run in the object's realm (whose host state it belongs to).
             K::Host => match self.host_serialize {
-                Some(f) => match f(self, o) {
-                    Some(r) => SerObj::Host(r?),
-                    None => return self.clone_error("this platform object can't be cloned"),
-                },
+                Some(f) => {
+                    match self.host_realm(o).and_then(|r| self.try_in_realm(r, |vm| f(vm, o))).flatten() {
+                        Some(r) => SerObj::Host(r?),
+                        None => return self.clone_error("this platform object can't be cloned"),
+                    }
+                }
                 None => return self.clone_error("this platform object can't be cloned"),
             },
         })

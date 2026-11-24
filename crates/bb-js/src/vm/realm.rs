@@ -34,6 +34,9 @@ macro_rules! realm_objects {
             /// The legacy RegExp static slots (proposal-regexp-legacy-features): input,
             /// lastMatch, lastParen, leftContext, rightContext, $1–$9. `None` = ~empty~.
             pub regexp_statics: Option<Box<[JsString; 14]>>,
+            /// The host's state for this realm's natives (a browser frame's Window), if it has
+            /// its own; `Vm::host` falls back to the VM-wide one when this is `None`.
+            pub host: Option<std::rc::Weak<dyn std::any::Any>>,
         }
 
         impl Realm {
@@ -66,6 +69,7 @@ macro_rules! realm_objects {
                     sym_async_dispose: s("Symbol.asyncDispose"),
                     sym_metadata: s("Symbol.metadata"),
                     regexp_statics: Some(Box::new(std::array::from_fn(|_| js_str("")))),
+                    host: None,
                 }
             }
 

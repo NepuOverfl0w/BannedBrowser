@@ -517,6 +517,9 @@ impl HostExotic for Exotic {
         if class == crate::window::WINDOW_PROPERTIES {
             return crate::window::properties_get_own(vm, k);
         }
+        if class == crate::frames::CROSS_ORIGIN_WINDOW || class == crate::frames::CROSS_ORIGIN_LOCATION {
+            return crate::frames::exotic_get_own(vm, o, class, k);
+        }
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
         if c == C::Storage {
             if matches!(k, PropKey::Sym(_)) {
@@ -557,6 +560,9 @@ impl HostExotic for Exotic {
         if class == crate::window::WINDOW_PROPERTIES {
             return crate::window::properties_keys(vm);
         }
+        if class == crate::frames::CROSS_ORIGIN_WINDOW || class == crate::frames::CROSS_ORIGIN_LOCATION {
+            return crate::frames::exotic_keys(vm, o, class);
+        }
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(Vec::new()) };
         if c == C::Storage {
             let mut keys = Vec::new();
@@ -591,6 +597,9 @@ impl HostExotic for Exotic {
         if class == crate::window::WINDOW_PROPERTIES {
             return Ok(Some(false));
         }
+        if class == crate::frames::CROSS_ORIGIN_WINDOW || class == crate::frames::CROSS_ORIGIN_LOCATION {
+            return crate::frames::exotic_refuse(vm);
+        }
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
         if c == C::Storage {
             return crate::storage::define(vm, &h, id, k, d);
@@ -617,6 +626,9 @@ impl HostExotic for Exotic {
         // WebIDL §3.7.4.3.
         if class == crate::window::WINDOW_PROPERTIES {
             return Ok(Some(false));
+        }
+        if class == crate::frames::CROSS_ORIGIN_WINDOW || class == crate::frames::CROSS_ORIGIN_LOCATION {
+            return crate::frames::exotic_refuse(vm);
         }
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
         if c == C::Storage {
@@ -647,6 +659,9 @@ impl HostExotic for Exotic {
         k: &PropKey,
         v: &Value,
     ) -> JsResult<Option<bool>> {
+        if class == crate::frames::CROSS_ORIGIN_WINDOW || class == crate::frames::CROSS_ORIGIN_LOCATION {
+            return crate::frames::exotic_set(vm, class, k);
+        }
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
         if c == C::Storage {
             if matches!(k, PropKey::Sym(_)) {

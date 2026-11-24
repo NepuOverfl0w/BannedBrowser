@@ -185,6 +185,9 @@ impl bb_webapi::worker::WorkerNet for WorkerNet {
 }
 
 impl bb_webapi::Embedder for PageEmbedder {
+    fn nested_browsing(&self) -> bool {
+        true
+    }
     fn image_bitmap(&self, url: &Url) -> Option<(u32, u32, Vec<u8>)> {
         let ctx = self.layout.try_borrow().ok()?;
         match ctx.images.get(&url.href())? {

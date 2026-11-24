@@ -5,7 +5,7 @@ use bb_dom::{Document, NodeData, NodeId};
 use bb_js::{JsResult, Value, Vm};
 
 use crate::exception::throw;
-use crate::host::{with_doc, with_doc_mut, Host, NodeRef};
+use crate::host::{host, with_doc, with_doc_mut, Host, NodeRef};
 
 fn is_parent_kind(d: &NodeData) -> bool {
     matches!(d, NodeData::Document | NodeData::DocumentFragment | NodeData::Element(_))
@@ -292,6 +292,14 @@ pub fn insert(
         for s in scripts {
             crate::loader::script_inserted(vm, h, s);
         }
+        // HTML §4.8.5: connected iframes and frames get their child navigables.
+        if h.frames.borrow().nested {
+            let hr = host(vm)?;
+            if std::ptr::eq(&*hr, h) {
+                let roots: Vec<NodeId> = inserted.iter().map(|n| n.id).collect();
+                crate::frames::nodes_inserted(vm, &hr, &roots)?;
+            }
+        }
     }
     Ok(inserted)
 }
@@ -371,6 +379,10 @@ pub fn remove(vm: &mut Vm, h: &Host, node: NodeRef, suppress: bool) -> JsResult<
     let Some((parent, prev, next)) = info else { return Ok(()) };
     // Step 10.
     with_doc_mut(vm, h, node.doc, |d| d.detach(node.id))?;
+    // HTML §4.8.5 iframe "removing steps": frames whose containers left go away.
+    if node.doc == 0 {
+        crate::frames::nodes_removed(vm, h);
+    }
     // Steps 14–15.
     crate::mutation::add_transient_observers(vm, h, parent, node)?;
     if !suppress {

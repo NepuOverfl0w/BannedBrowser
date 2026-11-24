@@ -22,13 +22,15 @@ fn window_value(vm: &mut Vm) -> R {
 
 pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
     let g = vm.realm.global;
-    for name in ["window", "self", "frames", "top", "parent"] {
+    for name in ["window", "self", "frames"] {
         attr(vm, g, name, |vm, _| window_value(vm), None);
     }
+    attr(vm, g, "top", crate::frames::top_getter, None);
+    attr(vm, g, "parent", crate::frames::parent_getter, None);
     attr(vm, g, "opener", |_, _| Ok(Value::Null), Some(|_, _| Ok(Value::Undefined)));
-    attr(vm, g, "frameElement", |_, _| Ok(Value::Null), None);
-    attr(vm, g, "closed", |_, _| Ok(Value::Bool(false)), None);
-    attr(vm, g, "length", |_, _| Ok(Value::Number(0.0)), None);
+    attr(vm, g, "frameElement", crate::frames::frame_element_getter, None);
+    attr(vm, g, "closed", crate::frames::closed_getter, None);
+    attr(vm, g, "length", crate::frames::length_getter, None);
     attr(
         vm,
         g,
@@ -704,6 +706,11 @@ fn visible(vm: &mut Vm, w: ObjRef, k: &PropKey) -> JsResult<bool> {
 
 /// The named properties object's [[GetOwnProperty]] (WebIDL §3.7.4.1).
 pub fn properties_get_own(vm: &mut Vm, k: &PropKey) -> JsResult<Option<bb_js::vm::object::PropDesc>> {
+    // The WindowProxy's indexed properties: the child windows (HTML §7.2.3.1), served here.
+    if let PropKey::Index(i) = k {
+        return Ok(crate::frames::child_by_index(vm, *i)?
+            .map(|v| bb_js::vm::object::PropDesc::data(v, false, false, true)));
+    }
     let PropKey::Str(_) = k else { return Ok(None) };
     let h = host(vm)?;
     let Some(w) = h.window.get() else { return Ok(None) };
@@ -711,12 +718,24 @@ pub fn properties_get_own(vm: &mut Vm, k: &PropKey) -> JsResult<Option<bb_js::vm
     if !visible(vm, w, k)? {
         return Ok(None);
     }
+    // Child windows by name come first (HTML §7.2.2.3).
+    if let Some(v) = crate::frames::child_by_name(vm, &name)? {
+        return Ok(Some(bb_js::vm::object::PropDesc::data(v, true, false, true)));
+    }
     Ok(named_value(vm, &h, &name)?.map(|v| bb_js::vm::object::PropDesc::data(v, true, false, true)))
 }
 
 pub fn properties_keys(vm: &mut Vm) -> JsResult<Vec<PropKey>> {
     let h = host(vm)?;
-    Ok(window_names(&h).iter().map(|n| PropKey::named(n)).collect())
+    let mut keys: Vec<PropKey> = (0..crate::frames::child_count(&h) as u32).map(PropKey::Index).collect();
+    let mut names = crate::frames::child_names(&h);
+    for n in window_names(&h) {
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    keys.extend(names.iter().map(|n| PropKey::named(n)));
+    Ok(keys)
 }
 
 /// Put the WindowProperties object between Window.prototype and EventTarget.prototype.

@@ -20,12 +20,18 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   XMLSerializer over a new XML parser (`bb-xml`), XMLHttpRequest's `responseXML`, Blob, File,
   FileReader, FormData, blob URLs, `crypto.getRandomValues`/`randomUUID`, dedicated workers
   (own thread and VM; structured clone in bb-js), `structuredClone`, `window.postMessage`,
-  MessageChannel/MessagePort (transferable to workers), BroadcastChannel, and Canvas 2D
-  (`<canvas>` with CanvasRenderingContext2D, Path2D, ImageData, `createImageBitmap`). The parser
+  MessageChannel/MessagePort (transferable to workers), BroadcastChannel, Canvas 2D
+  (`<canvas>` with CanvasRenderingContext2D, Path2D, ImageData, `createImageBitmap`), and
+  frames with their own windows: each iframe and frame runs its document's scripts in its own
+  realm of the page's VM, `contentWindow`/`contentDocument`, `parent`, `top`, `frames[i]`,
+  `frameElement` and `postMessage` work between them, and a frame of another origin is only
+  reachable through a cross-origin wrapper (`postMessage`, `location` assignment, a few
+  properties; anything else throws a SecurityError). `document.open`/`close` and
+  `document.write` after loading replace the document, as in other browsers. The parser
   runs scripts as it goes, with `document.write`; script changes restyle and relayout the
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
   `dom/`, `domparsing/`, `FileAPI/`, `xhr/formdata/`, `url/`, `encoding/` and `fetch/api/headers/` tests
-  and `workers/`, `webmessaging/`, structured clone (80263/96451 subtests so far).
+  and `workers/`, `webmessaging/`, structured clone (81897/102185 subtests so far).
 - **JavaScript engine (milestone D):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262, and an interpreter: bytecode compiler, stack VM, garbage

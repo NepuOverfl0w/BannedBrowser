@@ -372,3 +372,60 @@ fn canvas_drawings_are_painted() {
     assert_eq!(at(75, 25), [0, 0, 255]);
     assert_eq!(at(110, 10), [255, 255, 255], "outside the canvas");
 }
+
+#[test]
+fn frames_have_their_own_windows() {
+    // A same-origin srcdoc frame and an opaque-origin data: frame.
+    let child = "<p id=c>child</p><script>\
+        parent.document.getElementById('a').textContent = 'from frame ' + frameElement.id + ' ' + \
+          (parent === top) + ' ' + (window !== parent);\
+        document.getElementById('c').textContent = 'child ran';</script>";
+    let data = "data:text/html,<script>var r = []; try { parent.document; r.push('read') } \
+        catch (e) { r.push(e.name) } parent.postMessage(r.join() + ' ' + typeof parent.length, '*');</script>";
+    let html = format!(
+        "<!doctype html><p id=a>-</p><p id=b>-</p><p id=m>-</p>\
+         <iframe id=f1 srcdoc=\"{child}\" width=200 height=50></iframe>\
+         <iframe id=f2 src=\"{data}\" width=200 height=50></iframe>\
+         <script>onmessage = function (e) {{\
+           document.getElementById('m').textContent = e.data + ' ' + (e.source === frames[1]) + ' ' + e.origin; }};\
+         onload = function () {{\
+           var r = [length, frames[0].document.getElementById('c').textContent,\
+             document.getElementById('f2').contentDocument];\
+           try {{ frames[1].document; r.push('leaked') }} catch (e) {{ r.push(e.name) }}\
+           try {{ frames[1].someGlobal = 1; r.push('set') }} catch (e) {{ r.push(e.name) }}\
+           r.push(typeof frames[1].postMessage, frames[0] instanceof Object);\
+           document.getElementById('b').textContent = r.join();\
+         }};</script>",
+        child = child.replace('"', "&quot;"),
+        data = data.replace('"', "&quot;"),
+    );
+    let mut p = page(&html);
+    assert_eq!(text(&p, "a"), "from frame f1 true true");
+    // A frame's realm has its own intrinsics: its window isn't an instance of ours.
+    assert_eq!(text(&p, "b"), "2,child ran,,SecurityError,SecurityError,function,false");
+    // The frames render their own documents (changed by their scripts).
+    let c = p.frames[0].page.doc.get_element_by_id("c").expect("the frame's document");
+    assert_eq!(p.frames[0].page.doc.text_content(c), "child ran");
+    wait_for_change(&mut p, "m", "-");
+    assert_eq!(text(&p, "m"), "SecurityError number true null");
+}
+
+#[test]
+fn removed_frames_stop_running() {
+    let mut p = page(
+        "<!doctype html><p id=t>-</p><iframe id=f srcdoc='x'></iframe><script>try {\
+         var w = frames[0], f = w.Function('return 1 + 1');\
+         var r = [f()];\
+         document.getElementById('f').remove();\
+         try { f(); r.push('ran') } catch (e) { r.push(e.name) }\
+         try { w.document; r.push('ran') } catch (e) { r.push(e.name) }\
+         r.push(length);\
+         var i = document.createElement('iframe'); document.body.appendChild(i);\
+         i.contentDocument.open(); i.contentDocument.write('<b id=x>written</b>'); i.contentDocument.close();\
+         r.push(i.contentDocument.getElementById('x').textContent);\
+         document.getElementById('t').textContent = r.join();\
+         } catch (e) { document.getElementById('t').textContent = 'threw ' + e + ' ' + r; }</script>",
+    );
+    assert_eq!(text(&p, "t"), "2,TypeError,TypeError,0,written");
+    p.run_scripts();
+}

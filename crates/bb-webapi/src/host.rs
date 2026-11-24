@@ -108,6 +108,16 @@ pub trait Embedder {
     fn element_at(&self, _doc: &Document, _x: f64, _y: f64) -> Option<NodeId> {
         None
     }
+    /// Whether iframes and frames get windows of their own (`frames.rs`): their documents
+    /// load through `fetch_sync`, and their scripts run in this page's VM.
+    fn nested_browsing(&self) -> bool {
+        false
+    }
+    /// An embedder for a frame's window showing `url` (layout, storage and cookies for that
+    /// document); None gives the frame a restricted one (see `frames.rs`).
+    fn frame_embedder(&self, _url: &Url) -> Option<Rc<dyn Embedder>> {
+        None
+    }
 }
 
 /// Layout facts about an element's box, in CSS px.
@@ -162,8 +172,11 @@ pub enum Task {
     Script(NodeRef),
     /// A step of a FileReader read (File API).
     Read(Box<crate::blob::ReadTask>),
-    /// A message window.postMessage posted: (target, message, the sender's origin).
-    Message(Value, Box<bb_js::vm::clone::Serialized>, String),
+    /// A message window.postMessage posted: (target, message, the sender's origin, the
+    /// sender's navigable).
+    Message(Value, Box<bb_js::vm::clone::Serialized>, String, Option<Rc<crate::frames::Nav>>),
+    /// Navigate the frame of this container element of document 0 (HTML §7.4.2.2).
+    Navigate(NodeId, crate::frames::NavTarget),
 }
 
 /// What a live (or static) collection object lists.
@@ -320,6 +333,8 @@ pub struct Host {
     pub broadcasts: RefCell<Vec<crate::port::BroadcastState>>,
     /// Canvases' 2D contexts and the canvas API objects' data.
     pub canvas: RefCell<crate::canvas::CanvasState>,
+    /// The window's place among the page's windows (frames).
+    pub frames: RefCell<crate::frames::FrameState>,
 }
 
 impl Host {
@@ -376,6 +391,7 @@ impl Host {
             ports: RefCell::default(),
             broadcasts: RefCell::default(),
             canvas: RefCell::default(),
+            frames: RefCell::default(),
         }
     }
 
@@ -425,7 +441,7 @@ impl Host {
                     out.push(r.reader);
                     out.push(r.blob);
                 }
-                Task::Fetch(..) | Task::Script(..) => {}
+                Task::Fetch(..) | Task::Script(..) | Task::Navigate(..) => {}
             }
         }
         for (_, f) in self.frame_callbacks.borrow().iter() {
@@ -437,6 +453,7 @@ impl Host {
         crate::port::trace(self, out);
         crate::port::trace_broadcasts(self, out);
         self.canvas.borrow().trace(out);
+        self.frames.borrow().trace(out);
         for v in self.blob_urls.borrow().values() {
             push(v, out);
         }
@@ -487,6 +504,14 @@ pub fn base_url(h: &Host, doc: u32) -> Url {
         docs.get(doc as usize).and_then(|d| Url::parse(&d.url).ok())
     }
     .unwrap_or_else(|| h.url.borrow().clone());
+    // The fallback base URL of a frame's srcdoc or about:blank document is its parent
+    // document's base URL.
+    let doc_url = match crate::frames::parent_of(h) {
+        Some((p, _)) if doc == 0 && matches!(doc_url.href().as_str(), "about:srcdoc" | "about:blank") => {
+            base_url(&p, 0)
+        }
+        _ => doc_url,
+    };
     let href = {
         let docs = h.docs.borrow();
         docs.get(doc as usize).and_then(|d| {

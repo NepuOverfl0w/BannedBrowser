@@ -75,6 +75,9 @@ impl Embedder for TestEmbedder {
     fn worker_net(&self) -> Option<std::sync::Arc<dyn bb_webapi::worker::WorkerNet>> {
         Some(std::sync::Arc::new(FileNet))
     }
+    fn nested_browsing(&self) -> bool {
+        true
+    }
     /// Images decode from the checkout (as a browser would have loaded them).
     fn image_bitmap(&self, url: &Url) -> Option<(u32, u32, Vec<u8>)> {
         let req = bb_webapi::net::HttpRequest {
@@ -119,6 +122,8 @@ fn serve(req: bb_webapi::net::HttpRequest) -> bb_webapi::net::HttpResponse {
         Some("js") => "text/javascript",
         Some("html") => "text/html",
         Some("xml") => "application/xml",
+        Some("xhtml") => "application/xhtml+xml",
+        Some("svg") => "image/svg+xml",
         Some("txt") => "text/plain",
         _ => "application/octet-stream",
     };

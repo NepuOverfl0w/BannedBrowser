@@ -10,6 +10,7 @@ use bb_dom::{Document, NodeId};
 use bb_net::Client;
 use bb_paint::{Color, DisplayList, Item, Rect};
 use bb_url::Url;
+use std::rc::Rc;
 
 /// Frames nest at most this deep (guards against self-framing pages).
 pub const MAX_FRAME_DEPTH: u8 = 4;
@@ -25,6 +26,9 @@ pub struct ChildFrame {
     /// Content rect in the parent's page coordinates (CSS px).
     pub rect: Rect,
     pub page: Box<Page>,
+    /// The frame's window in the scripted page's Window (None for frames loaded without
+    /// one: pages without scripts, or past the Window's frame limits).
+    pub host: Option<std::rc::Rc<bb_webapi::Host>>,
     pub scroll_y: f32,
     /// `scrolling="no"` turns scrolling off.
     pub scrolling: bool,
@@ -253,6 +257,37 @@ impl Page {
             return;
         }
         let subs = subdocuments(&self.display_list);
+        // A scripted page's frames show its Window's frame windows.
+        if let Some(ph) = self.page_host() {
+            for &(node, rect) in &subs {
+                if self.frames.iter().any(|f| f.node == node) || self.frames.len() >= MAX_FRAMES {
+                    continue;
+                }
+                let Some(ch) = bb_webapi::frames::child_of(&ph, node) else { continue };
+                let px = |n: &str| {
+                    self.doc.attr(node, n).and_then(|v| v.trim().trim_end_matches("px").parse::<f32>().ok())
+                };
+                let cfg = PageConfig {
+                    viewport: (rect.w.max(1.0), rect.h.max(1.0)),
+                    frame_depth: self.config.frame_depth + 1,
+                    container_margins: (px("marginwidth"), px("marginheight")),
+                    ..self.config
+                };
+                let page = Page::from_frame_host(client, ch.clone(), cfg, &self.base_url);
+                let name = self.doc.attr(node, "name").unwrap_or("").to_string();
+                let scrolling =
+                    !self.doc.attr(node, "scrolling").is_some_and(|v| v.trim().eq_ignore_ascii_case("no"));
+                self.frames.push(ChildFrame {
+                    node,
+                    name,
+                    rect,
+                    page: Box::new(page),
+                    host: Some(ch),
+                    scroll_y: 0.0,
+                    scrolling,
+                });
+            }
+        }
         enum Src {
             Url(Url),
             Doc(String),
@@ -346,8 +381,69 @@ impl Page {
             let name = self.doc.attr(node, "name").unwrap_or("").to_string();
             let scrolling =
                 !self.doc.attr(node, "scrolling").is_some_and(|v| v.trim().eq_ignore_ascii_case("no"));
-            self.frames.push(ChildFrame { node, name, rect, page: Box::new(page), scroll_y: 0.0, scrolling });
+            self.frames.push(ChildFrame {
+                node,
+                name,
+                rect,
+                page: Box::new(page),
+                host: None,
+                scroll_y: 0.0,
+                scrolling,
+            });
         }
+    }
+
+    /// The window whose document this page shows: its own Window's, or (for a frame of a
+    /// scripted page) its frame window.
+    pub fn page_host(&self) -> Option<Rc<bb_webapi::Host>> {
+        self.script.as_ref().map(|w| w.host.clone()).or_else(|| self.frame_host.clone())
+    }
+
+    /// Swap the frames' documents with their windows' (twice puts them back).
+    pub(crate) fn lend_frame_documents(&mut self) {
+        for f in &mut self.frames {
+            if let Some(h) = &f.host {
+                bb_webapi::frames::swap_document(h, &mut f.page.doc);
+            }
+            f.page.lend_frame_documents();
+        }
+    }
+
+    /// After scripts ran: frames whose window navigated get a page for the new document,
+    /// frames whose document scripts changed are restyled, and new frames are loaded.
+    /// Returns whether anything changed.
+    pub(crate) fn sync_script_frames(&mut self) -> bool {
+        let Some(ph) = self.page_host() else { return false };
+        let mut changed = false;
+        for f in &mut self.frames {
+            let Some(old) = f.host.clone() else { continue };
+            let Some(cur) = bb_webapi::frames::child_of(&ph, f.node) else { continue };
+            for line in std::mem::take(&mut *cur.console.borrow_mut()) {
+                log::info!("console [{}]: {line}", f.page.url);
+            }
+            if !Rc::ptr_eq(&cur, &old) {
+                let base = self.base_url.clone();
+                let cfg = f.page.config;
+                let client = f.page.client.clone();
+                *f.page = Page::from_frame_host(&client, cur.clone(), cfg, &base);
+                f.host = Some(cur);
+                f.scroll_y = 0.0;
+                changed = true;
+            } else {
+                if cur.dirty.replace(false) {
+                    f.page.after_script_mutation();
+                    changed = true;
+                }
+                changed |= f.page.sync_script_frames();
+            }
+        }
+        if ph.dirty.get() || changed {
+            let client = self.client.clone();
+            let before = self.frames.len();
+            self.load_frames(&client);
+            changed |= self.frames.len() != before;
+        }
+        changed
     }
 
     /// The child frame under a page point, with the point in the child's page coordinates.
@@ -502,7 +598,35 @@ impl Page {
         req: &crate::NavRequest,
     ) -> bool {
         let top = crate::top_site(&self.url);
+        // A frame of a scripted page: the document is fetched here and shown by its window.
+        if let Some((parent, container)) = self.script_frame_at(path) {
+            if self.script.is_some() {
+                let f = crate::with_top_site(&top, || {
+                    fetch_document(client, &req.url, Some(&top), req.post.as_ref())
+                });
+                let ty = "text/html; charset=utf-8".to_string();
+                let mut ok = false;
+                self.with_window(|w| {
+                    ok = w.load_frame(&parent, container, f.url, &ty, f.html.into_bytes()).is_some()
+                });
+                if ok {
+                    return true;
+                }
+            }
+        }
         crate::with_top_site(&top.clone(), || self.navigate_frame_in(client, path, req, &top))
+    }
+
+    /// The frame window's parent and container for the frame at `path`, if the frame is one
+    /// of a scripted page's frame windows.
+    fn script_frame_at(&self, path: &[usize]) -> Option<(Rc<bb_webapi::Host>, NodeId)> {
+        let (&first, rest) = path.split_first()?;
+        let f = self.frames.get(first)?;
+        if rest.is_empty() {
+            f.host.as_ref()?;
+            return Some((self.page_host()?, f.node));
+        }
+        f.page.script_frame_at(rest)
     }
 
     fn navigate_frame_in(

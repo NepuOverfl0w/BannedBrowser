@@ -106,6 +106,9 @@ pub struct Page {
     pub focus: interact::FocusState,
     /// The page's scripting global, when scripts are enabled (see `script.rs`).
     pub script: Option<bb_webapi::Window>,
+    /// For a frame of a scripted page: the frame's window in the page's Window (whose
+    /// document this page shows; it is lent back to the window whenever scripts run).
+    pub frame_host: Option<Rc<bb_webapi::Host>>,
     /// The client the page loaded with (scripts fetch with it; stylesheets are re-collected
     /// with it after scripts change them).
     pub client: Client,
@@ -606,7 +609,7 @@ impl Page {
         status: u16,
         secure: bool,
     ) -> Page {
-        let mut stats = LoadStats::default();
+        let stats = LoadStats::default();
         let t0 = Instant::now();
         // With scripting on, the parser runs the page's scripts as it goes (bb-webapi).
         let scripting = config.scripting && url.scheme() != "about" && status != 0;
@@ -622,6 +625,8 @@ impl Page {
             ));
             let mut w = bb_webapi::Window::new(url.clone(), emb);
             w.load_html(html);
+            // The page's load waits for its frames' documents (and their scripts).
+            w.settle_frames();
             let mut d = Document::new();
             w.swap_document(&mut d);
             window = Some(w);
@@ -630,6 +635,65 @@ impl Page {
             bb_html::parse_document(html)
         };
         doc.url = url.href();
+        Self::assemble(
+            client, doc, url, config, status, secure, window, None, layout_ctx, stats, t0, scripting,
+        )
+    }
+
+    /// A frame's page showing the document of `host`, a frame window of a scripted page.
+    /// `parent_base` is the parent document's base URL (a srcdoc or about:blank document's
+    /// fallback base URL).
+    pub fn from_frame_host(
+        client: &Client,
+        host: Rc<bb_webapi::Host>,
+        config: PageConfig,
+        parent_base: &Url,
+    ) -> Page {
+        let t0 = Instant::now();
+        let mut doc = Document::new();
+        bb_webapi::frames::swap_document(&host, &mut doc);
+        let url = host.url.borrow().clone();
+        doc.url = url.href();
+        let secure = url.scheme() == "https";
+        let layout_ctx =
+            Rc::new(std::cell::RefCell::new(script::LayoutCtx::new(url.clone(), config, client.clone())));
+        let stats = LoadStats::default();
+        let mut page = Self::assemble(
+            client,
+            doc,
+            &url,
+            config,
+            200,
+            secure,
+            None,
+            Some(host),
+            layout_ctx,
+            stats,
+            t0,
+            true,
+        );
+        if url.scheme() == "about" {
+            page.base_url = base_url(&page.doc, parent_base);
+        }
+        page
+    }
+
+    /// The pipeline after parsing: stylesheets, styles, images, layout, frames, load event.
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        client: &Client,
+        doc: Document,
+        url: &Url,
+        config: PageConfig,
+        status: u16,
+        secure: bool,
+        window: Option<bb_webapi::Window>,
+        frame_host: Option<Rc<bb_webapi::Host>>,
+        layout_ctx: Rc<std::cell::RefCell<script::LayoutCtx>>,
+        mut stats: LoadStats,
+        t0: Instant,
+        scripting: bool,
+    ) -> Page {
         let base = base_url(&doc, url);
         // HTML §15.6: a frameset document renders its frames instead of a body.
         let frameset = doc.body().filter(|&b| doc.is_html(b, "frameset"));
@@ -728,6 +792,7 @@ impl Page {
             encoding: encoding_rs::UTF_8,
             focus: interact::FocusState { window_focus: true, ..Default::default() },
             script: window,
+            frame_host,
             client: client.clone(),
             style_signature,
             script_repaint: false,
@@ -741,11 +806,14 @@ impl Page {
         page
     }
 
-    /// Lend the document to the page's Window for `f`, then restyle if scripts changed it.
+    /// Lend the document (and its frames' documents) to the page's Window for `f`, then
+    /// restyle what scripts changed.
     pub fn with_window(&mut self, f: impl FnOnce(&mut bb_webapi::Window)) {
         let Some(mut w) = self.script.take() else { return };
         w.swap_document(&mut self.doc);
+        self.lend_frame_documents();
         f(&mut w);
+        self.lend_frame_documents();
         w.swap_document(&mut self.doc);
         let dirty = w.take_dirty();
         for line in w.take_console() {
@@ -754,6 +822,9 @@ impl Page {
         self.script = Some(w);
         if dirty {
             self.after_script_mutation();
+            self.script_repaint = true;
+        }
+        if self.sync_script_frames() {
             self.script_repaint = true;
         }
     }

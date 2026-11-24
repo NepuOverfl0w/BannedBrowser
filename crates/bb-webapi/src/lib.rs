@@ -19,6 +19,7 @@ pub mod dom;
 pub mod events;
 pub mod exception;
 pub mod forms;
+pub mod frames;
 pub mod host;
 pub mod html;
 pub mod idl;
@@ -81,8 +82,16 @@ impl Window {
         vm.can_block = worker.is_some();
         vm.host = Some(host.clone());
         vm.host_exotic = Some(Rc::new(collections::Exotic));
-        let traced = host.clone();
-        vm.host_trace = Some(Box::new(move |out| traced.trace(out)));
+        frames::init_top(&host);
+        // Every window of the page holds objects for the collector.
+        let family = host.frames.borrow().family.clone();
+        vm.host_trace = Some(Box::new(move |out| {
+            for w in family.borrow().iter() {
+                if let Some(h) = w.upgrade() {
+                    h.trace(out);
+                }
+            }
+        }));
         vm.host_report = Some(report);
         vm.host_serialize = Some(worker::host_serialize);
         vm.host_deserialize = Some(worker::host_deserialize);
@@ -115,149 +124,136 @@ impl Window {
         loader::register_handlers(&mut self.vm, &h);
     }
 
-    /// When the next timer is due (embedder clock, ms), if any.
+    /// When the next timer is due (embedder clock, ms), if any, in any of the page's windows.
     pub fn next_timer_due(&self) -> Option<f64> {
-        self.host.timers.borrow().iter().map(|t| t.due).reduce(f64::min)
+        frames::family(&self.host)
+            .iter()
+            .flat_map(|h| h.timers.borrow().iter().map(|t| t.due).collect::<Vec<_>>())
+            .reduce(f64::min)
     }
 
-    /// Whether a worker this global started is still running.
+    /// Whether a worker this global (or one of its frames) started is still running.
     pub fn has_live_workers(&self) -> bool {
-        self.host.workers.borrow().workers.iter().any(|w| w.alive)
+        frames::family(&self.host).iter().any(|h| h.workers.borrow().workers.iter().any(|w| w.alive))
     }
 
-    /// Whether tasks are waiting (queued tasks or animation frame callbacks).
+    /// Whether tasks are waiting (queued tasks or animation frame callbacks) in any window.
     pub fn has_tasks(&self) -> bool {
-        !self.host.tasks.borrow().is_empty()
-            || !self.host.frame_callbacks.borrow().is_empty()
-            || !self.host.pending.borrow().is_empty()
-            || self.host.workers.borrow().has_messages()
-            || port::has_messages(&self.host)
+        frames::family(&self.host).iter().any(|h| {
+            !h.tasks.borrow().is_empty()
+                || !h.frame_callbacks.borrow().is_empty()
+                || !h.pending.borrow().is_empty()
+                || h.workers.borrow().has_messages()
+                || port::has_messages(h)
+        })
     }
 
-    /// Run queued tasks and the timers due now; returns whether anything ran.
+    /// Run queued tasks and the timers due now, in every window of the page (each in its
+    /// realm); returns whether anything ran.
     pub fn run_tasks(&mut self) -> bool {
-        let h = self.host.clone();
         let mut ran = false;
-        loop {
-            let task = h.tasks.borrow_mut().pop_front();
-            let Some(task) = task else { break };
-            ran = true;
-            self.begin_task();
-            let r = match task {
-                host::Task::Call(f, this, args) => self.vm.call(&f, this, args).map(|_| ()),
-                host::Task::Event(t, ty, bubbles, cancelable) => {
-                    events::fire(&mut self.vm, &h, t, &ty, bubbles, cancelable).map(|_| ())
-                }
-                host::Task::Script(s) => {
-                    loader::run_script_task(&mut self.vm, &h, s);
-                    Ok(())
-                }
-                host::Task::Fetch(id, req) => {
-                    let r = net::fetch_now(&self.vm, &h, *req);
-                    net::complete(&mut self.vm, &h, id, r)
-                }
-                host::Task::Read(t) => blob::run_read_task(&mut self.vm, &h, *t),
-                host::Task::Message(t, s, origin) => {
-                    worker::deliver_window_message(&mut self.vm, &h, t, *s, &origin)
-                }
-            };
-            self.end_task(r);
-        }
-        // Messages and errors from this global's workers, and messages to its ports.
-        if worker::poll(&mut self.vm, &h) {
-            ran = true;
-        }
-        if port::poll(&mut self.vm, &h) {
-            ran = true;
-        }
-        if port::poll_broadcasts(&mut self.vm, &h) {
-            ran = true;
-        }
-        // Background requests that finished.
-        for (id, r) in h.embedder.poll_fetches() {
-            ran = true;
-            self.begin_task();
-            let r = net::complete(&mut self.vm, &h, id, r);
-            self.end_task(r);
-        }
-        // Timers in due order (HTML §8.6 step 12: by due time, then by when they were set).
-        loop {
-            let now = h.embedder.now_ms();
-            let next = {
-                let timers = h.timers.borrow();
-                timers
-                    .iter()
-                    .filter(|t| t.due <= now)
-                    .min_by(|a, b| a.due.total_cmp(&b.due).then(a.seq.cmp(&b.seq)))
-                    .map(|t| t.id)
-            };
-            let Some(id) = next else { break };
-            let (cb, args) = {
-                let mut timers = h.timers.borrow_mut();
-                let Some(i) = timers.iter().position(|t| t.id == id) else { break };
-                let t = &mut timers[i];
-                let cb = (t.callback.clone(), t.args.clone());
-                match t.interval {
-                    Some(iv) => {
-                        t.due = now + iv.max(1.0);
-                        let seq = h.timer_seq.get();
-                        h.timer_seq.set(seq + 1);
-                        t.seq = seq;
-                    }
-                    None => {
-                        timers.remove(i);
-                    }
-                }
-                cb
-            };
-            ran = true;
-            self.begin_task();
-            let r = match cb {
-                Value::String(s) => {
-                    let src = bb_js::vm::to_rust(&s);
-                    let key = h.url.borrow().href();
-                    self.vm.run_script_at(&src, Some(&key)).map(|_| ())
-                }
-                f => self.vm.call(&f, Value::Undefined, args).map(|_| ()),
-            };
-            self.end_task(r);
+        for h in frames::family(&self.host) {
+            let realm = h.frames.borrow().realm;
+            if Rc::ptr_eq(&h, &self.host) {
+                ran |= run_host_tasks(&mut self.vm, &h);
+            } else {
+                ran |= self.vm.try_in_realm(realm, |vm| run_host_tasks(vm, &h)).unwrap_or(false);
+            }
         }
         ran
     }
 
-    /// Run the animation frame callbacks (HTML §8.1.7.3 "run the animation frame callbacks").
+    /// Run the animation frame callbacks (HTML §8.1.7.3 "run the animation frame callbacks")
+    /// of every window.
     pub fn run_animation_frames(&mut self) -> bool {
-        let cbs = std::mem::take(&mut *self.host.frame_callbacks.borrow_mut());
-        if cbs.is_empty() {
-            return false;
+        let mut ran = false;
+        for h in frames::family(&self.host) {
+            let cbs = std::mem::take(&mut *h.frame_callbacks.borrow_mut());
+            if cbs.is_empty() {
+                continue;
+            }
+            ran = true;
+            let realm = h.frames.borrow().realm;
+            let now = h.embedder.now_ms();
+            for (_, f) in cbs {
+                self.vm.try_in_realm(realm, |vm| {
+                    begin_task(vm);
+                    let r = vm.call(&f, Value::Undefined, vec![Value::Number(now)]).map(|_| ());
+                    end_task(vm, &h, r);
+                });
+            }
         }
-        let now = self.host.embedder.now_ms();
-        for (_, f) in cbs {
-            self.begin_task();
-            let r = self.vm.call(&f, Value::Undefined, vec![Value::Number(now)]).map(|_| ());
-            self.end_task(r);
-        }
-        true
+        ran
     }
 
     fn begin_task(&mut self) {
-        self.vm.terminated = false;
-        self.vm.fuel = Some(SCRIPT_FUEL);
+        begin_task(&mut self.vm);
     }
 
     fn end_task(&mut self, r: Result<(), Value>) {
-        if let Err(e) = r {
-            if self.vm.terminated {
-                log::warn!("a task ran too long and was stopped");
-            } else {
-                events::report_exception(&mut self.vm, e);
+        let h = self.host.clone();
+        end_task(&mut self.vm, &h, r);
+    }
+
+    /// Run the frame navigations waiting in the page's windows, and those they start, until
+    /// none are left: the page's load waits for its frames (HTML §13.2.7 "the end").
+    pub fn settle_frames(&mut self) {
+        for _ in 0..=8 {
+            let mut any = false;
+            for h in frames::family(&self.host) {
+                let navs: Vec<(bb_dom::NodeId, frames::NavTarget)> = {
+                    let mut tasks = h.tasks.borrow_mut();
+                    let mut out = Vec::new();
+                    let mut rest = std::collections::VecDeque::new();
+                    for t in tasks.drain(..) {
+                        match t {
+                            host::Task::Navigate(c, n) => out.push((c, n)),
+                            other => rest.push_back(other),
+                        }
+                    }
+                    *tasks = rest;
+                    out
+                };
+                if navs.is_empty() {
+                    continue;
+                }
+                any = true;
+                let realm = h.frames.borrow().realm;
+                for (c, t) in navs {
+                    self.vm.try_in_realm(realm, |vm| {
+                        begin_task(vm);
+                        let r = frames::navigate_now(vm, &h, c, t);
+                        end_task(vm, &h, r);
+                    });
+                }
+            }
+            if !any {
+                break;
             }
         }
-        self.vm.terminated = false;
-        self.vm.run_jobs();
-        self.vm.terminated = false;
-        let h = self.host.clone();
-        loader::register_handlers(&mut self.vm, &h);
+    }
+
+    /// Show a document the embedder fetched in the frame of `container` in `parent`'s
+    /// document (a link or form targeting the frame, or session history): see
+    /// `frames::install`. Returns the frame's new window.
+    pub fn load_frame(
+        &mut self,
+        parent: &Rc<Host>,
+        container: bb_dom::NodeId,
+        url: Url,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Option<Rc<Host>> {
+        let realm = parent.frames.borrow().realm;
+        let origin = frames::origin_for(parent, &url);
+        self.vm
+            .try_in_realm(realm, |vm| {
+                begin_task(vm);
+                let r = frames::install(vm, parent, container, url, content_type, body, origin);
+                end_task(vm, parent, Ok(()));
+                r
+            })
+            .flatten()
     }
 
     /// Dispatch a trusted event at node `target` of the window's document (or at the window
@@ -310,4 +306,124 @@ impl Window {
     pub fn take_console(&self) -> Vec<String> {
         std::mem::take(&mut *self.host.console.borrow_mut())
     }
+}
+
+fn begin_task(vm: &mut Vm) {
+    vm.terminated = false;
+    vm.fuel = Some(SCRIPT_FUEL);
+}
+
+fn end_task(vm: &mut Vm, h: &Rc<Host>, r: Result<(), Value>) {
+    if let Err(e) = r {
+        if vm.terminated {
+            log::warn!("a task ran too long and was stopped");
+        } else {
+            events::report_exception(vm, e);
+        }
+    }
+    vm.terminated = false;
+    vm.run_jobs();
+    vm.terminated = false;
+    loader::register_handlers(vm, h);
+    // A frame's own navigation (location.href = …) is its parent's to do.
+    if frames::parent_of(h).is_some() {
+        let to = h.pending_navigation.borrow_mut().take();
+        if let Some(url) = to.and_then(|t| bb_url::Url::parse(&t).ok()) {
+            frames::navigate(h, url);
+        }
+    }
+}
+
+/// One window's queued tasks, messages, finished requests and due timers (HTML §8.1.7.3).
+fn run_host_tasks(vm: &mut Vm, h: &Rc<Host>) -> bool {
+    let mut ran = false;
+    loop {
+        if h.frames.borrow().destroyed {
+            return ran;
+        }
+        let task = h.tasks.borrow_mut().pop_front();
+        let Some(task) = task else { break };
+        ran = true;
+        begin_task(vm);
+        let r = match task {
+            host::Task::Call(f, this, args) => vm.call(&f, this, args).map(|_| ()),
+            host::Task::Event(t, ty, bubbles, cancelable) => {
+                events::fire(vm, h, t, &ty, bubbles, cancelable).map(|_| ())
+            }
+            host::Task::Script(s) => {
+                loader::run_script_task(vm, h, s);
+                Ok(())
+            }
+            host::Task::Fetch(id, req) => {
+                let r = net::fetch_now(vm, h, *req);
+                net::complete(vm, h, id, r)
+            }
+            host::Task::Read(t) => blob::run_read_task(vm, h, *t),
+            host::Task::Message(t, s, origin, from) => {
+                worker::deliver_window_message(vm, h, t, *s, &origin, from)
+            }
+            host::Task::Navigate(container, target) => frames::navigate_now(vm, h, container, target),
+        };
+        end_task(vm, h, r);
+    }
+    // Messages and errors from this global's workers, and messages to its ports.
+    if worker::poll(vm, h) {
+        ran = true;
+    }
+    if port::poll(vm, h) {
+        ran = true;
+    }
+    if port::poll_broadcasts(vm, h) {
+        ran = true;
+    }
+    // Background requests that finished.
+    for (id, r) in h.embedder.poll_fetches() {
+        ran = true;
+        begin_task(vm);
+        let r = net::complete(vm, h, id, r);
+        end_task(vm, h, r);
+    }
+    // Timers in due order (HTML §8.6 step 12: by due time, then by when they were set).
+    loop {
+        let now = h.embedder.now_ms();
+        let next = {
+            let timers = h.timers.borrow();
+            timers
+                .iter()
+                .filter(|t| t.due <= now)
+                .min_by(|a, b| a.due.total_cmp(&b.due).then(a.seq.cmp(&b.seq)))
+                .map(|t| t.id)
+        };
+        let Some(id) = next else { break };
+        let (cb, args) = {
+            let mut timers = h.timers.borrow_mut();
+            let Some(i) = timers.iter().position(|t| t.id == id) else { break };
+            let t = &mut timers[i];
+            let cb = (t.callback.clone(), t.args.clone());
+            match t.interval {
+                Some(iv) => {
+                    t.due = now + iv.max(1.0);
+                    let seq = h.timer_seq.get();
+                    h.timer_seq.set(seq + 1);
+                    t.seq = seq;
+                }
+                None => {
+                    timers.remove(i);
+                }
+            }
+            cb
+        };
+        ran = true;
+        begin_task(vm);
+        let r = match cb {
+            Value::String(s) => {
+                let src = bb_js::vm::to_rust(&s);
+                let key = h.url.borrow().href();
+                vm.run_script_at(&src, Some(&key)).map(|_| ())
+            }
+            f => vm.call(&f, Value::Undefined, args).map(|_| ()),
+        };
+        end_task(vm, h, r);
+    }
+    ran
 }

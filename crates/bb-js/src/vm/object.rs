@@ -218,8 +218,8 @@ impl Vm {
         if let Some(n) = self.ta_numeric(o, k) {
             return Ok(self.ta_get_own(o, n));
         }
-        if let Some((h, class, id)) = self.host_exotic_of(o) {
-            if let Some(d) = h.get_own(self, o, class, id, k)? {
+        if let Some((h, class, id, r)) = self.host_exotic_of(o) {
+            if let Some(d) = self.in_realm(r, |vm| h.get_own(vm, o, class, id, k))? {
                 return Ok(Some(d));
             }
         }
@@ -242,8 +242,8 @@ impl Vm {
 
     /// [[DefineOwnProperty]] (§10.1.6, §10.4.2.1, §10.4.3.2).
     pub fn define_own_property(&mut self, o: ObjRef, k: PropKey, d: PropDesc) -> JsResult<bool> {
-        if let Some((h, class, id)) = self.host_exotic_of(o) {
-            if let Some(r) = h.define(self, o, class, id, &k, &d)? {
+        if let Some((h, class, id, realm)) = self.host_exotic_of(o) {
+            if let Some(r) = self.in_realm(realm, |vm| h.define(vm, o, class, id, &k, &d))? {
                 return Ok(r);
             }
         }
@@ -437,8 +437,8 @@ impl Vm {
     /// [[Set]] (§10.1.9 OrdinarySet).
     pub fn set(&mut self, o: ObjRef, k: PropKey, v: Value, receiver: Value) -> JsResult<bool> {
         if matches!(receiver, Value::Object(r) if r == o) {
-            if let Some((h, class, id)) = self.host_exotic_of(o) {
-                if let Some(r) = h.set(self, o, class, id, &k, &v)? {
+            if let Some((h, class, id, realm)) = self.host_exotic_of(o) {
+                if let Some(r) = self.in_realm(realm, |vm| h.set(vm, o, class, id, &k, &v))? {
                     return Ok(r);
                 }
             }
@@ -587,8 +587,8 @@ impl Vm {
         if let Some(n) = self.ta_numeric(o, k) {
             return Ok(!self.ta_has(o, n));
         }
-        if let Some((h, class, id)) = self.host_exotic_of(o) {
-            if let Some(r) = h.delete(self, o, class, id, k)? {
+        if let Some((h, class, id, realm)) = self.host_exotic_of(o) {
+            if let Some(r) = self.in_realm(realm, |vm| h.delete(vm, o, class, id, k))? {
                 return Ok(r);
             }
         }
@@ -664,8 +664,8 @@ impl Vm {
         if self.is_namespace(o) {
             return self.ns_keys(o);
         }
-        if let Some((h, class, id)) = self.host_exotic_of(o) {
-            let mut keys = h.own_keys(self, o, class, id)?;
+        if let Some((h, class, id, realm)) = self.host_exotic_of(o) {
+            let mut keys = self.in_realm(realm, |vm| h.own_keys(vm, o, class, id))?;
             let own = self.heap.obj(o).props.keys();
             let extra: Vec<PropKey> = own.into_iter().filter(|k| !keys.contains(k)).collect();
             keys.extend(extra);

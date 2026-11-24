@@ -205,6 +205,13 @@ pub struct Vm {
     realms: Vec<Option<Realm>>,
     /// The id of the current realm.
     pub cur_realm: u32,
+    /// Realms the host dropped (`drop_realm`): their code no longer runs.
+    dropped: Vec<u32>,
+    /// Realms to drop at the next collection where no frame uses them.
+    doomed: Vec<u32>,
+    /// The realm of the code that called the running native (the host's approximation of
+    /// HTML's incumbent settings object).
+    pub caller_realm: u32,
     /// Text written by `print` (test harnesses).
     pub output: Vec<String>,
     /// Instructions left before the script is terminated (`None`: unlimited).
@@ -251,6 +258,9 @@ impl Vm {
             can_block: true,
             realms: vec![None],
             cur_realm: 0,
+            dropped: Vec::new(),
+            doomed: Vec::new(),
+            caller_realm: 0,
             yield_raw: false,
             jobs: Default::default(),
             modules: Vec::new(),
@@ -294,15 +304,49 @@ impl Vm {
 
     // ---- realms (§9.3) ----
 
-    /// Make realm `id` the current one.
-    pub(crate) fn switch_realm(&mut self, id: u32) {
+    /// Make realm `id` the current one; false (and nothing changes) if it was dropped.
+    pub(crate) fn switch_realm(&mut self, id: u32) -> bool {
         if id == self.cur_realm {
-            return;
+            return true;
         }
-        let Some(r) = self.realms.get_mut(id as usize).and_then(Option::take) else { return };
+        let Some(r) = self.realms.get_mut(id as usize).and_then(Option::take) else { return false };
         let old = std::mem::replace(&mut self.realm, r);
         self.realms[self.cur_realm as usize] = Some(old);
         self.cur_realm = id;
+        true
+    }
+
+    /// Whether realm `id` exists and wasn't dropped.
+    pub fn realm_alive(&self, id: u32) -> bool {
+        id == self.cur_realm || self.realms.get(id as usize).is_some_and(Option::is_some)
+    }
+
+    /// Drop realm `id` (a browser frame went away): from now on its functions throw instead of
+    /// running, and its intrinsics are freed at a collection once no running code uses them.
+    pub fn drop_realm(&mut self, id: u32) {
+        if id != 0 && !self.doomed.contains(&id) && !self.dropped.contains(&id) {
+            self.doomed.push(id);
+        }
+    }
+
+    /// Whether realm `id` was dropped (or is about to be).
+    pub fn realm_dropped(&self, id: u32) -> bool {
+        self.dropped.contains(&id) || self.doomed.contains(&id)
+    }
+
+    /// Drop the doomed realms no frame is running in.
+    fn reap_realms(&mut self) {
+        let busy: Vec<u32> = self.frames.iter().map(|f| f.realm).collect();
+        let mut keep = Vec::new();
+        for id in std::mem::take(&mut self.doomed) {
+            if id == self.cur_realm || busy.contains(&id) {
+                keep.push(id);
+            } else if let Some(slot) = self.realms.get_mut(id as usize) {
+                *slot = None;
+                self.dropped.push(id);
+            }
+        }
+        self.doomed = keep;
     }
 
     /// InitializeHostDefinedRealm for a new realm (`$262.createRealm`): its id.
@@ -318,13 +362,28 @@ impl Vm {
         id
     }
 
-    /// Run `f` with realm `id` current.
+    /// Run `f` with realm `id` current (in the current realm if `id` was dropped; hosts use
+    /// `try_in_realm`).
     pub fn in_realm<T>(&mut self, id: u32, f: impl FnOnce(&mut Vm) -> T) -> T {
         let saved = self.cur_realm;
         self.switch_realm(id);
         let r = f(self);
         self.switch_realm(saved);
         r
+    }
+
+    /// Run `f` with realm `id` current; `None` if that realm was dropped.
+    pub fn try_in_realm<T>(&mut self, id: u32, f: impl FnOnce(&mut Vm) -> T) -> Option<T> {
+        if self.realm_dropped(id) {
+            return None;
+        }
+        let saved = self.cur_realm;
+        if !self.switch_realm(id) {
+            return None;
+        }
+        let r = f(self);
+        self.switch_realm(saved);
+        Some(r)
     }
 
     /// GetFunctionRealm (§7.3.24).
@@ -435,6 +494,9 @@ impl Vm {
     }
 
     pub fn collect_garbage(&mut self) {
+        if !self.doomed.is_empty() {
+            self.reap_realms();
+        }
         let mut roots = Roots::default();
         self.realm.trace(&mut roots);
         for r in self.realms.iter().flatten() {
@@ -613,7 +675,11 @@ impl Vm {
                     Kind::Native(n) => n.realm,
                     _ => saved,
                 };
-                self.switch_realm(nr);
+                if self.realm_dropped(nr) || !self.switch_realm(nr) {
+                    self.nested -= 1;
+                    return self.type_error("the realm of this function is gone");
+                }
+                let caller = std::mem::replace(&mut self.caller_realm, saved);
                 // A GC-safe native's `this` and arguments are rooted, and the run it calls
                 // into may collect (see `maybe_gc`).
                 let base = self.roots.len();
@@ -628,6 +694,7 @@ impl Vm {
                     self.safe_levels -= 2;
                     self.roots.truncate(base);
                 }
+                self.caller_realm = caller;
                 self.switch_realm(saved);
                 self.nested -= 1;
                 r.map(Some)
@@ -671,7 +738,9 @@ impl Vm {
         };
         // PrepareForOrdinaryCall: the callee's realm is current from here on.
         let saved = self.cur_realm;
-        self.switch_realm(realm);
+        if self.realm_dropped(realm) || !self.switch_realm(realm) {
+            return self.type_error("the realm of this function is gone");
+        }
         let r = self.enter_closure_in_realm(
             f,
             this,
@@ -780,7 +849,10 @@ impl Vm {
         self.nested += 1;
         let base = self.frames.len();
         let saved = self.cur_realm;
-        self.switch_realm(frame.realm);
+        if self.realm_dropped(frame.realm) || !self.switch_realm(frame.realm) {
+            self.nested -= 1;
+            return self.type_error("the realm of this function is gone");
+        }
         self.frames.push(frame);
         let r = self.run(base);
         self.switch_realm(saved);

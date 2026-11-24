@@ -302,12 +302,20 @@ fn fire_message_full(
 // ---- window.postMessage (HTML §9.3.3) ----
 
 pub fn window_post_message(vm: &mut Vm, c: NativeCall) -> R {
-    if c.args.is_empty() {
+    // The function is the target window's; the code calling it is the sender's.
+    let target = host(vm)?;
+    let source = vm.realm_host::<Host>(vm.caller_realm).unwrap_or_else(|| target.clone());
+    post_message(vm, &source, &target, &c.args)
+}
+
+/// HTML §9.3.3 "window post message steps": `source`'s code posts `args` to `target`.
+pub fn post_message(vm: &mut Vm, source: &Rc<Host>, target: &Rc<Host>, args: &[Value]) -> R {
+    if args.is_empty() {
         return vm.type_error("postMessage needs a message");
     }
-    let h = host(vm)?;
+    let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Undefined);
     // postMessage(message, options) or postMessage(message, targetOrigin, transfer).
-    let opt = c.arg(1);
+    let opt = arg(1);
     let (target_origin, transfer) = if matches!(opt, Value::Object(_)) && !is_sequence(vm, &opt) {
         let t = dict_get(vm, &opt, "targetOrigin")?;
         let t = if t.is_undefined() { "/".to_string() } else { rstr(vm, &t)? };
@@ -315,26 +323,32 @@ pub fn window_post_message(vm: &mut Vm, c: NativeCall) -> R {
     } else if opt.is_undefined() {
         ("/".to_string(), Vec::new())
     } else {
-        (rstr(vm, &opt)?, transfer_list(vm, &c.arg(2), false)?)
+        (rstr(vm, &opt)?, transfer_list(vm, &arg(2), false)?)
     };
-    // Steps 2–4: the target origin.
-    let own = h.url.borrow().origin();
-    if target_origin != "*" && target_origin != "/" {
-        match Url::parse(&target_origin) {
-            Ok(u) => {
-                if !u.origin().same_origin(&own) {
-                    // Serialize anyway (errors still throw), then drop the message.
-                    vm.structured_serialize(&c.arg(0), &transfer)?;
-                    return Ok(Value::Undefined);
-                }
-            }
+    // Steps 2–4: the target origin ("/" is the sender's own).
+    let own = crate::frames::origin(source);
+    let target_now = crate::frames::origin(target);
+    let wanted = match target_origin.as_str() {
+        "*" => None,
+        "/" => Some(own.clone()),
+        t => match Url::parse(t) {
+            Ok(u) => Some(crate::frames::FrameOrigin::of_url(&u)),
             Err(_) => return throw(vm, "SyntaxError", &format!("'{target_origin}' is not a valid origin")),
-        }
+        },
+    };
+    let s = vm.structured_serialize(&arg(0), &transfer)?;
+    if wanted.is_some_and(|w| !w.same(&target_now)) {
+        // Serialized anyway (errors still throw), then dropped.
+        return Ok(Value::Undefined);
     }
-    let s = vm.structured_serialize(&c.arg(0), &transfer)?;
-    let origin = own.serialize();
-    let w = h.window.get().map_or(Value::Undefined, Value::Object);
-    h.tasks.borrow_mut().push_back(crate::host::Task::Message(w, Box::new(s), origin));
+    let nav = source.frames.borrow().nav.clone();
+    let w = target.window.get().map_or(Value::Undefined, Value::Object);
+    target.tasks.borrow_mut().push_back(crate::host::Task::Message(
+        w,
+        Box::new(s),
+        own.serialize(),
+        Some(nav),
+    ));
     Ok(Value::Undefined)
 }
 
@@ -347,14 +361,20 @@ fn is_sequence(vm: &mut Vm, v: &Value) -> bool {
 /// Deliver a posted message (the task window.postMessage queued).
 pub fn deliver_window_message(
     vm: &mut Vm,
-    h: &Host,
+    h: &Rc<Host>,
     target: Value,
     s: Serialized,
     origin: &str,
+    from: Option<Rc<crate::frames::Nav>>,
 ) -> JsResult<()> {
+    // MessageEvent.source: the sender's WindowProxy as this window sees it.
+    let source = match from.and_then(|n| n.host()) {
+        Some(src) => crate::frames::proxy_for(vm, h, &src)?,
+        None => Value::Null,
+    };
     match vm.structured_deserialize_with_transfer(s) {
-        Ok((data, ports)) => fire_message_full(vm, h, target.clone(), "message", data, origin, target, ports),
-        Err(_) => fire_message(vm, h, target.clone(), "messageerror", Value::Null, origin, target),
+        Ok((data, ports)) => fire_message_full(vm, h, target, "message", data, origin, source, ports),
+        Err(_) => fire_message(vm, h, target, "messageerror", Value::Null, origin, source),
     }
 }
 

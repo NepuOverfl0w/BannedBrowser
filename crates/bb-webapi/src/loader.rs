@@ -32,7 +32,33 @@ fn pump(vm: &mut Vm, h: &Host, end: Option<usize>) -> Option<NodeId> {
         (r, before)
     };
     parsed_records(vm, h, before);
+    parsed_frames(vm, h, before);
     r
+}
+
+/// Frames for the iframes and frames the parser inserted (HTML §4.8.5).
+fn parsed_frames(vm: &mut Vm, h: &Host, before: usize) {
+    if !h.frames.borrow().nested {
+        return;
+    }
+    let found: Vec<NodeId> = {
+        let Ok(docs) = h.docs.try_borrow() else { return };
+        let d = &docs[0];
+        (before..d.len())
+            .map(|i| NodeId(i as u32))
+            .filter(|&x| d.is_html(x, "iframe") || d.is_html(x, "frame"))
+            .collect()
+    };
+    if found.is_empty() {
+        return;
+    }
+    let Ok(hr) = host(vm) else { return };
+    if !std::ptr::eq(&*hr, h) {
+        return;
+    }
+    if let Err(e) = crate::frames::nodes_inserted(vm, &hr, &found) {
+        crate::events::report_exception(vm, e);
+    }
 }
 
 /// Mutation records for the nodes the parser inserted (HTML §13.2.6.1 "insert an element
@@ -272,7 +298,16 @@ fn execute_element(vm: &mut Vm, h: &Host, s: NodeRef) {
         if ty == ScriptType::Module { Value::Null } else { el },
     );
     let key = url.as_ref().map(|u| u.href()).unwrap_or_else(|| h.url.borrow().href());
+    // HTML §4.12.1.2 step 4: an external script can't replace the document by writing.
+    let external = url.is_some();
+    if external {
+        h.frames.borrow_mut().ignore_destructive += 1;
+    }
     run_source(vm, &source, &key, ty == ScriptType::Module);
+    if external {
+        let mut f = h.frames.borrow_mut();
+        f.ignore_destructive = f.ignore_destructive.saturating_sub(1);
+    }
     *h.current_script.borrow_mut() = prev;
     register_handlers(vm, h);
     if url.is_some() {
@@ -316,10 +351,23 @@ pub fn document_write(vm: &mut Vm, c: &NativeCall, newline: bool) -> JsResult<Va
         text.push('\n');
     }
     let (h, n) = this_node(vm, &c.this, C::Document)?;
-    if n.doc != 0 || h.parser.borrow().is_none() {
-        // No insertion point: document.open() would replace the document; not done here.
-        log::debug!("document.write after parsing ignored");
+    if n.doc != 0 {
+        // Documents without a browsing context have no parser to write to (not done yet).
+        log::debug!("document.write to a document that isn't a window's ignored");
         return Ok(Value::Undefined);
+    }
+    if h.doc_types.borrow().first().map(String::as_str) != Some("text/html") {
+        return crate::exception::throw(vm, "InvalidStateError", "document.write needs an HTML document");
+    }
+    // Step 5: no insertion point means a new document (unless an external script is running).
+    if h.parser.borrow().is_none() {
+        if h.frames.borrow().ignore_destructive > 0 {
+            return Ok(Value::Undefined);
+        }
+        document_open(vm, &h, n.doc)?;
+        if h.parser.borrow().is_none() {
+            return Ok(Value::Undefined);
+        }
     }
     // Insert at the insertion point; earlier writes' ends move along.
     let end = {
@@ -356,4 +404,57 @@ pub fn document_write(vm: &mut Vm, c: &NativeCall, newline: bool) -> JsResult<Va
 /// The parser's own insertions don't come here: it prepares scripts at their end tags.
 pub fn script_inserted(vm: &mut Vm, h: &Host, s: NodeRef) {
     prepare_script(vm, h, s, false);
+}
+
+/// HTML §8.4.1 "document open steps" for the window's document: its children go, and a
+/// script-created parser takes what document.write inserts, until document.close.
+pub fn document_open(vm: &mut Vm, h: &Host, doc: u32) -> JsResult<()> {
+    if h.doc_types.borrow().get(doc as usize).map(String::as_str) != Some("text/html") {
+        return crate::exception::throw(vm, "InvalidStateError", "document.open needs an HTML document");
+    }
+    // Only the window's document has a parser here; an active parser keeps the document.
+    if doc != 0 || h.parser.borrow().is_some() || h.frames.borrow().ignore_destructive > 0 {
+        return Ok(());
+    }
+    // Step 11: erase the document's and the window's event listeners and handlers.
+    let doc_obj = wrap(vm, h, NodeRef { doc: 0, id: Document::ROOT })?;
+    let mut targets: Vec<bb_js::vm::heap::ObjRef> = Vec::new();
+    if let Value::Object(o) = doc_obj {
+        targets.push(o);
+    }
+    targets.extend(h.window.get());
+    for t in &targets {
+        h.listeners.borrow_mut().remove(t);
+        h.handlers.borrow_mut().retain(|(o, _), _| o != t);
+    }
+    // Step 12: replace all with null.
+    crate::tree::replace_all(vm, h, None, NodeRef { doc: 0, id: Document::ROOT })?;
+    // Steps 15–18: a new script-created parser, readiness "loading".
+    let mut tb = TreeBuilder::new("");
+    tb.set_scripting(true);
+    *h.parser.borrow_mut() = Some(Box::new(tb));
+    h.frames.borrow_mut().script_parser = true;
+    h.ready_state.set(ReadyState::Loading);
+    Ok(())
+}
+
+/// HTML §8.4.2 document.close: the script-created parser reaches the end of its input, then
+/// "the end" (DOMContentLoaded, the load event).
+pub fn document_close(vm: &mut Vm, h: &Host, doc: u32) -> JsResult<()> {
+    if h.doc_types.borrow().get(doc as usize).map(String::as_str) != Some("text/html") {
+        return crate::exception::throw(vm, "InvalidStateError", "document.close needs an HTML document");
+    }
+    if doc != 0 || !h.frames.borrow().script_parser || h.parser.borrow().is_none() {
+        return Ok(());
+    }
+    h.frames.borrow_mut().script_parser = false;
+    while let Some(script) = pump(vm, h, None) {
+        register_handlers(vm, h);
+        prepare_script(vm, h, NodeRef { doc: 0, id: script }, true);
+    }
+    *h.parser.borrow_mut() = None;
+    register_handlers(vm, h);
+    the_end(vm, h);
+    fire_load(vm, h);
+    Ok(())
 }
