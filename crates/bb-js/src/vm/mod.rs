@@ -17,6 +17,7 @@ mod atomics;
 pub mod bigint;
 pub mod builtins;
 mod class;
+pub mod clone;
 pub mod code;
 pub mod compiler;
 mod dispose;
@@ -178,6 +179,13 @@ pub struct Vm {
     /// Objects the host keeps (e.g. its wrapper cache), reported at each collection.
     #[allow(clippy::type_complexity)]
     pub host_trace: Option<Box<dyn Fn(&mut Vec<ObjRef>)>>,
+    /// Serializes a platform object for structured clone (None: not serializable).
+    #[allow(clippy::type_complexity)]
+    pub host_serialize: Option<fn(&mut Vm, ObjRef) -> Option<JsResult<clone::HostSer>>>,
+    /// Recreates a serialized platform object.
+    pub host_deserialize: Option<fn(&mut Vm, &clone::HostSer) -> JsResult<Value>>,
+    /// Makes the DataCloneError structured clone throws.
+    pub host_clone_error: Option<fn(&mut Vm, &str) -> Value>,
     /// Pending Atomics.waitAsync promises of this agent.
     async_waits: Vec<atomics::AsyncWait>,
     /// [[CanBlock]]: whether Atomics.wait may suspend this agent (hosts like a browser's
@@ -191,6 +199,10 @@ pub struct Vm {
     pub output: Vec<String>,
     /// Instructions left before the script is terminated (`None`: unlimited).
     pub fuel: Option<u64>,
+    /// Set from another thread to stop the running script (a worker's terminate()); checked
+    /// every few thousand instructions.
+    pub interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ticks: u32,
     /// Set when execution was terminated (out of fuel): no handler runs, every run unwinds.
     pub terminated: bool,
 }
@@ -218,6 +230,9 @@ impl Vm {
             host_exotic: None,
             host_report: None,
             host_trace: None,
+            host_serialize: None,
+            host_deserialize: None,
+            host_clone_error: None,
             async_waits: Vec::new(),
             can_block: true,
             realms: vec![None],
@@ -234,6 +249,8 @@ impl Vm {
             name_keys: HashMap::default(),
             output: Vec::new(),
             fuel: None,
+            interrupt: None,
+            ticks: 0,
             terminated: false,
         };
         realm::init(&mut vm);
@@ -921,6 +938,15 @@ impl Vm {
                     return Err(Value::str("execution terminated: out of fuel"));
                 }
                 *f -= 1;
+            }
+            self.ticks = self.ticks.wrapping_add(1);
+            if self.ticks & 0xfff == 0 {
+                if let Some(i) = &self.interrupt {
+                    if i.load(std::sync::atomic::Ordering::Relaxed) {
+                        self.terminated = true;
+                        return Err(Value::str("execution terminated"));
+                    }
+                }
             }
             let f = self.frames.last_mut().expect("frame");
             let Some(&op) = f.code.ops.get(f.pc) else {

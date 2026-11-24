@@ -168,6 +168,12 @@ interfaces! {
     FormData: None;
     FormDataEvent: Event;
     Crypto: None;
+    MessageEvent: Event;
+    Worker: EventTarget;
+    WorkerGlobalScope: EventTarget;
+    DedicatedWorkerGlobalScope: WorkerGlobalScope;
+    WorkerLocation: None;
+    WorkerNavigator: None;
 }
 
 pub fn name(c: C) -> &'static str {
@@ -352,15 +358,66 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::FileReader => (crate::blob::file_reader_ctor, 0),
         C::FormData => (crate::blob::form_data_ctor, 0),
         C::FormDataEvent => (crate::events::event_ctor, 2),
+        C::MessageEvent => (crate::events::event_ctor, 1),
+        C::Worker => (crate::worker::worker_ctor, 1),
         C::XMLSerializer => (crate::xml::xml_serializer_ctor, 0),
         C::StaticRange => (crate::range::static_range_ctor, 1),
         _ => return None,
     })
 }
 
+/// Interfaces exposed in dedicated workers ([Exposed=DedicatedWorker] and wider).
+fn exposed_in_worker(c: C) -> bool {
+    matches!(
+        c,
+        C::EventTarget
+            | C::Event
+            | C::CustomEvent
+            | C::ErrorEvent
+            | C::MessageEvent
+            | C::ProgressEvent
+            | C::DOMException
+            | C::AbortController
+            | C::AbortSignal
+            | C::URL
+            | C::URLSearchParams
+            | C::Headers
+            | C::Request
+            | C::Response
+            | C::XMLHttpRequestEventTarget
+            | C::XMLHttpRequest
+            | C::XMLHttpRequestUpload
+            | C::TextEncoder
+            | C::TextDecoder
+            | C::Blob
+            | C::File
+            | C::FileReader
+            | C::FormData
+            | C::Crypto
+            | C::Worker
+            | C::WorkerGlobalScope
+            | C::DedicatedWorkerGlobalScope
+            | C::WorkerLocation
+            | C::WorkerNavigator
+    )
+}
+
+/// Interfaces exposed on a Window (all but the worker-only ones).
+fn exposed_in_window(c: C) -> bool {
+    !matches!(
+        c,
+        C::WorkerGlobalScope | C::DedicatedWorkerGlobalScope | C::WorkerLocation | C::WorkerNavigator
+    )
+}
+
 /// Create every interface object and prototype (WebIDL §3.7.1–3.7.3) and expose them on
 /// the global object, which becomes a Window.
 pub fn install(vm: &mut Vm, h: &Host) {
+    install_scope(vm, h, false);
+}
+
+/// As [`install`], for a Window or (`worker`) a DedicatedWorkerGlobalScope.
+pub fn install_scope(vm: &mut Vm, h: &Host, worker: bool) {
     let g = vm.realm.global;
     let mut protos: Vec<ObjRef> = Vec::with_capacity(ALL.len());
     let mut ctors: Vec<ObjRef> = Vec::with_capacity(ALL.len());
@@ -382,7 +439,10 @@ pub fn install(vm: &mut Vm, h: &Host) {
             .insert(PropKey::lit("prototype"), Prop::data(Value::Object(proto), false, false, false));
         vm.heap.obj_mut(proto).props.insert(PropKey::lit("constructor"), Prop::method(Value::Object(ctor)));
         realm::to_string_tag(vm, proto, name(c));
-        realm::value(vm, g, name(c), Value::Object(ctor));
+        let exposed = if worker { exposed_in_worker(c) } else { exposed_in_window(c) };
+        if exposed {
+            realm::value(vm, g, name(c), Value::Object(ctor));
+        }
         protos.push(proto);
         ctors.push(ctor);
     }
@@ -390,11 +450,19 @@ pub fn install(vm: &mut Vm, h: &Host) {
     *h.ctors.borrow_mut() = ctors.clone();
     for &c in ALL {
         let (p, k) = (protos[c as usize], ctors[c as usize]);
+        // The Window's setup puts its members on the global object itself.
+        if worker && c == C::Window {
+            continue;
+        }
         setup(vm, c, p, k);
+    }
+    if worker {
+        vm.heap.obj_mut(g).proto = Some(protos[C::DedicatedWorkerGlobalScope as usize]);
+        crate::worker::setup_worker_global(vm, g);
+        return;
     }
     crate::traversal::install_node_filter(vm);
     crate::window::install_window_properties(vm, h);
-    crate::blob::install_crypto(vm, h);
     // The global object is the Window (HTML §7.2); its prototype chain is Window's.
     vm.heap.obj_mut(g).proto = Some(protos[C::Window as usize]);
 }
@@ -467,6 +535,9 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::FormData => crate::blob::setup_form_data(vm, proto),
         C::FormDataEvent => crate::blob::setup_form_data_event(vm, proto),
         C::Crypto => crate::blob::setup_crypto(vm, proto),
+        C::MessageEvent => crate::worker::setup_message_event(vm, proto),
+        C::Worker => crate::worker::setup_worker(vm, proto),
+        C::WorkerGlobalScope | C::DedicatedWorkerGlobalScope | C::WorkerLocation | C::WorkerNavigator => {}
         C::XMLSerializer => crate::xml::setup_xml_serializer(vm, proto),
         _ => crate::html::setup_element_interface(vm, c, proto),
     }

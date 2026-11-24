@@ -162,7 +162,35 @@ impl PageEmbedder {
     }
 }
 
+thread_local! {
+    /// Wakes the thread's event loop (the tab's) when a page's worker sends a message.
+    static SCRIPT_WAKER: RefCell<Option<bb_webapi::worker::Waker>> = const { RefCell::new(None) };
+}
+
+/// Set the waker of this thread's event loop: pages created on it hand it to their workers.
+pub fn set_script_waker(w: Option<bb_webapi::worker::Waker>) {
+    SCRIPT_WAKER.with(|s| *s.borrow_mut() = w);
+}
+
+/// Network access for a page's workers: its client, with the page as the request context.
+struct WorkerNet {
+    client: Client,
+    page_url: Url,
+}
+
+impl bb_webapi::worker::WorkerNet for WorkerNet {
+    fn fetch(&self, req: bb_webapi::net::HttpRequest) -> Result<bb_webapi::net::HttpResponse, String> {
+        http(&self.client, &self.page_url, req)
+    }
+}
+
 impl bb_webapi::Embedder for PageEmbedder {
+    fn worker_net(&self) -> Option<std::sync::Arc<dyn bb_webapi::worker::WorkerNet>> {
+        Some(std::sync::Arc::new(WorkerNet { client: self.client.clone(), page_url: self.page_url.clone() }))
+    }
+    fn waker(&self) -> Option<bb_webapi::worker::Waker> {
+        SCRIPT_WAKER.with(|s| s.borrow().clone())
+    }
     fn fetch_script(&self, url: &Url) -> Result<String, String> {
         let mut req = Request::get(url.clone());
         req.timeout = Duration::from_secs(20);

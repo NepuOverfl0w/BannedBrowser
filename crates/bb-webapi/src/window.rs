@@ -32,28 +32,6 @@ pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
     attr(
         vm,
         g,
-        "isSecureContext",
-        |vm, _| {
-            let h = host(vm)?;
-            let s = h.url.borrow().scheme().to_string();
-            Ok(Value::Bool(matches!(s.as_str(), "https" | "file" | "about")))
-        },
-        None,
-    );
-    attr(
-        vm,
-        g,
-        "origin",
-        |vm, _| {
-            let h = host(vm)?;
-            let o = origin_of(&h.url.borrow());
-            Ok(js(&o))
-        },
-        None,
-    );
-    attr(
-        vm,
-        g,
         "name",
         |vm, _| {
             let h = host(vm)?;
@@ -92,24 +70,7 @@ pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
         attr(vm, g, name, |_, _| Ok(Value::Number(0.0)), None);
     }
     attr(vm, g, "devicePixelRatio", |_, _| Ok(Value::Number(1.0)), None);
-    op(vm, g, "setTimeout", 1, |vm, c| set_timer(vm, &c, false));
-    op(vm, g, "setInterval", 1, |vm, c| set_timer(vm, &c, true));
-    for name in ["clearTimeout", "clearInterval"] {
-        op(vm, g, name, 0, |vm, c| {
-            let id = vm.to_int32(&c.arg(0))?;
-            let h = host(vm)?;
-            h.timers.borrow_mut().retain(|t| t.id as i32 != id);
-            Ok(Value::Undefined)
-        });
-    }
-    op(vm, g, "queueMicrotask", 1, |vm, c| {
-        let f = c.arg(0);
-        if !vm.is_callable(&f) {
-            return vm.type_error("queueMicrotask needs a function");
-        }
-        vm.enqueue_microtask(f);
-        Ok(Value::Undefined)
-    });
+    op(vm, g, "postMessage", 1, crate::worker::window_post_message);
     op(vm, g, "requestAnimationFrame", 1, |vm, c| {
         let f = c.arg(0);
         if !vm.is_callable(&f) {
@@ -142,6 +103,59 @@ pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
     ] {
         op(vm, g, name, 0, |_, _| Ok(Value::Undefined));
     }
+    install_factories(vm, g);
+    crate::storage::install(vm, g);
+    crate::events::setup_window_handlers(vm, g);
+    op(vm, g, "getComputedStyle", 1, crate::css::get_computed_style);
+    install_location(vm, g);
+    install_navigator(vm, g);
+    install_screen(vm, g);
+    setup_global_scope(vm, g);
+}
+
+/// The WindowOrWorkerGlobalScope members (HTML §8.1.7): timers, microtasks, base64,
+/// fetch, crypto, structuredClone, console and performance, on global `g`.
+pub fn setup_global_scope(vm: &mut Vm, g: ObjRef) {
+    attr(
+        vm,
+        g,
+        "isSecureContext",
+        |vm, _| {
+            let h = host(vm)?;
+            let s = h.url.borrow().scheme().to_string();
+            Ok(Value::Bool(matches!(s.as_str(), "https" | "file" | "about")))
+        },
+        None,
+    );
+    attr(
+        vm,
+        g,
+        "origin",
+        |vm, _| {
+            let h = host(vm)?;
+            let o = origin_of(&h.url.borrow());
+            Ok(js(&o))
+        },
+        None,
+    );
+    op(vm, g, "setTimeout", 1, |vm, c| set_timer(vm, &c, false));
+    op(vm, g, "setInterval", 1, |vm, c| set_timer(vm, &c, true));
+    for name in ["clearTimeout", "clearInterval"] {
+        op(vm, g, name, 0, |vm, c| {
+            let id = vm.to_int32(&c.arg(0))?;
+            let h = host(vm)?;
+            h.timers.borrow_mut().retain(|t| t.id as i32 != id);
+            Ok(Value::Undefined)
+        });
+    }
+    op(vm, g, "queueMicrotask", 1, |vm, c| {
+        let f = c.arg(0);
+        if !vm.is_callable(&f) {
+            return vm.type_error("queueMicrotask needs a function");
+        }
+        vm.enqueue_microtask(f);
+        Ok(Value::Undefined)
+    });
     op(vm, g, "btoa", 1, |vm, c| {
         let s = vm.to_string(&c.arg(0))?;
         if s.iter().any(|&u| u > 0xFF) {
@@ -157,15 +171,31 @@ pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
             None => throw(vm, "InvalidCharacterError", "atob: not valid base64"),
         }
     });
-    install_factories(vm, g);
-    crate::storage::install(vm, g);
-    crate::events::setup_window_handlers(vm, g);
-    op(vm, g, "getComputedStyle", 1, crate::css::get_computed_style);
     op(vm, g, "fetch", 1, crate::net::fetch);
+    op(vm, g, "structuredClone", 1, crate::worker::structured_clone);
     install_console(vm, g);
-    install_location(vm, g);
-    install_navigator(vm, g);
-    install_screen_and_performance(vm, g);
+    install_performance(vm, g);
+    if let Ok(h) = host(vm) {
+        crate::blob::install_crypto(vm, &h);
+    }
+}
+
+fn install_performance(vm: &mut Vm, g: ObjRef) {
+    let perf = vm.new_object();
+    op(vm, perf, "now", 0, |vm, _| {
+        let h = host(vm)?;
+        Ok(Value::Number(h.embedder.now_ms()))
+    });
+    let origin = host(vm).map(|h| h.embedder.time_origin_ms()).unwrap_or(0.0);
+    constant(vm, perf, "timeOrigin", Value::Number(origin));
+    for name in ["mark", "measure", "clearMarks", "clearMeasures"] {
+        op(vm, perf, name, 0, |_, _| Ok(Value::Undefined));
+    }
+    for name in ["getEntries", "getEntriesByName", "getEntriesByType"] {
+        op(vm, perf, name, 0, |vm, _| Ok(Value::Object(vm.new_array(Vec::new()))));
+    }
+    bb_js::vm::realm::to_string_tag(vm, perf, "Performance");
+    bb_js::vm::realm::value(vm, g, "performance", Value::Object(perf));
 }
 
 /// A new HTML element of the window's document.
@@ -510,7 +540,7 @@ fn install_navigator(vm: &mut Vm, g: ObjRef) {
 }
 
 /// navigator.platform (HTML §8.10.1.1: the values browsers report).
-fn platform() -> &'static str {
+pub fn platform() -> &'static str {
     if cfg!(target_os = "windows") {
         "Win32"
     } else if cfg!(target_os = "macos") {
@@ -520,7 +550,7 @@ fn platform() -> &'static str {
     }
 }
 
-fn install_screen_and_performance(vm: &mut Vm, g: ObjRef) {
+fn install_screen(vm: &mut Vm, g: ObjRef) {
     let scr = vm.new_object();
     let (w, h) = host(vm).map(|h| h.embedder.viewport()).unwrap_or((1024.0, 768.0));
     for (k, v) in [
@@ -537,21 +567,6 @@ fn install_screen_and_performance(vm: &mut Vm, g: ObjRef) {
     }
     bb_js::vm::realm::to_string_tag(vm, scr, "Screen");
     bb_js::vm::realm::value(vm, g, "screen", Value::Object(scr));
-    let perf = vm.new_object();
-    op(vm, perf, "now", 0, |vm, _| {
-        let h = host(vm)?;
-        Ok(Value::Number(h.embedder.now_ms()))
-    });
-    let origin = host(vm).map(|h| h.embedder.time_origin_ms()).unwrap_or(0.0);
-    constant(vm, perf, "timeOrigin", Value::Number(origin));
-    for name in ["mark", "measure", "clearMarks", "clearMeasures"] {
-        op(vm, perf, name, 0, |_, _| Ok(Value::Undefined));
-    }
-    for name in ["getEntries", "getEntriesByName", "getEntriesByType"] {
-        op(vm, perf, name, 0, |vm, _| Ok(Value::Object(vm.new_array(Vec::new()))));
-    }
-    bb_js::vm::realm::to_string_tag(vm, perf, "Performance");
-    bb_js::vm::realm::value(vm, g, "performance", Value::Object(perf));
 }
 
 // ---- base64 (Infra §4.5 forgiving-base64) ----

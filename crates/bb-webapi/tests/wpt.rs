@@ -27,6 +27,9 @@ const DIRS: &[&str] = &[
     "domparsing",
     "FileAPI",
     "xhr/formdata",
+    "workers",
+    "html/webappapis/structured-clone",
+    "webmessaging",
     "url",
     "encoding",
     "fetch/api/headers",
@@ -62,39 +65,125 @@ impl Embedder for TestEmbedder {
         let file = root().join(path.trim_start_matches('/'));
         std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))
     }
-    /// Requests are answered from the checkout (as wptserve would serve the files).
     fn fetch_sync(&self, req: bb_webapi::net::HttpRequest) -> Result<bb_webapi::net::HttpResponse, String> {
-        let path = req.url.pathname();
-        let file = root().join(path.trim_start_matches('/'));
-        let (status, status_text, body) = match std::fs::read(&file) {
-            Ok(b) => (200, "OK", b),
-            Err(_) => (404, "Not Found", b"not found".to_vec()),
-        };
-        let ct = match file.extension().and_then(|e| e.to_str()) {
-            Some("json") => "application/json",
-            Some("js") => "text/javascript",
-            Some("html") => "text/html",
-            Some("xml") => "application/xml",
-            Some("txt") => "text/plain",
-            _ => "application/octet-stream",
-        };
-        Ok(bb_webapi::net::HttpResponse {
-            url: req.url,
-            status,
-            status_text: status_text.to_string(),
-            headers: vec![("content-type".into(), ct.into())],
-            body,
-        })
+        Ok(serve(req))
     }
     fn now_ms(&self) -> f64 {
         self.clock.get() + self.start.elapsed().as_secs_f64() * 1000.0
     }
+    fn worker_net(&self) -> Option<std::sync::Arc<dyn bb_webapi::worker::WorkerNet>> {
+        Some(std::sync::Arc::new(FileNet))
+    }
 }
 
-/// The page for a test file: HTML as is; `.window.js` / `.any.js` wrapped as WPT serves them.
+/// Workers' requests, answered the same way.
+struct FileNet;
+
+impl bb_webapi::worker::WorkerNet for FileNet {
+    fn fetch(&self, req: bb_webapi::net::HttpRequest) -> Result<bb_webapi::net::HttpResponse, String> {
+        Ok(serve(req))
+    }
+}
+
+/// Requests are answered from the checkout (as wptserve would serve the files), with the
+/// wrapper wptserve generates for an `.any.js` test's dedicated-worker variant.
+fn serve(req: bb_webapi::net::HttpRequest) -> bb_webapi::net::HttpResponse {
+    let path = req.url.pathname();
+    let generated = path.strip_suffix(".any.worker.js").map(|base| worker_wrapper(&format!("{base}.any.js")));
+    let file = root().join(path.trim_start_matches('/'));
+    let (status, status_text, body) = match generated {
+        Some(Some(src)) => (200, "OK", src.into_bytes()),
+        _ => match std::fs::read(&file) {
+            Ok(b) => (200, "OK", b),
+            Err(_) => (404, "Not Found", b"not found".to_vec()),
+        },
+    };
+    let ct = match file.extension().and_then(|e| e.to_str()) {
+        Some("json") => "application/json",
+        Some("js") => "text/javascript",
+        Some("html") => "text/html",
+        Some("xml") => "application/xml",
+        Some("txt") => "text/plain",
+        _ => "application/octet-stream",
+    };
+    bb_webapi::net::HttpResponse {
+        url: req.url,
+        status,
+        status_text: status_text.to_string(),
+        headers: vec![("content-type".into(), ct.into())],
+        body,
+    }
+}
+
+/// The `.any.worker.js` wptserve makes for `.any.js` test `rel` (URL path): testharness,
+/// the META scripts, the test, done().
+fn worker_wrapper(rel: &str) -> Option<String> {
+    let src = std::fs::read_to_string(root().join(rel.trim_start_matches('/'))).ok()?;
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let mut out = String::from(
+        "self.GLOBAL = { isWindow: () => false, isWorker: () => true, isShadowRealm: () => false };\n\
+         importScripts(\"/resources/testharness.js\");\n",
+    );
+    for s in meta_scripts(&src) {
+        out.push_str(&format!("importScripts(\"{s}\");\n"));
+    }
+    out.push_str(&format!("importScripts(\"{name}\");\ndone();\n"));
+    Some(out)
+}
+
+/// The `// META: script=` lines of a test.
+fn meta_scripts(src: &str) -> Vec<String> {
+    meta(src, "script=")
+}
+
+fn meta(src: &str, key: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let Some(m) = line.strip_prefix("// META:") else {
+            if !line.trim().is_empty() && !line.starts_with("//") {
+                break;
+            }
+            continue;
+        };
+        if let Some(s) = m.trim().strip_prefix(key) {
+            out.push(s.trim().to_string());
+        }
+    }
+    out
+}
+
+/// Whether an `.any.js` test runs in dedicated workers (its `// META: global=` list, by
+/// default window and dedicatedworker).
+fn any_in_worker(src: &str) -> bool {
+    let g = meta(src, "global=");
+    g.is_empty()
+        || g.iter().flat_map(|l| l.split(',')).any(|x| matches!(x.trim(), "dedicatedworker" | "worker"))
+}
+
+fn any_in_window(src: &str) -> bool {
+    let g = meta(src, "global=");
+    g.is_empty() || g.iter().flat_map(|l| l.split(',')).any(|x| x.trim() == "window")
+}
+
+/// The page for a test file: HTML as is; `.window.js` / `.any.js` wrapped as WPT serves them;
+/// `.worker.js` and an `.any.js`'s worker variant (`#worker`) run in a dedicated worker.
 fn page_for(rel: &str, src: &str) -> String {
     if rel.ends_with(".html") || rel.ends_with(".htm") {
         return src.to_string();
+    }
+    let worker_script = if let Some(base) = rel.strip_suffix(".any.js#worker") {
+        Some(format!("{}.any.worker.js", base.rsplit('/').next().unwrap_or(base)))
+    } else if rel.ends_with(".worker.js") {
+        Some(rel.rsplit('/').next().unwrap_or(rel).to_string())
+    } else {
+        None
+    };
+    if let Some(w) = worker_script {
+        return format!(
+            "<!doctype html>\n<meta charset=utf-8>\n<script src=\"/resources/testharness.js\"></script>\n\
+             <script src=\"/resources/testharnessreport.js\"></script>\n<div id=log></div>\n\
+             <script>fetch_tests_from_worker(new Worker(\"{w}\"));</script>\n"
+        );
     }
     let mut extra = String::new();
     for line in src.lines() {
@@ -122,9 +211,15 @@ fn page_for(rel: &str, src: &str) -> String {
 
 /// Run one test file: (subtests passed, subtests, harness error).
 fn run_file(rel: &str) -> (usize, usize, Vec<String>) {
-    let file = root().join(rel);
+    let file_rel = rel.strip_suffix("#worker").unwrap_or(rel);
+    let file = root().join(file_rel);
     let Ok(src) = std::fs::read_to_string(&file) else { return (0, 1, vec![format!("{rel}: unreadable")]) };
-    let page_rel = rel.strip_suffix(".js").map(|r| format!("{r}.html")).unwrap_or_else(|| rel.to_string());
+    let page_rel = match file_rel.strip_suffix(".any.js") {
+        Some(b) if rel.ends_with("#worker") => format!("{b}.any.worker.html"),
+        _ => {
+            file_rel.strip_suffix(".js").map(|r| format!("{r}.html")).unwrap_or_else(|| file_rel.to_string())
+        }
+    };
     let url = Url::parse(&format!("http://web-platform.test/{page_rel}")).expect("test URL");
     let clock = Rc::new(Cell::new(0.0));
     let emb = Rc::new(TestEmbedder { clock: clock.clone(), start: std::time::Instant::now() });
@@ -132,7 +227,8 @@ fn run_file(rel: &str) -> (usize, usize, Vec<String>) {
     w.load_html(&page_for(rel, &src));
     w.fire_load();
     let mut results = None;
-    for _ in 0..20_000 {
+    let real_start = std::time::Instant::now();
+    for _ in 0..200_000 {
         w.run_tasks();
         if let Ok(bb_js::Value::String(s)) = w.vm.run_script("self.__wpt_results || ''") {
             let s = bb_js::vm::to_rust(&s);
@@ -140,6 +236,11 @@ fn run_file(rel: &str) -> (usize, usize, Vec<String>) {
                 results = Some(s);
                 break;
             }
+        }
+        // Workers run in real time: while they live, wait for them rather than skip ahead.
+        if w.has_live_workers() && real_start.elapsed() < std::time::Duration::from_secs(20) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            continue;
         }
         // Idle: jump to the next timer (or give up after a minute of virtual time).
         match w.next_timer_due() {
@@ -150,7 +251,10 @@ fn run_file(rel: &str) -> (usize, usize, Vec<String>) {
                 }
             }
             _ => {
-                if !w.has_tasks() {
+                if w.has_live_workers() && real_start.elapsed() < std::time::Duration::from_secs(20) {
+                    // Workers run in real time: wait for them.
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                } else if !w.has_tasks() {
                     break;
                 }
             }
@@ -160,6 +264,11 @@ fn run_file(rel: &str) -> (usize, usize, Vec<String>) {
         let mut msgs = vec![format!("{rel}: no results (harness never completed)")];
         for e in w.host.errors.borrow().iter().take(3) {
             msgs.push(format!("{rel}:   error: {e}"));
+        }
+        if std::env::var("WPT_VERBOSE").is_ok() {
+            for l in w.take_console().into_iter().take(10) {
+                msgs.push(format!("{rel}:   console: {l}"));
+            }
         }
         return (0, 1, msgs);
     };
@@ -171,6 +280,11 @@ fn run_file(rel: &str) -> (usize, usize, Vec<String>) {
     };
     let mut passed = 0;
     let mut fails = Vec::new();
+    if std::env::var("WPT_VERBOSE").is_ok() {
+        for l in w.take_console().into_iter().take(10) {
+            fails.push(format!("{rel}:   console: {l}"));
+        }
+    }
     let status = w.vm.run_script("self.__wpt_parsed.status + ' ' + self.__wpt_parsed.message");
     if let Ok(bb_js::Value::String(s)) = status {
         let s = bb_js::vm::to_rust(&s);
@@ -210,16 +324,34 @@ fn collect(dir: &Path, rel: &str, out: &mut Vec<String>) {
             // Not run yet: pages in legacy encodings (the runner reads pages as UTF-8) and
             // streams (no ReadableStream yet).
             let skipped = name.starts_with("legacy-mb-") || (rel == "encoding" && name == "streams");
-            if !skipped && !matches!(name.as_str(), "resources" | "support" | "crashtests" | "tools") {
+            if !skipped
+                && !matches!(
+                    name.as_str(),
+                    "resources" | "support" | "crashtests" | "tools" | "non-automated"
+                )
+            {
                 collect(&p, &r, out);
             }
-        } else if (name.ends_with(".html") || name.ends_with(".window.js") || name.ends_with(".any.js"))
+        } else if (name.ends_with(".html")
+            || name.ends_with(".window.js")
+            || name.ends_with(".any.js")
+            || name.ends_with(".worker.js"))
             && !name.contains("-manual")
             && !name.contains(".https.")
             && !name.contains(".sub.")
             && !name.contains("-ref.")
         {
-            out.push(r);
+            if name.ends_with(".any.js") {
+                let src = std::fs::read_to_string(&p).unwrap_or_default();
+                if any_in_window(&src) {
+                    out.push(r.clone());
+                }
+                if any_in_worker(&src) {
+                    out.push(format!("{r}#worker"));
+                }
+            } else {
+                out.push(r);
+            }
         }
     }
 }

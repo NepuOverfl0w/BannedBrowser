@@ -225,6 +225,12 @@ fn under_test() -> bool {
 }
 
 fn worker(id: u64, client: Arc<Client>, rx: Receiver<TabCmd>, notify: Notify) {
+    // Page workers wake this loop through their own channel (so it never keeps the command
+    // channel alive).
+    let (wake_tx, wake_rx) = crossbeam_channel::unbounded::<()>();
+    bb_engine::script::set_script_waker(Some(Arc::new(move || {
+        let _ = wake_tx.send(());
+    })));
     let mut page: Option<Page> = None;
     let mut last_render: Option<(f32, f32, f32, f32, bool)> = None;
     let mut window_focus = true;
@@ -251,21 +257,23 @@ fn worker(id: u64, client: Arc<Client>, rx: Receiver<TabCmd>, notify: Notify) {
     loop {
         // Wait for a command, or until the page's scripts are due (timers, animation frames).
         let wakeup = page.as_ref().and_then(Page::script_wakeup);
-        let cmd = match wakeup {
-            None => match rx.recv() {
-                Ok(c) => c,
-                Err(_) => break,
-            },
-            Some(d) => match rx.recv_timeout(d) {
-                Ok(c) => c,
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    if let Some(p) = page.as_mut() {
-                        run_page_scripts(id, &notify, p, &last_render, &render);
-                    }
-                    continue;
+        // A long wait when nothing is due: a worker's message wakes it earlier.
+        let wait = wakeup.unwrap_or(std::time::Duration::from_secs(3600));
+        let got = crossbeam_channel::select! {
+            recv(rx) -> c => Some(c),
+            recv(wake_rx) -> _ => None,
+            default(wait) => None,
+        };
+        let cmd = match got {
+            Some(Ok(c)) => c,
+            Some(Err(_)) => break,
+            None => {
+                while wake_rx.try_recv().is_ok() {}
+                if let Some(p) = page.as_mut() {
+                    run_page_scripts(id, &notify, p, &last_render, &render);
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-            },
+                continue;
+            }
         };
         // Coalesce queued render requests: only the newest matters.
         let mut cmd = cmd;

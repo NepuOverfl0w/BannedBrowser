@@ -172,6 +172,13 @@ fn init_fields(c: C) -> Vec<(&'static str, char, Value)> {
             ("total", 'd', Value::Number(0.0)),
         ],
         C::FormDataEvent => vec![("formData", 'F', Value::Undefined)],
+        C::MessageEvent => vec![
+            ("data", 'a', Value::Null),
+            ("lastEventId", 's', js("")),
+            ("origin", 's', js("")),
+            ("ports", 'P', Value::Undefined),
+            ("source", 'a', Value::Null),
+        ],
         C::ErrorEvent => vec![
             ("colno", 'l', Value::Number(0.0)),
             ("error", 'a', Value::Undefined),
@@ -204,6 +211,11 @@ pub fn event_ctor(vm: &mut Vm, c: NativeCall) -> R {
     for (name, kind, def) in init_fields(class) {
         let v = dict_get(vm, &dict, name)?;
         let v = match (kind, &v) {
+            ('P', _) => {
+                // A frozen array of MessagePorts (none can exist here yet, so only empty).
+                let a = vm.new_array(Vec::new());
+                Value::Object(a)
+            }
             ('F', _) => {
                 if !vm.host_data(&v).is_some_and(|(k, _)| k == C::FormData as u32) {
                     return vm.type_error("FormDataEvent needs a FormData formData");
@@ -1180,6 +1192,8 @@ pub fn report_exception(vm: &mut Vm, err: Value) {
     if !handled {
         log::info!("uncaught exception: {msg}");
         h.console.borrow_mut().push(format!("Uncaught {msg}"));
+        // In a worker, an exception its own handlers didn't take goes to the Worker object.
+        crate::worker::unhandled_error(&h, &msg);
         h.errors.borrow_mut().push(msg);
     }
 }

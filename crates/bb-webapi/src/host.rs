@@ -69,6 +69,14 @@ pub trait Embedder {
     fn poll_fetches(&self) -> Vec<(u64, Result<crate::net::HttpResponse, String>)> {
         Vec::new()
     }
+    /// Network access for worker threads (None: workers can't fetch).
+    fn worker_net(&self) -> Option<std::sync::Arc<dyn crate::worker::WorkerNet>> {
+        None
+    }
+    /// Wakes the embedder's event loop from another thread (a worker sent a message).
+    fn waker(&self) -> Option<crate::worker::Waker> {
+        None
+    }
     /// Whether the embedder keeps localStorage (else it lives with the window).
     fn has_storage(&self) -> bool {
         false
@@ -150,6 +158,8 @@ pub enum Task {
     Script(NodeRef),
     /// A step of a FileReader read (File API).
     Read(Box<crate::blob::ReadTask>),
+    /// A message window.postMessage posted: (target, message, the sender's origin).
+    Message(Value, Box<bb_js::vm::clone::Serialized>, String),
 }
 
 /// What a live (or static) collection object lists.
@@ -296,6 +306,10 @@ pub struct Host {
     pub readers: RefCell<Vec<crate::blob::ReaderState>>,
     /// The blob URL store (File API §8.3): URL → Blob.
     pub blob_urls: RefCell<HashMap<String, Value>>,
+    /// Dedicated workers this global started, and (in a worker) its parent.
+    pub workers: RefCell<crate::worker::WorkerState>,
+    /// A worker called close() (HTML §10.2.3).
+    pub closing: Cell<bool>,
 }
 
 impl Host {
@@ -347,6 +361,8 @@ impl Host {
             xml_documents: RefCell::default(),
             readers: RefCell::default(),
             blob_urls: RefCell::default(),
+            workers: RefCell::default(),
+            closing: Cell::new(false),
         }
     }
 
@@ -391,6 +407,7 @@ impl Host {
                     }
                 }
                 Task::Event(t, ..) => push(t, out),
+                Task::Message(t, ..) => push(t, out),
                 Task::Read(r) => {
                     out.push(r.reader);
                     out.push(r.blob);
@@ -403,6 +420,7 @@ impl Host {
         }
         self.mo.borrow().trace(out);
         self.selection.borrow().trace(out);
+        self.workers.borrow().trace(out);
         for v in self.blob_urls.borrow().values() {
             push(v, out);
         }

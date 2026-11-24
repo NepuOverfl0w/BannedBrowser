@@ -31,6 +31,7 @@ pub mod traversal;
 pub mod tree;
 pub mod url;
 pub mod window;
+pub mod worker;
 pub mod xml;
 
 use std::rc::Rc;
@@ -57,18 +58,35 @@ fn report(vm: &mut Vm, e: Value) {
 impl Window {
     /// A new window whose document (empty, at `url`) is document 0.
     pub fn new(url: Url, embedder: Rc<dyn Embedder>) -> Window {
+        Self::build(url, embedder, None)
+    }
+
+    /// A dedicated worker's global scope (HTML §10.2.4 "run a worker"), named `name`.
+    pub fn new_worker(url: Url, embedder: Rc<dyn Embedder>, name: &str) -> Window {
+        Self::build(url, embedder, Some(name))
+    }
+
+    fn build(url: Url, embedder: Rc<dyn Embedder>, worker: Option<&str>) -> Window {
         let mut doc = Document::new();
         doc.url = url.href();
         let host = Rc::new(Host::new(doc, url, embedder));
+        if let Some(n) = worker {
+            host.workers.borrow_mut().name = n.to_string();
+            host.ready_state.set(ReadyState::Complete);
+        }
         let mut vm = Vm::new();
-        vm.can_block = false;
+        // A worker may block (Atomics.wait); a window may not.
+        vm.can_block = worker.is_some();
         vm.host = Some(host.clone());
         vm.host_exotic = Some(Rc::new(collections::Exotic));
         let traced = host.clone();
         vm.host_trace = Some(Box::new(move |out| traced.trace(out)));
         vm.host_report = Some(report);
-        class::install(&mut vm, &host);
+        vm.host_serialize = Some(worker::host_serialize);
+        vm.host_deserialize = Some(worker::host_deserialize);
+        vm.host_clone_error = Some(worker::clone_error);
         host.window.set(Some(vm.realm.global));
+        class::install_scope(&mut vm, &host, worker.is_some());
         Window { vm, host }
     }
 
@@ -97,11 +115,17 @@ impl Window {
         self.host.timers.borrow().iter().map(|t| t.due).reduce(f64::min)
     }
 
+    /// Whether a worker this global started is still running.
+    pub fn has_live_workers(&self) -> bool {
+        self.host.workers.borrow().workers.iter().any(|w| w.alive)
+    }
+
     /// Whether tasks are waiting (queued tasks or animation frame callbacks).
     pub fn has_tasks(&self) -> bool {
         !self.host.tasks.borrow().is_empty()
             || !self.host.frame_callbacks.borrow().is_empty()
             || !self.host.pending.borrow().is_empty()
+            || self.host.workers.borrow().has_messages()
     }
 
     /// Run queued tasks and the timers due now; returns whether anything ran.
@@ -127,8 +151,15 @@ impl Window {
                     net::complete(&mut self.vm, &h, id, r)
                 }
                 host::Task::Read(t) => blob::run_read_task(&mut self.vm, &h, *t),
+                host::Task::Message(t, s, origin) => {
+                    worker::deliver_window_message(&mut self.vm, &h, t, *s, &origin)
+                }
             };
             self.end_task(r);
+        }
+        // Messages and errors from this global's workers.
+        if worker::poll(&mut self.vm, &h) {
+            ran = true;
         }
         // Background requests that finished.
         for (id, r) in h.embedder.poll_fetches() {

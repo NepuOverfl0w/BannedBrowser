@@ -300,3 +300,29 @@ fn blobs_files_form_data_and_crypto() {
     wait_for_change(&mut p, "out", "wait");
     assert_eq!(text(&p, "out"), "11text/plainn.txt|a,b,file|hello world|true|hello|1h.txt11");
 }
+
+#[test]
+fn dedicated_workers_and_structured_clone() {
+    let mut p = page(
+        "<!doctype html><p id=out>wait</p><script>\
+           var src = 'onmessage = function (e) {' +\
+             ' var m = e.data; m.map.set(\"seen\", self.name);' +\
+             ' setTimeout(function () { postMessage({ map: m.map, sum: m.bytes.reduce(function (a, b) { return a + b; }, 0) }); }, 1);' +\
+             ' if (m.fail) { throw new Error(\"boom\"); }' +\
+             '};';\
+           var w = new Worker(URL.createObjectURL(new Blob([src])), { name: 'w1' });\
+           var parts = [];\
+           var copy = structuredClone({ d: new Date(5), r: /a/g, s: new Set([1]) });\
+           parts.push(copy.d.getTime() + copy.r.flags + copy.s.has(1));\
+           w.onerror = function (e) { parts.push('error:' + /boom/.test(e.message)); e.preventDefault(); done(); };\
+           w.onmessage = function (e) { parts.push(e.data.map.get('seen') + e.data.sum); done(); };\
+           var n = 0;\
+           function done() { if (++n == 2) document.getElementById('out').textContent = parts.join('|'); }\
+           w.postMessage({ map: new Map([['a', 1]]), bytes: new Uint8Array([1, 2, 3]), fail: true });\
+         </script>",
+    );
+    wait_for_change(&mut p, "out", "wait");
+    let t = text(&p, "out");
+    assert!(t.starts_with("5gtrue|"), "{t}");
+    assert!(t.contains("w16") && t.contains("error:true"), "{t}");
+}
