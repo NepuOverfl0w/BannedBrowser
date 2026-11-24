@@ -22,9 +22,9 @@ as practical, and the report is credited unless you prefer otherwise.
 
 ## What counts
 
-- Crashes, hangs or panics caused by web content (any parser: URL, HTTP, HTML, CSS, images, fonts).
+- Crashes, hangs or panics caused by web content (any parser: URL, HTTP, HTML, XML, CSS, JavaScript, images, fonts).
 - TLS or certificate-validation bypasses, and mixed-content mistakes.
-- Anything that lets a page read or change data from another site, or escape to the local system.
+- Anything that lets a page read or change data from another site (cookies, storage, another origin's frames or workers), or escape to the local system.
 - Crafted downloads or `file:` handling problems.
 
 Bugs in third-party crates should also go to their own projects; tell us too so we can update.

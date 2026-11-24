@@ -17,7 +17,7 @@ Windows, macOS and Linux. Every web-platform component is ours.
 - v0.1.0 "Hello, Old Web" is released:
   https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0
 - `main` is the development branch.
-- **v0.2 is in progress** (milestones A–M in PROGRESS.md; A and B are done, C is under way).
+- **v0.2 is in progress** (milestones A–M in PROGRESS.md; A–D are done, E (Web APIs) is under way).
   It covers M3–M11 in full, plus:
   - HTTP/2 and HTTP/3
   - WebExtensions parity: uBlock Origin, Privacy Badger, SponsorBlock on youtube.com, SteamDB on store.steampowered.com
@@ -112,11 +112,12 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
 | `crates/bb-dom`, `bb-html`, `bb-xml` | DOM; HTML tokenizer and tree builder; XML parser and serializer |
 | `crates/bb-css`, `bb-style` | CSS parsing and selectors; cascade, computed values, UA sheet, presentational hints |
 | `crates/bb-text` | fonts, fallback, shaping, line breaking and bidi helpers |
-| `crates/bb-image`, `bb-paint` | image decoding; rasterizer, display list, glyph cache |
+| `crates/bb-image`, `bb-paint` | image decoding; rasterizer, display list, glyph cache, the canvas 2D drawing model (`canvas2d.rs`) |
 | `crates/bb-layout` | box tree, layout, paint (display-list building), hit testing, find-in-page |
-| `crates/bb-engine` | the `Page` pipeline, frames (`frames.rs`), focus/keyboard/form controls (`interact.rs`), form submission (`forms.rs`), internal pages |
-| `crates/bb-js` | our own JS engine: parser, bytecode interpreter, GC, built-ins (`src/vm`) |
-| `crates/bb-profile` | the profile on disk: `profile.sqlite` (SQLite via rusqlite) with persistent cookies and prefs, locking, damage recovery |
+| `crates/bb-engine` | the `Page` pipeline, frames (`frames.rs`), focus/keyboard/form controls (`interact.rs`), form submission (`forms.rs`), the page's script host (`script.rs`), internal pages |
+| `crates/bb-js` | our own JS engine: parser, bytecode interpreter, GC, built-ins, structured clone (`src/vm`) |
+| `crates/bb-webapi` | Web APIs over bb-js and bb-dom: DOM bindings, events, the event loop, fetch/XHR, storage, workers, MessageChannel, Canvas 2D |
+| `crates/bb-profile` | the profile on disk: `profile.sqlite` (SQLite via rusqlite) with persistent cookies, localStorage and prefs, locking, damage recovery |
 | `crates/bb-ui` | chrome widget toolkit, themes, original icons, text field |
 | `crates/bannedbrowser` | the binary: CLI, headless mode, GUI (`gui.rs`), tab workers (`tab.rs`) |
 | `resources/` | UA stylesheets, internal pages (`about:*`, error pages), app icons |
@@ -129,6 +130,12 @@ render with `bannedbrowser --headless --screenshot out.png URL` and inspect the 
   - Run `scripts/fetch-spec-tests.sh`, then `cargo test -p bb-url --test wpt_urltestdata -- --nocapture`
     and `cargo test -p bb-html --test html5lib -- --nocapture`, and
     `cargo test -p bb-net --test psl -- --nocapture` (the Public Suffix List's own vectors).
+  - JavaScript: `cargo test -p bb-js --test test262 -- --nocapture` (parse phase) and
+    `--test test262_exec` (execution; `TEST262_FILTER=substring` narrows it).
+  - Web APIs: `cargo test -p bb-webapi --test wpt -- --nocapture` runs WPT testharness.js tests
+    (`WPT_FILTER=dom/nodes/Node-` narrows, `WPT_VERBOSE=1` prints panics and console output,
+    failures go to `target/wpt-failures.txt`). `.any.js` tests also run in a dedicated worker
+    (reported as `X.any.js#worker`); reftests and `non-automated` tests are not run by it.
   - The build downloads the Public Suffix List (`crates/bb-net/build.rs`, with `curl`); bb-net's
     tests need it. Offline, set `BB_PSL_FILE` to a copy.
 - **Reftests:**

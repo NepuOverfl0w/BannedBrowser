@@ -26,9 +26,9 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
   `dom/`, `domparsing/`, `FileAPI/`, `xhr/formdata/`, `url/`, `encoding/` and `fetch/api/headers/` tests
   and `workers/`, `webmessaging/`, structured clone (80263/96451 subtests so far).
-- **JavaScript engine, first part (milestone D in progress):** `bb-js` has a lexer and a parser
+- **JavaScript engine (milestone D):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
-  measured against test262. Its interpreter has started: bytecode compiler, stack VM, garbage
+  measured against test262, and an interpreter: bytecode compiler, stack VM, garbage
   collector and the core built-ins (Object, Function, errors, Array, String, Number, Boolean,
   Symbol, Math, Reflect), then classes, generators, async functions and generators, Promise,
   Proxy, BigInt, JSON, Date, Map/Set and the weak collections, typed arrays and DataView,
@@ -43,8 +43,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   (`RegExp.$1`, `RegExp.lastMatch`, …), proper tail calls, decorators and auto-accessors,
   JSON, text and bytes modules (`import … with { type: "json" }`) and source-phase imports:
   all of test262 (`language`, `built-ins`, `annexB`: 48803 tests, sloppy and strict) passes,
-  and so does Unicode's normalization conformance test.
-  The browser doesn't run page scripts with it yet (that's milestone E).
+  and so does Unicode's normalization conformance test. It also has the structured clone
+  algorithm (serialize, deserialize, transfer) that workers and `postMessage` use.
 - **HTTP/2** (RFC 9113) with our own HPACK (RFC 7541, incl. Huffman coding), negotiated with
   ALPN `h2` over TLS (also through CONNECT proxies); HTTP/1.1 otherwise. One connection per
   origin carries every request to it (multiplexed, up to the server's
@@ -61,8 +61,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   private window.
 - **Profile storage:** a profile directory (`--profile <dir>`, `$BB_PROFILE`, else the
   platform's data directory, e.g. `~/.local/share/BannedBrowser/profile`) with one SQLite
-  database. Persistent cookies survive restarts (session cookies and private windows' cookies
-  are never written); they are saved a moment after they change and at exit. The window size and
+  database. Persistent cookies and `localStorage` survive restarts (session cookies and private
+  windows' cookies and storage are never written); they are saved a moment after they change and at exit. The window size and
   maximized state are restored. A second BannedBrowser on the same profile runs without saving
   instead of overwriting it; a damaged database is moved aside and a new one started; a profile
   from a newer version is left untouched.
@@ -107,7 +107,7 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   Secure, HttpOnly, SameSite), the Public Suffix List (a site can't set cookies for `co.uk` or
   `github.io`), SameSite rules for subresources and frames (unset means Lax), `__Secure-` and
   `__Host-` prefixes, eviction limits. Private windows have their own cookies, forgotten when
-  the last private window closes. Cookies last for the session until profile storage arrives.
+  the last private window closes. Persistent cookies are saved in the profile (see Profile storage).
 - **Public Suffix List kept current:** the list isn't stored in the repository. The build
   downloads it and embeds it, and the browser downloads it again at first start and then at
   most once a day (publicsuffix.org's guidance), installing it only if it is a valid, newer

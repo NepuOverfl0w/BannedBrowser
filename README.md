@@ -23,9 +23,9 @@
 > **Status: [v0.1.0 "Hello, Old Web"](https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0) released.**
 > BannedBrowser renders example.com, theoldnet.com and archived 1990s sites convincingly.
 > Since then `main` (on its way to v0.2) has gained working forms, a persistent profile, an HTTP
-> cache, HTTP/2 and its own JavaScript engine (passing all of test262), which now runs page
-> scripts (the DOM, events, timers). It has no bookmarks or sandboxing yet. See [PROGRESS.md](PROGRESS.md) for the
-> honest details.
+> cache, HTTP/2 and its own JavaScript engine (passing all of test262), which runs page scripts
+> with a growing set of Web APIs: the DOM, events, timers, fetch/XHR, storage, workers, Canvas 2D.
+> It has no bookmarks or sandboxing yet. See [PROGRESS.md](PROGRESS.md) for the honest details.
 
 ## 📑 Contents
 
@@ -99,7 +99,8 @@ cosmic-text, tiny-skia, url, hyper, reqwest, egui, gtk, servo, boa, … (full li
 | CSS tokenizer, parser, selectors, media queries, cascade, `calc()`, `var()` | Font files/discovery: `fontdb` (+`ttf-parser`) |
 | Block/inline/float/table/flex/positioned layout | Shaping: `rustybuzz`; Unicode tables: `unicode-*` |
 | Anti-aliased rasterizer, gradients, shadows, clipping, glyph cache | Image codecs: `png`, `zune-jpeg`, `gif`, `image-webp` (BMP/ICO are ours) |
-| The browser chrome toolkit and icons | Clipboard: `arboard` |
+| The browser chrome toolkit and icons | Clipboard: `arboard`; profile database: `rusqlite` (SQLite) |
+| JavaScript engine (`bb-js`) and every Web API | OS random numbers: `getrandom` |
 
 See [DEPENDENCIES.md](DEPENDENCIES.md) for every crate and why.
 
@@ -166,7 +167,8 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Bidi text | 🚧 basic reordering |
 | Frames: `<frameset>`, `<iframe>` (src/srcdoc), link targets, per-frame scrolling, frame navigations in history | ✅ |
 | SVG | 📋 |
-| JavaScript | 🚧 own engine (all of test262) runs page scripts: the DOM, events, timers, `document.write`; fetch/XHR, storage, workers, canvas and iframes' scripts still to come |
+| JavaScript engine | ✅ our own `bb-js`: all of test262 (`language`, `built-ins`, `annexB`) |
+| Web APIs for scripts | 🚧 the DOM (MutationObserver, Range, TreeWalker, Selection), events, timers, `document.write`, fetch/XHR, URL, TextEncoder, localStorage/sessionStorage, `document.cookie`, DOMParser/XMLSerializer, Blob/File/FileReader/FormData, dedicated workers, MessageChannel, BroadcastChannel, Canvas 2D; scripts in iframes, Shadow DOM, custom elements still to come |
 
 </details>
 
@@ -174,7 +176,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 
 | Site | Status |
 |---|---|
-| example.com | ✅ (static HTML; its JS-added translations need the JS engine) |
+| example.com | ✅ its script runs and adds the translations and "Learn more" link; the SVG icon isn't drawn yet |
 | theoldnet.com (start page + lite) | ✅ |
 | myip.wtf, myip.wtf/headers | ✅ |
 | Archived 1996–99 sites via theoldnet: GeoCities (home + a fan page), Netscape, WinZip, Microsoft IE | ✅ live + offline snapshots |
@@ -190,6 +192,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | test262 execution | **48803 / 48803 (100 %)** |
 | Unicode NormalizationTest (UAX #15) | **all lines + every other code point** |
 | Public Suffix List tests | **78 / 78 (100 %)** |
+| WPT Web API tests (`dom/`, `domparsing/`, `FileAPI/`, `workers/`, `webmessaging/`, `html/canvas/element/`, …) | **80263 / 96451 subtests** (in progress) |
 
 ## 🏗 Architecture
 
@@ -231,12 +234,13 @@ flowchart TB
 | `bb-style` | Cascade, computed values, UA stylesheet, presentational hints |
 | `bb-text` | Font discovery, fallback, shaping, line breaking |
 | `bb-image` | Image decoding |
-| `bb-paint` | Display list & software rasterizer |
+| `bb-paint` | Display list & software rasterizer; the canvas 2D drawing model |
 | `bb-layout` | Box tree, layout, display-list generation, hit testing |
-| `bb-engine` | Per-page pipeline, forms, focus |
-| `bb-profile` | Profile storage (SQLite): cookies, preferences |
+| `bb-engine` | Per-page pipeline, frames, forms, focus, running page scripts |
+| `bb-profile` | Profile storage (SQLite): cookies, localStorage, preferences |
 | `bb-ui` | Chrome widget toolkit & icons |
-| `bb-js` | JavaScript engine: lexer, parser, early errors, RegExp syntax; bytecode interpreter, GC and built-ins (in progress) |
+| `bb-js` | JavaScript engine: lexer, parser, early errors, RegExp; bytecode interpreter, GC, built-ins, modules, structured clone |
+| `bb-webapi` | Web APIs for scripts: DOM bindings, events, the event loop, fetch/XHR, storage, workers, Canvas 2D |
 | `bannedbrowser` | The app: CLI, headless mode, windowed shell |
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -246,7 +250,7 @@ More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 **Prebuilt binaries:** see [Releases](https://github.com/NepuOverfl0w/BannedBrowser/releases)
 (Windows `.zip`, macOS `.app` zip, Linux tarball). The latest is
 [v0.1.0](https://github.com/NepuOverfl0w/BannedBrowser/releases/tag/v0.1.0); it predates forms,
-the profile, the HTTP cache and HTTP/2, which are on `main`.
+the profile, the HTTP cache, HTTP/2 and JavaScript, which are on `main`.
 
 **Build from source** (stable Rust 1.85+):
 
@@ -322,13 +326,15 @@ HTTPS/HTTP proxies are taken from `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `
 
 **`about:` pages:** `about:newtab`, `about:home`, `about:blank`, `about:bannedbrowser`, `about:about`.
 
-**Profile location** (cookies, window size; `--profile` or `BB_PROFILE` overrides it): `%APPDATA%\BannedBrowser\profile`, `~/Library/Application Support/BannedBrowser/profile`, `~/.local/share/BannedBrowser/profile` (`$XDG_DATA_HOME`). The HTTP cache and the downloaded Public Suffix List live under the OS cache directory (`BannedBrowser/http-cache`, `BannedBrowser/psl`).
+**Profile location** (cookies, localStorage, window size; `--profile` or `BB_PROFILE` overrides it): `%APPDATA%\BannedBrowser\profile`, `~/Library/Application Support/BannedBrowser/profile`, `~/.local/share/BannedBrowser/profile` (`$XDG_DATA_HOME`). The HTTP cache and the downloaded Public Suffix List live under the OS cache directory (`BannedBrowser/http-cache`, `BannedBrowser/psl`).
 
 ## 🧾 Testing
 
 ```bash
 scripts/fetch-spec-tests.sh            # html5lib-tests, WPT, test262, PSL tests, entities.json → third_party/
 cargo test --workspace                 # unit, spec, integration, robustness, reftests, snapshots
+cargo test -p bb-js --test test262_exec -- --nocapture   # test262 in our interpreter
+cargo test -p bb-webapi --test wpt -- --nocapture        # WPT testharness.js tests (WPT_FILTER=dom/nodes narrows)
 scripts/run-reftests.sh                # reftests only (diff PNGs in tests/reftests/out/)
 scripts/gui-smoke.sh                   # GUI tests with real OS input (Linux, Windows, macOS)
 scripts/check-deps.sh                  # the no-borrowed-engines rule
@@ -351,18 +357,18 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 - [ ] M7 Layout II (grid, transforms, `@font-face`, …)
 - [x] M8 Forms, cookies, profile storage, HTTP cache
 - [ ] M9 Bookmarks, history, downloads, settings, Reader View, passwords
-- [ ] M10 JavaScript engine (parser and interpreter pass all of test262; Web APIs next)
+- [ ] M10 JavaScript (engine done: all of test262; Web APIs in progress)
 - [ ] M11 DevTools, performance, accessibility, packaging
 
 ## ❓ FAQ
 
 **Why not use Servo / a WebView?** Because then it would be someone else's browser. The whole point is to build the platform ourselves.
 
-**Is it safe for daily browsing?** Not yet. There is no sandboxing or process isolation, and no JavaScript yet (safer, but it breaks many sites). Treat it as an experiment.
+**Is it safe for daily browsing?** Not yet. There is no sandboxing or process isolation, and pages' scripts run in the same process as everything else. Treat it as an experiment.
 
-**Does it run JavaScript?** Yes, with our own engine (`bb-js`, passing all of test262) and Web APIs (`bb-webapi`): scripts can change the DOM, listen to clicks and keys, use timers and `document.write`. `fetch`, XMLHttpRequest, localStorage, cookies, MutationObserver and Range work too. Many Web APIs are still missing (workers, canvas, Shadow DOM, custom elements, scripts in frames), so script-heavy sites may not work yet.
+**Does it run JavaScript?** Yes, with our own engine (`bb-js`, passing all of test262) and Web APIs (`bb-webapi`): scripts can change the DOM, listen to clicks and keys, use timers and `document.write`. `fetch`, XMLHttpRequest, localStorage, cookies, MutationObserver, Range, DOMParser, Blob/FormData, dedicated workers, MessageChannel and Canvas 2D work too. Many Web APIs are still missing (scripts in frames, Shadow DOM, custom elements, streams, module workers, WebGL), so script-heavy sites may not work yet.
 
-**Why Rust?** Memory safety for parsers that eat hostile input all day, great tooling, and fearless threading for the per-tab pipelines. Every engine crate is `#![forbid(unsafe_code)]`.
+**Why Rust?** Memory safety for parsers that eat hostile input all day, great tooling, and fearless threading for the per-tab pipelines. The engine is safe Rust except for a few small, documented OS calls (each `unsafe` block carries a `// SAFETY:` comment, which clippy enforces).
 
 **Why does it look like Firefox?** The chrome is inspired by Firefox's Proton design (floating tabs, roomy URL bar, ≡ menu). It uses no Mozilla code, names, icons or artwork and is not affiliated with Mozilla.
 

@@ -12,7 +12,8 @@ set up and explains how changes are tested. Please also read the
   layout, painting, text layout and the UI toolkit. Crates are only for platform glue.
   `scripts/check-deps.sh` enforces the banned list, and every new crate needs a justification
   in [`DEPENDENCIES.md`](../DEPENDENCIES.md).
-- **No `unsafe`.** The only exception is `crates/bb-media-os` (OS video decoder FFI).
+- **`unsafe` only with a reason.** It is allowed where a feature needs it (OS and GPU FFI, the
+  JIT, performance-critical code), and every block carries a `// SAFETY:` comment (clippy checks).
 - **Never panic on web content.** Every parser gets randomized robustness tests.
 - **Cite the spec** above non-trivial algorithms: `// HTML §13.2.6.4.7 "in body"`.
 - **Never fake progress.** No skipped, excluded or loosened tests, and no hard-coded
@@ -71,7 +72,7 @@ scripts/check-deps.sh --self-test && scripts/check-deps.sh
 | Layer | How | Notes |
 |---|---|---|
 | Unit and robustness tests | `cargo test --workspace` | Every crate. |
-| Spec suites | `scripts/fetch-spec-tests.sh`, then `cargo test -p bb-url --test wpt_urltestdata -- --nocapture` and `cargo test -p bb-html --test html5lib -- --nocapture` | WPT `urltestdata` and html5lib-tests, downloaded into `third_party/`. |
+| Spec suites | `scripts/fetch-spec-tests.sh`, then `cargo test -p bb-url --test wpt_urltestdata -- --nocapture`, `cargo test -p bb-html --test html5lib -- --nocapture`, `cargo test -p bb-js --test test262_exec -- --nocapture` and `cargo test -p bb-webapi --test wpt -- --nocapture` | WPT `urltestdata`, html5lib-tests and WPT tree construction, test262, and WPT's testharness.js tests for the Web APIs, downloaded into `third_party/`. See [TESTING.md](TESTING.md) for the filters. |
 | Network | `cargo test -p bb-net --test http_integration` | Starts `tests/server/testserver.py`, which serves HTTP and HTTPS. Its CA in `tests/certs/` is test-only. |
 | Reftests | `scripts/run-reftests.sh` | `tests/reftests/NAME.html` + `<link rel="match" href="NAME-ref.html">`. Diffs go to `tests/reftests/out/`. |
 | Snapshot regressions | `cargo test -p bb-engine --test snapshots` | Saved real pages compared with `tests/pages/snapshots/approved/`. Rendered with only the bundled fonts in `tests/fonts/`, so results are the same on every OS. |
@@ -113,8 +114,8 @@ These are self-contained pieces from the gap list in `PROGRESS.md`, each testabl
 - **CSS:** counters (`counter-reset`, `counter-increment`, `counter()`); `lab()`/`lch()`/`oklch()`/`color-mix()`;
   `background-origin`/`background-clip`.
 - **Images:** GIF animation.
-- **Frames:** frame navigations in session history.
+- **Frames:** restoring frame scroll positions on Back/Forward.
 - **Find in page:** search inside frames.
 
-Bigger areas (JavaScript, HTTP/3, extensions, video) are the v0.2 plan; check
+Bigger areas (Web APIs, HTTP/3, extensions, video, GPU) are the v0.2 plan; check
 `PROGRESS.md` and open an issue to coordinate before starting one of those.
