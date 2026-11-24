@@ -361,8 +361,17 @@ dependencies = [
  "bb-js",
  "bb-style",
  "bb-url",
+ "bb-xml",
  "encoding_rs",
  "log",
+]
+
+[[package]]
+name = "bb-xml"
+version = "0.2.0-dev"
+dependencies = [
+ "bb-dom",
+ "proptest",
 ]
 
 [[package]]

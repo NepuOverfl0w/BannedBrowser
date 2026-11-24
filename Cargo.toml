@@ -6,6 +6,7 @@ members = [
     "crates/bb-net",
     "crates/bb-dom",
     "crates/bb-html",
+    "crates/bb-xml",
     "crates/bb-css",
     "crates/bb-style",
     "crates/bb-text",
@@ -36,6 +37,7 @@ bb-url = { path = "crates/bb-url" }
 bb-net = { path = "crates/bb-net" }
 bb-dom = { path = "crates/bb-dom" }
 bb-html = { path = "crates/bb-html" }
+bb-xml = { path = "crates/bb-xml" }
 bb-css = { path = "crates/bb-css" }
 bb-style = { path = "crates/bb-style" }
 bb-text = { path = "crates/bb-text" }

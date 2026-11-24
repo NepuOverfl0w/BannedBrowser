@@ -288,6 +288,8 @@ pub struct Host {
     pub traversers: RefCell<Vec<crate::traversal::Traverser>>,
     /// The window's document's selection.
     pub selection: RefCell<crate::selection::State>,
+    /// Documents made by createDocument: their interface is XMLDocument (DOM §4.5.1).
+    pub xml_documents: RefCell<HashSet<u32>>,
 }
 
 impl Host {
@@ -336,6 +338,7 @@ impl Host {
             ranges: RefCell::default(),
             traversers: RefCell::default(),
             selection: RefCell::default(),
+            xml_documents: RefCell::default(),
         }
     }
 
@@ -492,11 +495,13 @@ pub fn wrap(vm: &mut Vm, h: &Host, n: NodeRef) -> JsResult<Value> {
     }
     let mut c = with_doc(vm, h, n.doc, |d| class::node_class(d, n.id))?;
     if c == C::Document {
-        // HTML documents are HTMLDocument, XML ones XMLDocument, `new Document()` Document.
-        c = match h.doc_types.borrow().get(n.doc as usize).map(String::as_str) {
-            Some("text/html") => C::HTMLDocument,
-            Some("") | None => C::Document,
-            Some(_) => C::XMLDocument,
+        // HTML documents are HTMLDocument, createDocument's XMLDocument, others Document.
+        c = if h.doc_types.borrow().get(n.doc as usize).map(String::as_str) == Some("text/html") {
+            C::HTMLDocument
+        } else if h.xml_documents.borrow().contains(&n.doc) {
+            C::XMLDocument
+        } else {
+            C::Document
         };
     }
     let proto = h.proto(c);

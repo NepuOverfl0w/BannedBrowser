@@ -30,6 +30,7 @@ pub mod traversal;
 pub mod tree;
 pub mod url;
 pub mod window;
+pub mod xml;
 
 use std::rc::Rc;
 

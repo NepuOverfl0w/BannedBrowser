@@ -298,12 +298,18 @@ fn serialize_children(d: &Document, id: NodeId) -> String {
 
 pub fn inner_html_get(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let (h, n) = this_node(vm, &c.this, C::Node)?;
+    if crate::xml::in_xml_document(&h, n) {
+        return Ok(js(&crate::xml::serialize_markup(vm, &h, n, true)?));
+    }
     let s = with_doc(vm, &h, n.doc, |d| serialize_children(d, n.id))?;
     Ok(js(&s))
 }
 
 pub fn outer_html_get(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let (h, n) = this_node(vm, &c.this, C::Element)?;
+    if crate::xml::in_xml_document(&h, n) {
+        return Ok(js(&crate::xml::serialize_markup(vm, &h, n, false)?));
+    }
     let s = with_doc(vm, &h, n.doc, |d| bb_dom::serialize_html(d, n.id))?;
     Ok(js(&s))
 }
@@ -323,6 +329,10 @@ fn parse_fragment_scripts(
     markup: &str,
     scripts_run: bool,
 ) -> JsResult<NodeRef> {
+    // XML documents use the XML fragment parsing algorithm (HTML §13.4).
+    if !crate::dom::is_html_doc(h, doc) {
+        return crate::xml::parse_fragment(vm, h, doc, context, markup);
+    }
     let (ns, name) = with_doc(vm, h, context.doc, |d| {
         d.element(context.id).map_or((Namespace::Html, "body".to_string()), |e| (e.ns, e.name.clone()))
     })?;

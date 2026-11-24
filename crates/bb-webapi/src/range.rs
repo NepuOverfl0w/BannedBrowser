@@ -938,6 +938,9 @@ pub fn setup_range(vm: &mut Vm, proto: ObjRef, ctor: ObjRef) {
         Ok(js(&s))
     });
     op(vm, proto, "createContextualFragment", 1, |vm, c| {
+        if c.args.is_empty() {
+            return vm.type_error("createContextualFragment needs 1 argument");
+        }
         let markup = crate::host::rstr(vm, &c.arg(0))?;
         let (h, _, r) = range_this(vm, &c.this, C::Range)?;
         let f = crate::html::create_contextual_fragment(vm, &h, r.start.node, &markup)?;

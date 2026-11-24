@@ -226,6 +226,7 @@ flowchart TB
 | `bb-net` | HTTP/1.1, HTTP/2 (own HPACK), TLS, proxies, content codings, cookies, Public Suffix List, HTTP cache, `data:`/`file:`/`about:`, encoding sniffing |
 | `bb-dom` | Arena DOM with dirty flags |
 | `bb-html` | HTML tokenizer & tree builder |
+| `bb-xml` | XML parser & serializer |
 | `bb-css` | CSS syntax, selectors, media queries, values |
 | `bb-style` | Cascade, computed values, UA stylesheet, presentational hints |
 | `bb-text` | Font discovery, fallback, shaping, line breaking |

@@ -189,6 +189,8 @@ bitflags! {
         const ACTIVE = 16;
         const FOCUS = 32;
         const VISITED = 64;
+        /// A Text node that is a CDATASection (DOM §4.12).
+        const CDATA = 128;
     }
 }
 
@@ -324,6 +326,23 @@ impl Document {
 
     pub fn create_text(&mut self, text: &str) -> NodeId {
         self.alloc(NodeData::Text(text.to_string()))
+    }
+
+    /// A CDATASection node: a Text node flagged [`NodeFlags::CDATA`].
+    pub fn create_cdata(&mut self, text: &str) -> NodeId {
+        let id = self.create_text(text);
+        self.nodes[id.index()].flags |= NodeFlags::CDATA;
+        id
+    }
+
+    /// Mark Text node `id` as a CDATASection.
+    pub fn set_cdata(&mut self, id: NodeId) {
+        self.nodes[id.index()].flags |= NodeFlags::CDATA;
+    }
+
+    /// Whether node `id` is a CDATASection.
+    pub fn is_cdata(&self, id: NodeId) -> bool {
+        self.nodes[id.index()].flags.contains(NodeFlags::CDATA)
     }
 
     pub fn create_comment(&mut self, text: &str) -> NodeId {
@@ -532,6 +551,9 @@ impl Document {
         pairs: &mut Vec<(NodeId, NodeId)>,
     ) -> NodeId {
         let copy = self.alloc_copy(src.nodes[id.index()].data.clone());
+        if src.is_cdata(id) {
+            self.nodes[copy.index()].flags |= NodeFlags::CDATA;
+        }
         pairs.push((id, copy));
         if deep {
             let kids: Vec<NodeId> = src.children(id).collect();

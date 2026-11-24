@@ -439,6 +439,14 @@ pub fn adopt(vm: &mut Vm, h: &Host, node: NodeRef, doc: u32) -> JsResult<NodeRef
         }
     }
     h.mo.borrow_mut().remap(&packed);
+    {
+        let mut started = h.started_scripts.borrow_mut();
+        for &(ok, nk) in &packed {
+            if started.remove(&ok) {
+                started.insert(nk);
+            }
+        }
+    }
     crate::range::remap(h, &packed);
     crate::traversal::remap(h, &packed);
     // Static node lists (mutation records' addedNodes, …) follow too.

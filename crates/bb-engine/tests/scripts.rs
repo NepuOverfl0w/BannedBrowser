@@ -249,3 +249,24 @@ fn mutation_observers_ranges_and_traversal() {
     // `named` is the element with that id (named access on the Window).
     assert_eq!(text(&p, "named"), "brave|BI|xy");
 }
+
+#[test]
+fn dom_parser_and_xml_serializer() {
+    let p = page(
+        "<!doctype html><p id=out></p><script>\
+           var d = new DOMParser().parseFromString(\
+             '<feed xmlns=\"urn:f\"><e n=\"1\">a &amp; b<![CDATA[<x>]]></e></feed>', 'application/xml');\
+           var e = d.documentElement.firstChild;\
+           var bad = new DOMParser().parseFromString('<a><b></a>', 'text/xml');\
+           var html = new DOMParser().parseFromString('<p>hi<script>window.ran = 1</scr' + 'ipt>', 'text/html');\
+           document.body.appendChild(document.adoptNode(html.body.firstChild));\
+           out.textContent = [d.documentElement.namespaceURI, e.getAttribute('n'), e.textContent,\
+             e.lastChild.nodeType, bad.documentElement.localName,\
+             new XMLSerializer().serializeToString(d), typeof window.ran].join('|');\
+         </script>",
+    );
+    assert_eq!(
+        text(&p, "out"),
+        "urn:f|1|a & b<x>|4|parsererror|<feed xmlns=\"urn:f\"><e n=\"1\">a &amp; b<![CDATA[<x>]]></e></feed>|undefined"
+    );
+}

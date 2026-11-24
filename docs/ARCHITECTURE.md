@@ -22,6 +22,7 @@ bytes ─▶ bb-net ─▶ encoding sniff ─▶ bb-html tokenizer ─▶ tree b
 | `bb-net` | HTTP/1.1 client with keep-alive pool, HTTP/2 (`h2/`: framing, HPACK, flow control, one multiplexed connection per origin), TLS (rustls), CONNECT proxies, content codings, redirects, `data:`/`file:`/`about:`, encoding sniffing, the HTTP cache (`cache.rs`, RFC 9111), cookies (`cookies.rs`, RFC 6265bis) and the Public Suffix List (`psl.rs`; embedded by `build.rs`, refreshed daily by the shell) |
 | `bb-dom` | Arena DOM (`NodeId` indices), dirty flags, html5lib dump, serializer; select/option state (`select.rs`) and form control values, checkedness, form owners (`forms.rs`) |
 | `bb-html` | HTML tokenizer (full state machine + entity table) and tree builder (all insertion modes) |
+| `bb-xml` | XML 1.0 + Namespaces parser into bb-dom (internal DTD subset: entities, attribute defaults and types; no external entities; depth and expansion limits), the XML fragment parsing algorithm, and the DOM Parsing XML serializer |
 | `bb-css` | CSS Syntax 3 tokenizer/parser, Selectors 4 matching, media queries, `@supports`, colors, `calc()` |
 | `bb-style` | Cascade, custom properties, computed values, UA stylesheet, HTML presentational hints |
 | `bb-text` | Font discovery (fontdb), CSS font matching + aliases, per-character fallback, shaping (rustybuzz), outlines, UAX #14/#9 helpers, the text editing model shared by the chrome and page form controls (`edit.rs`) |

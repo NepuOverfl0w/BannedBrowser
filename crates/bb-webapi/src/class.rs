@@ -160,6 +160,8 @@ interfaces! {
     NodeIterator: None;
     TreeWalker: None;
     Selection: None;
+    DOMParser: None;
+    XMLSerializer: None;
 }
 
 pub fn name(c: C) -> &'static str {
@@ -300,6 +302,7 @@ pub fn node_class(doc: &Document, id: NodeId) -> C {
             Namespace::MathMl => C::MathMLElement,
             _ => C::Element,
         },
+        NodeData::Text(_) if doc.is_cdata(id) => C::CDATASection,
         NodeData::Text(_) => C::Text,
         NodeData::Comment(_) => C::Comment,
         NodeData::ProcessingInstruction { .. } => C::ProcessingInstruction,
@@ -337,6 +340,8 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::URLSearchParams => (crate::url::params_ctor, 0),
         C::MutationObserver => (crate::mutation::observer_ctor, 1),
         C::Range => (crate::range::range_ctor, 0),
+        C::DOMParser => (crate::xml::dom_parser_ctor, 0),
+        C::XMLSerializer => (crate::xml::xml_serializer_ctor, 0),
         C::StaticRange => (crate::range::static_range_ctor, 1),
         _ => return None,
     })
@@ -440,6 +445,8 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::NodeIterator => crate::traversal::setup_node_iterator(vm, proto),
         C::TreeWalker => crate::traversal::setup_tree_walker(vm, proto),
         C::Selection => crate::selection::setup_selection(vm, proto),
+        C::DOMParser => crate::xml::setup_dom_parser(vm, proto),
+        C::XMLSerializer => crate::xml::setup_xml_serializer(vm, proto),
         _ => crate::html::setup_element_interface(vm, c, proto),
     }
 }

@@ -1,0 +1,18 @@
+[package]
+name = "bb-xml"
+description = "XML 1.0 and Namespaces in XML parser into bb-dom, and the XML serializer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bb-dom.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

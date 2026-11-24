@@ -1241,6 +1241,90 @@ pub struct XhrState {
     /// Bumped by open()/abort(), so a stale completion is ignored.
     pub generation: u64,
     pub mime_override: Option<String>,
+    /// The document response, once made: (generation it is for, document index or None).
+    pub doc: Option<(u64, Option<u32>)>,
+}
+
+/// XMLHttpRequest's "document response": the response parsed as HTML (for responseType
+/// "document" only) or XML, made once per request; null for other types or an XML error.
+fn document_response(vm: &mut Vm, h: &Host, id: usize) -> R {
+    let (cached, gen, ty, done, response, mime_override) = {
+        let xs = h.xhrs.borrow();
+        let Some(x) = xs.get(id) else { return Ok(Value::Null) };
+        (
+            x.doc,
+            x.generation,
+            x.response_type.clone(),
+            x.state == 4 && !x.error,
+            x.response.clone(),
+            x.mime_override.clone(),
+        )
+    };
+    if !done {
+        return Ok(Value::Null);
+    }
+    if let Some((g, d)) = cached {
+        if g == gen {
+            return match d {
+                Some(d) => wrap(vm, h, NodeRef { doc: d, id: bb_dom::Document::ROOT }),
+                None => Ok(Value::Null),
+            };
+        }
+    }
+    let Some(r) = response else { return Ok(Value::Null) };
+    // The final MIME type: the override, else Content-Type, else text/xml.
+    let mime = mime_override
+        .or_else(|| {
+            r.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("content-type")).map(|(_, v)| v.clone())
+        })
+        .unwrap_or_else(|| "text/xml".to_string());
+    let essence = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let charset = mime.split(';').skip(1).find_map(|p| {
+        let (k, v) = p.split_once('=')?;
+        k.trim().eq_ignore_ascii_case("charset").then(|| v.trim().trim_matches('"').to_string())
+    });
+    let is_html = essence == "text/html";
+    let is_xml = essence == "text/xml" || essence == "application/xml" || essence.ends_with("+xml");
+    let doc = if is_html && ty == "document" {
+        let enc = charset
+            .as_deref()
+            .and_then(|c| encoding_rs::Encoding::for_label(c.as_bytes()))
+            .unwrap_or(encoding_rs::UTF_8);
+        let (text, _, _) = enc.decode(&r.body);
+        let idx = crate::dom::new_document(h, "text/html");
+        let mut d = bb_html::parse_document(&text);
+        d.url = r.url.href();
+        h.docs.borrow_mut()[idx as usize] = d;
+        Some(idx)
+    } else if is_xml {
+        let label = charset.or_else(|| bb_xml::sniff_encoding(&r.body));
+        let enc = label
+            .as_deref()
+            .and_then(|c| encoding_rs::Encoding::for_label(c.as_bytes()))
+            .unwrap_or(encoding_rs::UTF_8);
+        let (text, _, _) = enc.decode(&r.body);
+        match bb_xml::parse(&text) {
+            Ok(mut d) => {
+                d.url = r.url.href();
+                let idx = crate::dom::new_document(h, &essence);
+                h.docs.borrow_mut()[idx as usize] = d;
+                Some(idx)
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    if let Some(d) = doc {
+        crate::xml::mark_scripts_started(h, d);
+    }
+    if let Some(x) = h.xhrs.borrow_mut().get_mut(id) {
+        x.doc = Some((gen, doc));
+    }
+    match doc {
+        Some(d) => wrap(vm, h, NodeRef { doc: d, id: bb_dom::Document::ROOT }),
+        None => Ok(Value::Null),
+    }
 }
 
 fn xhr_of(vm: &mut Vm, c: &NativeCall) -> JsResult<(Rc<Host>, ObjRef, usize)> {
@@ -1614,12 +1698,26 @@ pub fn setup_xhr(vm: &mut Vm, proto: ObjRef, ctor: ObjRef) {
                     Ok(json_parse(vm, &text).unwrap_or(Value::Null))
                 }
                 "arraybuffer" => Ok(Value::Object(vm.new_array_buffer(body.unwrap_or_default()))),
+                "document" => document_response(vm, &h, id),
                 _ => Ok(Value::Null),
             }
         },
         None,
     );
-    attr(vm, proto, "responseXML", |_, _| Ok(Value::Null), None);
+    attr(
+        vm,
+        proto,
+        "responseXML",
+        |vm, c| {
+            let (h, _, id) = xhr_of(vm, &c)?;
+            let ty = h.xhrs.borrow().get(id).map(|x| x.response_type.clone()).unwrap_or_default();
+            if !(ty.is_empty() || ty == "document") {
+                return throw(vm, "InvalidStateError", "responseXML is only for document responses");
+            }
+            document_response(vm, &h, id)
+        },
+        None,
+    );
     attr(
         vm,
         proto,

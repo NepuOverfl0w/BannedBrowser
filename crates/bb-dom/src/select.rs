@@ -529,7 +529,14 @@ impl Document {
                 }
                 copy
             }
-            other => self.alloc(other),
+            other => {
+                let cdata = self.is_cdata(id);
+                let c = self.alloc(other);
+                if cdata {
+                    self.set_cdata(c);
+                }
+                c
+            }
         };
         if deep {
             let kids: Vec<NodeId> = self.children(id).collect();

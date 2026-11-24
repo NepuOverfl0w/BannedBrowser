@@ -123,6 +123,15 @@ fn tag_name(h: &Host, doc: u32, e: &bb_dom::ElementData) -> String {
     }
 }
 
+/// A node's nodeType (DOM §4.4), CDATA sections included.
+pub fn node_type_at(d: &Document, id: NodeId) -> u16 {
+    if d.is_cdata(id) {
+        4
+    } else {
+        node_type(&d.node(id).data)
+    }
+}
+
 pub fn node_type(d: &NodeData) -> u16 {
     match d {
         NodeData::Element(_) => 1,
@@ -200,7 +209,7 @@ pub fn setup_node(vm: &mut Vm, proto: ObjRef, ctor: ObjRef) {
                 return Ok(Value::Number(2.0));
             }
             let (h, n) = this(vm, &c)?;
-            let t = with_doc(vm, &h, n.doc, |d| node_type(&d.node(n.id).data))?;
+            let t = with_doc(vm, &h, n.doc, |d| node_type_at(d, n.id))?;
             Ok(Value::Number(t as f64))
         },
         None,
@@ -216,6 +225,7 @@ pub fn setup_node(vm: &mut Vm, proto: ObjRef, ctor: ObjRef) {
             let (h, n) = this(vm, &c)?;
             let s = with_doc(vm, &h, n.doc, |d| match &d.node(n.id).data {
                 NodeData::Element(e) => tag_name(&h, n.doc, e),
+                NodeData::Text(_) if d.is_cdata(n.id) => "#cdata-section".into(),
                 NodeData::Text(_) => "#text".into(),
                 NodeData::Comment(_) => "#comment".into(),
                 NodeData::Document => "#document".into(),
@@ -592,6 +602,9 @@ pub fn clone_node(vm: &mut Vm, h: &Host, n: NodeRef, deep: bool) -> JsResult<Nod
         // A new document of the same type, with copies of the children.
         let ty = h.doc_types.borrow().get(n.doc as usize).cloned().unwrap_or_default();
         let nd = new_document(h, &ty);
+        if h.xml_documents.borrow().contains(&n.doc) {
+            h.xml_documents.borrow_mut().insert(nd);
+        }
         if deep {
             let mut docs = h.docs.borrow_mut();
             let kids: Vec<NodeId> = docs[n.doc as usize].children(Document::ROOT).collect();
@@ -607,6 +620,22 @@ pub fn clone_node(vm: &mut Vm, h: &Host, n: NodeRef, deep: bool) -> JsResult<Nod
         return Ok(NodeRef { doc: nd, id: Document::ROOT });
     }
     let id = with_doc_mut(vm, h, n.doc, |d| d.clone_node(n.id, deep))?;
+    // HTML §4.12.1 cloning steps: a script's "already started" goes with its clone.
+    let started: Vec<u64> = {
+        let set = h.started_scripts.borrow();
+        if set.is_empty() {
+            Vec::new()
+        } else {
+            with_doc(vm, h, n.doc, |d| {
+                d.descendants(n.id)
+                    .zip(d.descendants(id))
+                    .filter(|(a, _)| set.contains(&n.with(*a).pack()))
+                    .map(|(_, b)| n.with(b).pack())
+                    .collect()
+            })?
+        }
+    };
+    h.started_scripts.borrow_mut().extend(started);
     Ok(n.with(id))
 }
 
@@ -1110,6 +1139,19 @@ pub fn setup_document(vm: &mut Vm, proto: ObjRef) {
         None,
     );
     attr(vm, proto, "documentElement", |vm, c| node_rel(vm, &c, |d, _| d.document_element()), None);
+    // SVG 2's Document extension: the document element when it is an SVG <svg>.
+    attr(
+        vm,
+        proto,
+        "rootElement",
+        |vm, c| {
+            node_rel(vm, &c, |d, _| {
+                d.document_element()
+                    .filter(|&e| d.element(e).is_some_and(|x| x.ns == Namespace::Svg && x.name == "svg"))
+            })
+        },
+        None,
+    );
     attr(vm, proto, "head", |vm, c| node_rel(vm, &c, |d, _| d.head()), None);
     attr(vm, proto, "body", |vm, c| node_rel(vm, &c, |d, _| d.body()), Some(body_set));
     attr(
@@ -1224,7 +1266,7 @@ pub fn setup_document(vm: &mut Vm, proto: ObjRef) {
         if s.contains("]]>") {
             return throw(vm, "InvalidCharacterError", "the data contains ']]>'");
         }
-        let id = with_doc_mut(vm, &h, n.doc, |d| d.create_text(&s))?;
+        let id = with_doc_mut(vm, &h, n.doc, |d| d.create_cdata(&s))?;
         wrap(vm, &h, n.with(id))
     });
     op(vm, proto, "createComment", 1, |vm, c| {
@@ -1395,6 +1437,7 @@ pub fn setup_implementation(vm: &mut Vm, proto: ObjRef) {
         };
         let element = if q.is_empty() { None } else { Some(validate_and_extract(vm, ns, &q, true)?) };
         let nd = new_document(&h, ty);
+        h.xml_documents.borrow_mut().insert(nd);
         let url = with_doc(vm, &h, d as u32, |x| x.url.clone())?;
         h.docs.borrow_mut()[nd as usize].url = url;
         let root = NodeRef { doc: nd, id: Document::ROOT };

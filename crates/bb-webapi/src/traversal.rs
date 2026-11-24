@@ -124,7 +124,7 @@ fn filter(vm: &mut Vm, h: &Host, id: usize, obj: ObjRef, node: NodeRef) -> JsRes
         return throw(vm, "InvalidStateError", "the filter is already running");
     }
     // Steps 2–4.
-    let ty = with_doc(vm, h, node.doc, |d| crate::dom::node_type(&d.node(node.id).data))?;
+    let ty = with_doc(vm, h, node.doc, |d| crate::dom::node_type_at(d, node.id))?;
     if t.what_to_show & (1 << (ty - 1)) == 0 {
         return Ok(SKIP);
     }
