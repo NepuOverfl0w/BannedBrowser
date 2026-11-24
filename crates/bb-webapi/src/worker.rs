@@ -176,6 +176,12 @@ pub fn clone_error(vm: &mut Vm, msg: &str) -> Value {
     crate::exception::make(vm, "DataCloneError", msg)
 }
 
+/// A postMessage's second argument: a transfer list, or StructuredSerializeOptions.
+pub fn transfer_arg(vm: &mut Vm, v: &Value) -> JsResult<Vec<ObjRef>> {
+    let dict = matches!(v, Value::Object(_)) && !is_sequence(vm, v);
+    transfer_list(vm, v, dict)
+}
+
 /// A transfer list from `transfer` (a sequence of ArrayBuffers) or an options dictionary's
 /// `transfer` member.
 fn transfer_list(vm: &mut Vm, v: &Value, dict: bool) -> JsResult<Vec<ObjRef>> {
@@ -244,12 +250,50 @@ fn fire_message(
     origin: &str,
     source: Value,
 ) -> JsResult<()> {
+    fire_message_full(vm, h, target, ty, data, origin, source, Vec::new())
+}
+
+/// A trusted MessageEvent `ty` carrying `data` sent from `origin`, at `target`.
+pub fn fire_message_from(
+    vm: &mut Vm,
+    h: &Host,
+    target: Value,
+    ty: &str,
+    data: Value,
+    origin: &str,
+) -> JsResult<()> {
+    fire_message_full(vm, h, target, ty, data, origin, Value::Null, Vec::new())
+}
+
+/// A trusted MessageEvent `ty` carrying `data` and the transferred `ports`, at `target`.
+pub fn fire_message_with_ports(
+    vm: &mut Vm,
+    h: &Host,
+    target: Value,
+    ty: &str,
+    data: Value,
+    ports: Vec<Value>,
+) -> JsResult<()> {
+    fire_message_full(vm, h, target, ty, data, "", Value::Null, ports)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fire_message_full(
+    vm: &mut Vm,
+    h: &Host,
+    target: Value,
+    ty: &str,
+    data: Value,
+    origin: &str,
+    source: Value,
+    ports: Vec<Value>,
+) -> JsResult<()> {
     let e = crate::events::trusted_event(vm, h, C::MessageEvent, ty, false, false);
     crate::events::set_field(vm, e, "data", data);
     crate::events::set_field(vm, e, "origin", js(origin));
     crate::events::set_field(vm, e, "lastEventId", js(""));
     crate::events::set_field(vm, e, "source", source);
-    let ports = vm.new_array(Vec::new());
+    let ports = vm.new_array(ports);
     crate::events::set_field(vm, e, "ports", Value::Object(ports));
     crate::events::dispatch(vm, h, e, target)?;
     Ok(())
@@ -308,8 +352,8 @@ pub fn deliver_window_message(
     s: Serialized,
     origin: &str,
 ) -> JsResult<()> {
-    match vm.structured_deserialize(s) {
-        Ok(data) => fire_message(vm, h, target.clone(), "message", data, origin, target),
+    match vm.structured_deserialize_with_transfer(s) {
+        Ok((data, ports)) => fire_message_full(vm, h, target.clone(), "message", data, origin, target, ports),
         Err(_) => fire_message(vm, h, target.clone(), "messageerror", Value::Null, origin, target),
     }
 }
@@ -470,8 +514,8 @@ pub fn poll(vm: &mut Vm, h: &Host) -> bool {
     let any = !got.is_empty();
     for (o, m) in got {
         let r = match m {
-            FromWorker::Message(s) => match vm.structured_deserialize(s) {
-                Ok(data) => fire_message(vm, h, Value::Object(o), "message", data, "", Value::Null),
+            FromWorker::Message(s) => match vm.structured_deserialize_with_transfer(s) {
+                Ok((data, ports)) => fire_message_with_ports(vm, h, Value::Object(o), "message", data, ports),
                 Err(_) => fire_message(vm, h, Value::Object(o), "messageerror", Value::Null, "", Value::Null),
             },
             FromWorker::Error(msg) => {
@@ -777,8 +821,8 @@ impl crate::Window {
         let g = h.window.get().map_or(Value::Undefined, Value::Object);
         self.vm.terminated = false;
         self.vm.fuel = Some(crate::SCRIPT_FUEL);
-        let r = match self.vm.structured_deserialize(s) {
-            Ok(data) => fire_message(&mut self.vm, &h, g, "message", data, "", Value::Null),
+        let r = match self.vm.structured_deserialize_with_transfer(s) {
+            Ok((data, ports)) => fire_message_with_ports(&mut self.vm, &h, g, "message", data, ports),
             Err(_) => fire_message(&mut self.vm, &h, g, "messageerror", Value::Null, "", Value::Null),
         };
         if let Err(e) = r {

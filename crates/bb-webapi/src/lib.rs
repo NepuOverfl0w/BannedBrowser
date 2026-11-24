@@ -24,6 +24,7 @@ pub mod idl;
 pub mod loader;
 pub mod mutation;
 pub mod net;
+pub mod port;
 pub mod range;
 pub mod selection;
 pub mod storage;
@@ -85,6 +86,9 @@ impl Window {
         vm.host_serialize = Some(worker::host_serialize);
         vm.host_deserialize = Some(worker::host_deserialize);
         vm.host_clone_error = Some(worker::clone_error);
+        vm.host_transferable = Some(port::transferable);
+        vm.host_transfer = Some(port::transfer);
+        vm.host_receive = Some(port::receive);
         host.window.set(Some(vm.realm.global));
         class::install_scope(&mut vm, &host, worker.is_some());
         Window { vm, host }
@@ -126,6 +130,7 @@ impl Window {
             || !self.host.frame_callbacks.borrow().is_empty()
             || !self.host.pending.borrow().is_empty()
             || self.host.workers.borrow().has_messages()
+            || port::has_messages(&self.host)
     }
 
     /// Run queued tasks and the timers due now; returns whether anything ran.
@@ -157,8 +162,14 @@ impl Window {
             };
             self.end_task(r);
         }
-        // Messages and errors from this global's workers.
+        // Messages and errors from this global's workers, and messages to its ports.
         if worker::poll(&mut self.vm, &h) {
+            ran = true;
+        }
+        if port::poll(&mut self.vm, &h) {
+            ran = true;
+        }
+        if port::poll_broadcasts(&mut self.vm, &h) {
             ran = true;
         }
         // Background requests that finished.

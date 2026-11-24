@@ -310,6 +310,10 @@ pub struct Host {
     pub workers: RefCell<crate::worker::WorkerState>,
     /// A worker called close() (HTML §10.2.3).
     pub closing: Cell<bool>,
+    /// MessagePorts living in this global, by the objects' payloads.
+    pub ports: RefCell<Vec<crate::port::PortState>>,
+    /// BroadcastChannels of this global.
+    pub broadcasts: RefCell<Vec<crate::port::BroadcastState>>,
 }
 
 impl Host {
@@ -363,6 +367,8 @@ impl Host {
             blob_urls: RefCell::default(),
             workers: RefCell::default(),
             closing: Cell::new(false),
+            ports: RefCell::default(),
+            broadcasts: RefCell::default(),
         }
     }
 
@@ -421,6 +427,8 @@ impl Host {
         self.mo.borrow().trace(out);
         self.selection.borrow().trace(out);
         self.workers.borrow().trace(out);
+        crate::port::trace(self, out);
+        crate::port::trace_broadcasts(self, out);
         for v in self.blob_urls.borrow().values() {
             push(v, out);
         }

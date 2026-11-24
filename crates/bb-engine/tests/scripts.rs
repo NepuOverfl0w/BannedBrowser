@@ -326,3 +326,24 @@ fn dedicated_workers_and_structured_clone() {
     assert!(t.starts_with("5gtrue|"), "{t}");
     assert!(t.contains("w16") && t.contains("error:true"), "{t}");
 }
+
+#[test]
+fn message_channels_and_ports_in_workers() {
+    let mut p = page(
+        "<!doctype html><p id=out>wait</p><script>\
+           var parts = [];\
+           var ch = new MessageChannel();\
+           ch.port1.onmessage = function (e) { parts.push('local:' + e.data); next(); };\
+           ch.port2.postMessage('tick');\
+           var w = new Worker(URL.createObjectURL(new Blob([\
+             'onmessage = function (e) { e.ports[0].postMessage(\"via port \" + e.data); };'])));\
+           var ch2 = new MessageChannel();\
+           ch2.port1.onmessage = function (e) { parts.push(e.data); next(); };\
+           w.postMessage('hello', [ch2.port2]);\
+           var n = 0;\
+           function next() { if (++n == 2) document.getElementById('out').textContent = parts.sort().join('|'); }\
+         </script>",
+    );
+    wait_for_change(&mut p, "out", "wait");
+    assert_eq!(text(&p, "out"), "local:tick|via port hello");
+}

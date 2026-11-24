@@ -186,6 +186,16 @@ pub struct Vm {
     pub host_deserialize: Option<fn(&mut Vm, &clone::HostSer) -> JsResult<Value>>,
     /// Makes the DataCloneError structured clone throws.
     pub host_clone_error: Option<fn(&mut Vm, &str) -> Value>,
+    /// Whether a platform object is transferable (a MessagePort that isn't detached).
+    pub host_transferable: Option<fn(&Vm, ObjRef) -> bool>,
+    /// Detaches a transferable platform object into something another agent can receive.
+    #[allow(clippy::type_complexity)]
+    pub host_transfer: Option<fn(&mut Vm, ObjRef) -> JsResult<Box<dyn std::any::Any + Send>>>,
+    /// Recreates a transferred platform object here.
+    #[allow(clippy::type_complexity)]
+    pub host_receive: Option<fn(&mut Vm, Box<dyn std::any::Any + Send>) -> JsResult<Value>>,
+    /// The transferred platform objects of the deserialization in progress.
+    host_revived: Vec<Value>,
     /// Pending Atomics.waitAsync promises of this agent.
     async_waits: Vec<atomics::AsyncWait>,
     /// [[CanBlock]]: whether Atomics.wait may suspend this agent (hosts like a browser's
@@ -233,6 +243,10 @@ impl Vm {
             host_serialize: None,
             host_deserialize: None,
             host_clone_error: None,
+            host_transferable: None,
+            host_transfer: None,
+            host_receive: None,
+            host_revived: Vec::new(),
             async_waits: Vec::new(),
             can_block: true,
             realms: vec![None],

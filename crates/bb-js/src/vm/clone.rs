@@ -72,13 +72,17 @@ pub enum SerObj {
     },
     Object(Vec<(Vec<u16>, Ser)>),
     Host(HostSer),
+    /// A transferred platform object (a MessagePort): index into
+    /// [`Serialized::host_transferred`].
+    HostTransfer(u32),
 }
 
-/// What StructuredSerializeWithTransfer makes: the value and the transferred buffers.
-#[derive(Clone)]
+/// What StructuredSerializeWithTransfer makes: the value, the transferred buffers, and the
+/// transferred platform objects (what the host's `host_transfer` made of them).
 pub struct Serialized {
     pub root: Ser,
     pub transferred: Vec<(Vec<u8>, Option<usize>)>,
+    pub host_transferred: Vec<Box<dyn std::any::Any + Send>>,
 }
 
 // A Serialized crosses threads (that is its point): checked here at compile time.
@@ -102,6 +106,7 @@ struct SerState {
     memory: HashMap<ObjRef, u32>,
     next: u32,
     transfer: Vec<ObjRef>,
+    host_transfer: Vec<ObjRef>,
     depth: usize,
 }
 
@@ -116,17 +121,30 @@ impl Vm {
     /// HTML §2.7.4 StructuredSerializeWithTransfer (ArrayBuffers in the transfer list are
     /// detached here and travel in [`Serialized::transferred`]).
     pub fn structured_serialize(&mut self, v: &Value, transfer: &[ObjRef]) -> JsResult<Serialized> {
-        let mut st = SerState { memory: HashMap::new(), next: 0, transfer: Vec::new(), depth: 0 };
-        // Steps 1–2: the transfer list holds distinct, non-shared ArrayBuffers.
+        let mut st = SerState {
+            memory: HashMap::new(),
+            next: 0,
+            transfer: Vec::new(),
+            host_transfer: Vec::new(),
+            depth: 0,
+        };
+        // Steps 1–2: the transfer list holds distinct transferables: non-shared ArrayBuffers
+        // and the host's transferable platform objects.
         for (i, &t) in transfer.iter().enumerate() {
-            let ok = matches!(&self.heap.obj(t).kind, Kind::ArrayBuffer(b) if !b.shared && b.bytes.is_some());
-            if !ok {
-                return self.clone_error("only unshared, undetached ArrayBuffers can be transferred");
-            }
             if transfer[..i].contains(&t) {
-                return self.clone_error("an ArrayBuffer is in the transfer list twice");
+                return self.clone_error("an object is in the transfer list twice");
             }
-            st.transfer.push(t);
+            let buffer =
+                matches!(&self.heap.obj(t).kind, Kind::ArrayBuffer(b) if !b.shared && b.bytes.is_some());
+            if buffer {
+                st.transfer.push(t);
+                continue;
+            }
+            if self.host_transferable.is_some_and(|f| f(self, t)) {
+                st.host_transfer.push(t);
+                continue;
+            }
+            return self.clone_error("only unshared ArrayBuffers and message ports can be transferred");
         }
         let root = self.ser(v, &mut st)?;
         // Step 5: detach the transferred buffers.
@@ -139,7 +157,14 @@ impl Vm {
                 None => return self.clone_error("a transferred ArrayBuffer was detached"),
             }
         }
-        Ok(Serialized { root, transferred })
+        let mut host_transferred = Vec::with_capacity(st.host_transfer.len());
+        for &t in &st.host_transfer {
+            match self.host_transfer {
+                Some(f) => host_transferred.push(f(self, t)?),
+                None => return self.clone_error("this object can't be transferred"),
+            }
+        }
+        Ok(Serialized { root, transferred, host_transferred })
     }
 
     fn ser(&mut self, v: &Value, st: &mut SerState) -> JsResult<Ser> {
@@ -155,6 +180,12 @@ impl Vm {
         };
         if let Some(&id) = st.memory.get(&o) {
             return Ok(Ser::Ref(id));
+        }
+        if let Some(i) = st.host_transfer.iter().position(|&t| t == o) {
+            let id = st.next;
+            st.next += 1;
+            st.memory.insert(o, id);
+            return Ok(Ser::Object(id, Box::new(SerObj::HostTransfer(i as u32))));
         }
         st.depth += 1;
         if st.depth > MAX_DEPTH {
@@ -322,10 +353,26 @@ impl Vm {
 
     /// HTML §2.7.6 StructuredDeserialize (with the transferred buffers of §2.7.7).
     pub fn structured_deserialize(&mut self, s: Serialized) -> JsResult<Value> {
+        self.structured_deserialize_with_transfer(s).map(|(v, _)| v)
+    }
+
+    /// StructuredDeserializeWithTransfer (HTML §2.7.7): the value, and the transferred
+    /// platform objects recreated (in transfer-list order: a MessageEvent's ports).
+    pub fn structured_deserialize_with_transfer(&mut self, s: Serialized) -> JsResult<(Value, Vec<Value>)> {
+        let mut revived = Vec::with_capacity(s.host_transferred.len());
+        for t in s.host_transferred {
+            match self.host_receive {
+                Some(f) => revived.push(f(self, t)?),
+                None => return self.clone_error("a transferred object can't be received here"),
+            }
+        }
         let mut memory: HashMap<u32, ObjRef> = HashMap::new();
         let mut transferred: Vec<Option<(Vec<u8>, Option<usize>)>> =
             s.transferred.into_iter().map(Some).collect();
-        self.de(&s.root, &mut memory, &mut transferred)
+        self.host_revived = revived;
+        let r = self.de(&s.root, &mut memory, &mut transferred);
+        let revived = std::mem::take(&mut self.host_revived);
+        Ok((r?, revived))
     }
 
     fn de(
@@ -394,6 +441,10 @@ impl Vm {
                 }
                 e
             }
+            SerObj::HostTransfer(i) => match self.host_revived.get(*i as usize) {
+                Some(Value::Object(o)) => *o,
+                _ => return self.clone_error("a malformed serialization"),
+            },
             SerObj::Host(h) => match self.host_deserialize {
                 Some(f) => match f(self, h)? {
                     Value::Object(o) => o,

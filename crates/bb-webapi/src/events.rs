@@ -987,6 +987,17 @@ fn handler_set(vm: &mut Vm, c: NativeCall) -> R {
     Ok(Value::Undefined)
 }
 
+/// The value of event handler `name` of `t` (for interfaces with their own handler setters).
+pub fn handler_value(vm: &mut Vm, h: &Host, t: ObjRef, name: &str) -> R {
+    current_handler(vm, h, t, name)
+}
+
+/// Set event handler `name` of `t` to `v` (a function; anything else is null).
+pub fn set_handler_value(vm: &mut Vm, h: &Host, t: ObjRef, name: &str, v: Value) {
+    let v = if vm.is_callable(&v) { v } else { Value::Null };
+    set_handler(h, t, name, v);
+}
+
 /// Set handler `name` of `t` (a function, source text, or null), registering its listener
 /// the first time (HTML §8.1.8.1 "activate an event handler").
 fn set_handler(h: &Host, t: ObjRef, name: &str, v: Value) {

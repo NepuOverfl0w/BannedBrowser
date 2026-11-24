@@ -174,6 +174,9 @@ interfaces! {
     DedicatedWorkerGlobalScope: WorkerGlobalScope;
     WorkerLocation: None;
     WorkerNavigator: None;
+    MessageChannel: None;
+    MessagePort: EventTarget;
+    BroadcastChannel: EventTarget;
 }
 
 pub fn name(c: C) -> &'static str {
@@ -360,6 +363,8 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::FormDataEvent => (crate::events::event_ctor, 2),
         C::MessageEvent => (crate::events::event_ctor, 1),
         C::Worker => (crate::worker::worker_ctor, 1),
+        C::MessageChannel => (crate::port::message_channel_ctor, 0),
+        C::BroadcastChannel => (crate::port::broadcast_channel_ctor, 1),
         C::XMLSerializer => (crate::xml::xml_serializer_ctor, 0),
         C::StaticRange => (crate::range::static_range_ctor, 1),
         _ => return None,
@@ -399,6 +404,9 @@ fn exposed_in_worker(c: C) -> bool {
             | C::DedicatedWorkerGlobalScope
             | C::WorkerLocation
             | C::WorkerNavigator
+            | C::MessageChannel
+            | C::MessagePort
+            | C::BroadcastChannel
     )
 }
 
@@ -537,6 +545,9 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::Crypto => crate::blob::setup_crypto(vm, proto),
         C::MessageEvent => crate::worker::setup_message_event(vm, proto),
         C::Worker => crate::worker::setup_worker(vm, proto),
+        C::MessageChannel => crate::port::setup_message_channel(vm, proto),
+        C::MessagePort => crate::port::setup_message_port(vm, proto),
+        C::BroadcastChannel => crate::port::setup_broadcast_channel(vm, proto),
         C::WorkerGlobalScope | C::DedicatedWorkerGlobalScope | C::WorkerLocation | C::WorkerNavigator => {}
         C::XMLSerializer => crate::xml::setup_xml_serializer(vm, proto),
         _ => crate::html::setup_element_interface(vm, c, proto),
