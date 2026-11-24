@@ -22,6 +22,8 @@ const DIRS: &[&str] = &[
     "dom/events",
     "dom/lists",
     "dom/abort",
+    "dom/ranges",
+    "dom/traversal",
     "url",
     "encoding",
     "fetch/api/headers",
@@ -236,7 +238,10 @@ fn wpt() {
     let next = AtomicUsize::new(0);
     let totals = Mutex::new((0usize, 0usize, 0usize, Vec::<String>::new(), Vec::<String>::new()));
     let per_dir = Mutex::new(std::collections::BTreeMap::<String, (usize, usize)>::new());
-    std::panic::set_hook(Box::new(|_| {}));
+    // Panics are counted (and fail the run); WPT_VERBOSE shows them.
+    if std::env::var("WPT_VERBOSE").is_err() {
+        std::panic::set_hook(Box::new(|_| {}));
+    }
     let threads = std::env::var("WPT_THREADS")
         .ok()
         .and_then(|v| v.parse().ok())

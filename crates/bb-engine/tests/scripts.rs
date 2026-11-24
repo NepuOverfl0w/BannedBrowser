@@ -217,3 +217,35 @@ fn storage_and_cookies() {
     let p3 = Page::from_html(&client, second, &other, cfg, 200, false);
     assert_eq!(text(&p3, "o"), "{} 0 ");
 }
+
+#[test]
+fn mutation_observers_ranges_and_traversal() {
+    let p = page(
+        "<!doctype html><ul id=list><li>one</li></ul><p id=log></p><p id=r>Hello brave world</p>\
+         <p id=walk><b>x</b><i>y</i></p><p id=named></p>\
+         <script>\
+           var log = [];\
+           var mo = new MutationObserver(function (records) {\
+             records.forEach(function (r) { log.push(r.type + ':' + (r.attributeName || r.addedNodes.length)); });\
+             document.getElementById('log').textContent = log.join(',');\
+           });\
+           mo.observe(list, { childList: true, attributes: true, subtree: true });\
+           var li = document.createElement('li'); li.textContent = 'two'; list.appendChild(li);\
+           list.setAttribute('data-x', '1');\
+           var range = document.createRange();\
+           var t = document.getElementById('r').firstChild;\
+           range.setStart(t, 6); range.setEnd(t, 11);\
+           var picked = range.toString();\
+           range.deleteContents();\
+           var w = document.createTreeWalker(document.getElementById('walk'), NodeFilter.SHOW_ELEMENT);\
+           var tags = []; while (w.nextNode()) tags.push(w.currentNode.tagName);\
+           getSelection().selectAllChildren(document.getElementById('walk'));\
+           named.textContent = picked + '|' + tags.join('') + '|' + getSelection().toString();\
+         </script>",
+    );
+    // The observer ran at the microtask checkpoint after the script.
+    assert_eq!(text(&p, "log"), "childList:1,attributes:data-x");
+    assert_eq!(text(&p, "r"), "Hello  world");
+    // `named` is the element with that id (named access on the Window).
+    assert_eq!(text(&p, "named"), "brave|BI|xy");
+}

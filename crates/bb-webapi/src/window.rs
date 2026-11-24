@@ -3,10 +3,12 @@
 //! base64. Window is a [Global] interface, so its members live on the global object itself
 //! (WebIDL §3.7.6).
 
+use bb_dom::NodeId;
 use bb_js::vm::heap::{NativeCall, ObjRef};
-use bb_js::vm::PropKey;
+use bb_js::vm::{realm, PropKey};
 use bb_js::{JsResult, Value, Vm};
 
+use crate::class::C;
 use crate::exception::throw;
 use crate::host::*;
 use crate::idl::{attr, constant, op};
@@ -176,7 +178,6 @@ fn create_html(vm: &mut Vm, name: &str) -> JsResult<(std::rc::Rc<Host>, NodeRef)
 /// The legacy factory functions Image (HTML §4.8.3), Option (§4.10.10) and Audio
 /// (§4.8.11.1): constructors whose prototype is the element interface's.
 fn install_factories(vm: &mut Vm, g: ObjRef) {
-    use crate::class::C;
     let Ok(h) = host(vm) else { return };
     for (name, len, f, iface) in [
         (
@@ -600,4 +601,114 @@ pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+// ---- named access on the Window object (HTML §7.2.2.3) ----
+
+/// The class of the WindowProperties object (WebIDL "named properties object"), which is
+/// no interface of its own.
+pub const WINDOW_PROPERTIES: u32 = 0xffff_0001;
+
+/// Whether element `x` of `d` is a named object for `name` (HTML §7.2.2.3, without
+/// navigables: embed, form, img and object by name; any HTML element by id).
+fn is_named(d: &bb_dom::Document, x: NodeId, name: &str) -> bool {
+    let Some(e) = d.element(x) else { return false };
+    if e.ns != bb_dom::Namespace::Html {
+        return false;
+    }
+    if matches!(e.name.as_str(), "embed" | "form" | "img" | "object") && e.attr("name") == Some(name) {
+        return true;
+    }
+    e.attr("id") == Some(name)
+}
+
+/// The named objects for `name`, in tree order.
+pub fn named_objects(h: &Host, name: &str) -> Vec<NodeId> {
+    if name.is_empty() {
+        return Vec::new();
+    }
+    let Ok(docs) = h.docs.try_borrow() else { return Vec::new() };
+    let d = &docs[0];
+    d.descendants(bb_dom::Document::ROOT).filter(|&x| is_named(d, x, name)).collect()
+}
+
+/// The Window's supported property names, in tree order without duplicates.
+fn window_names(h: &Host) -> Vec<String> {
+    let Ok(docs) = h.docs.try_borrow() else { return Vec::new() };
+    let d = &docs[0];
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for x in d.descendants(bb_dom::Document::ROOT) {
+        let Some(e) = d.element(x) else { continue };
+        if e.ns != bb_dom::Namespace::Html {
+            continue;
+        }
+        let mut push = |s: &str| {
+            if !s.is_empty() && seen.insert(s.to_string()) {
+                out.push(s.to_string());
+            }
+        };
+        if matches!(e.name.as_str(), "embed" | "form" | "img" | "object") {
+            if let Some(n) = e.attr("name") {
+                push(n);
+            }
+        }
+        if let Some(i) = e.attr("id") {
+            push(i);
+        }
+    }
+    out
+}
+
+/// The named property's value: the element, or an HTMLCollection when there are several.
+fn named_value(vm: &mut Vm, h: &Host, name: &str) -> JsResult<Option<Value>> {
+    let nodes = named_objects(h, name);
+    match nodes.len() {
+        0 => Ok(None),
+        1 => wrap(vm, h, NodeRef { doc: 0, id: nodes[0] }).map(Some),
+        _ => crate::collections::collection(vm, h, CollKind::WindowNamed(name.to_string()), None).map(Some),
+    }
+}
+
+/// WebIDL named property visibility for the Window `w` (the named properties object's global).
+fn visible(vm: &mut Vm, w: ObjRef, k: &PropKey) -> JsResult<bool> {
+    if vm.heap.obj(w).props.get(k).is_some() {
+        return Ok(false);
+    }
+    let mut p = vm.heap.obj(w).proto;
+    while let Some(o) = p {
+        let named = matches!(vm.host_data(&Value::Object(o)), Some((c, _)) if c == WINDOW_PROPERTIES);
+        if !named && vm.heap.obj(o).props.get(k).is_some() {
+            return Ok(false);
+        }
+        p = vm.heap.obj(o).proto;
+    }
+    Ok(true)
+}
+
+/// The named properties object's [[GetOwnProperty]] (WebIDL §3.7.4.1).
+pub fn properties_get_own(vm: &mut Vm, k: &PropKey) -> JsResult<Option<bb_js::vm::object::PropDesc>> {
+    let PropKey::Str(_) = k else { return Ok(None) };
+    let h = host(vm)?;
+    let Some(w) = h.window.get() else { return Ok(None) };
+    let name = k.display();
+    if !visible(vm, w, k)? {
+        return Ok(None);
+    }
+    Ok(named_value(vm, &h, &name)?.map(|v| bb_js::vm::object::PropDesc::data(v, true, false, true)))
+}
+
+pub fn properties_keys(vm: &mut Vm) -> JsResult<Vec<PropKey>> {
+    let h = host(vm)?;
+    Ok(window_names(&h).iter().map(|n| PropKey::named(n)).collect())
+}
+
+/// Put the WindowProperties object between Window.prototype and EventTarget.prototype.
+pub fn install_window_properties(vm: &mut Vm, h: &Host) {
+    let wp = h.proto(C::Window);
+    let et = h.proto(C::EventTarget);
+    let o = vm.new_host_object(Some(et), WINDOW_PROPERTIES, 0, true);
+    realm::to_string_tag(vm, o, "WindowProperties");
+    vm.heap.obj_mut(wp).proto = Some(o);
+    h.misc.borrow_mut().insert("WindowProperties", o);
 }

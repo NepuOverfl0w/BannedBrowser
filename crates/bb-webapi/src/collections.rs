@@ -54,6 +54,10 @@ pub fn items(h: &Host, kind: &CollKind) -> Vec<NodeRef> {
         CollKind::ChildNodes(n) => {
             doc_of(n).map(|d| d.children(n.id).map(|k| n.with(k)).collect()).unwrap_or_default()
         }
+        CollKind::WindowNamed(name) => {
+            drop(docs);
+            crate::window::named_objects(h, name).into_iter().map(|id| NodeRef { doc: 0, id }).collect()
+        }
         CollKind::Children(n) => {
             doc_of(n).map(|d| d.element_children(n.id).map(|k| n.with(k)).collect()).unwrap_or_default()
         }
@@ -262,7 +266,7 @@ fn token_this(vm: &mut Vm, c: &NativeCall) -> JsResult<(std::rc::Rc<Host>, NodeR
 
 fn set_tokens(vm: &mut Vm, h: &Host, n: NodeRef, toks: &[String]) -> JsResult<()> {
     let v = toks.join(" ");
-    with_doc_mut(vm, h, n.doc, |d| d.set_attr(n.id, "class", &v))
+    crate::mutation::set_or_remove(vm, h, n, "class", Some(&v))
 }
 
 /// DOM §7.1 "validate a token".
@@ -398,7 +402,7 @@ pub fn setup_token_list(vm: &mut Vm, proto: ObjRef) {
         Some(|vm, c| {
             let v = rstr(vm, &c.arg(0))?;
             let (h, n) = token_this(vm, &c)?;
-            with_doc_mut(vm, &h, n.doc, |d| d.set_attr(n.id, "class", &v))?;
+            crate::mutation::set_or_remove(vm, &h, n, "class", Some(&v))?;
             Ok(Value::Undefined)
         }),
     );
@@ -510,6 +514,9 @@ impl HostExotic for Exotic {
         id: u64,
         k: &PropKey,
     ) -> JsResult<Option<PropDesc>> {
+        if class == crate::window::WINDOW_PROPERTIES {
+            return crate::window::properties_get_own(vm, k);
+        }
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
         if c == C::Storage {
             if matches!(k, PropKey::Sym(_)) {
@@ -547,6 +554,9 @@ impl HostExotic for Exotic {
     }
 
     fn own_keys(&self, vm: &mut Vm, o: ObjRef, class: u32, id: u64) -> JsResult<Vec<PropKey>> {
+        if class == crate::window::WINDOW_PROPERTIES {
+            return crate::window::properties_keys(vm);
+        }
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(Vec::new()) };
         if c == C::Storage {
             let mut keys = Vec::new();
@@ -577,6 +587,10 @@ impl HostExotic for Exotic {
         k: &PropKey,
         d: &PropDesc,
     ) -> JsResult<Option<bool>> {
+        // WebIDL §3.7.4.2: the named properties object refuses definitions.
+        if class == crate::window::WINDOW_PROPERTIES {
+            return Ok(Some(false));
+        }
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
         if c == C::Storage {
             return crate::storage::define(vm, &h, id, k, d);
@@ -600,6 +614,10 @@ impl HostExotic for Exotic {
     }
 
     fn delete(&self, vm: &mut Vm, o: ObjRef, class: u32, id: u64, k: &PropKey) -> JsResult<Option<bool>> {
+        // WebIDL §3.7.4.3.
+        if class == crate::window::WINDOW_PROPERTIES {
+            return Ok(Some(false));
+        }
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
         if c == C::Storage {
             return crate::storage::delete(vm, &h, id, k);

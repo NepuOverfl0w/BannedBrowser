@@ -51,7 +51,7 @@ pub fn setup_input(vm: &mut Vm, proto: ObjRef) {
         Some(|vm, c| {
             let v = rstr(vm, &c.arg(0))?;
             let (h, n) = el(vm, &c, C::HTMLInputElement)?;
-            with_doc_mut(vm, &h, n.doc, |d| d.set_attr(n.id, "type", &v))?;
+            crate::mutation::set_or_remove(vm, &h, n, "type", Some(&v))?;
             Ok(Value::Undefined)
         }),
     );
@@ -105,7 +105,7 @@ pub fn setup_button(vm: &mut Vm, proto: ObjRef) {
         Some(|vm, c| {
             let v = rstr(vm, &c.arg(0))?;
             let (h, n) = el(vm, &c, C::HTMLButtonElement)?;
-            with_doc_mut(vm, &h, n.doc, |d| d.set_attr(n.id, "type", &v))?;
+            crate::mutation::set_or_remove(vm, &h, n, "type", Some(&v))?;
             Ok(Value::Undefined)
         }),
     );
@@ -255,7 +255,7 @@ pub fn setup_option(vm: &mut Vm, proto: ObjRef) {
         Some(|vm, c| {
             let v = rstr(vm, &c.arg(0))?;
             let (h, n) = el(vm, &c, C::HTMLOptionElement)?;
-            with_doc_mut(vm, &h, n.doc, |d| d.set_attr(n.id, "value", &v))?;
+            crate::mutation::set_or_remove(vm, &h, n, "value", Some(&v))?;
             Ok(Value::Undefined)
         }),
     );
@@ -340,7 +340,7 @@ pub fn setup_form(vm: &mut Vm, proto: ObjRef) {
         Some(|vm, c| {
             let v = rstr(vm, &c.arg(0))?;
             let (h, n) = el(vm, &c, C::HTMLFormElement)?;
-            with_doc_mut(vm, &h, n.doc, |d| d.set_attr(n.id, "method", &v))?;
+            crate::mutation::set_or_remove(vm, &h, n, "method", Some(&v))?;
             Ok(Value::Undefined)
         }),
     );

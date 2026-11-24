@@ -359,7 +359,7 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 
 **Is it safe for daily browsing?** Not yet. There is no sandboxing or process isolation, and no JavaScript yet (safer, but it breaks many sites). Treat it as an experiment.
 
-**Does it run JavaScript?** Yes, with our own engine (`bb-js`, passing all of test262) and Web APIs (`bb-webapi`): scripts can change the DOM, listen to clicks and keys, use timers and `document.write`. Many Web APIs are still missing (fetch, XHR, storage, workers, canvas, scripts in frames), so script-heavy sites may not work yet.
+**Does it run JavaScript?** Yes, with our own engine (`bb-js`, passing all of test262) and Web APIs (`bb-webapi`): scripts can change the DOM, listen to clicks and keys, use timers and `document.write`. `fetch`, XMLHttpRequest, localStorage, cookies, MutationObserver and Range work too. Many Web APIs are still missing (workers, canvas, Shadow DOM, custom elements, scripts in frames), so script-heavy sites may not work yet.
 
 **Why Rust?** Memory safety for parsers that eat hostile input all day, great tooling, and fearless threading for the per-tab pipelines. Every engine crate is `#![forbid(unsafe_code)]`.
 

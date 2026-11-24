@@ -15,10 +15,11 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   `requestAnimationFrame`, `queueMicrotask`, console, `location` and `navigator`, `element.style`,
   `getComputedStyle` and element geometry (`getBoundingClientRect`, `offsetWidth`, …), `fetch()`,
   XMLHttpRequest, AbortController, URL/URLSearchParams, TextEncoder/TextDecoder, `localStorage`
-  (saved in the profile), `sessionStorage` and `document.cookie`. The parser
+  (saved in the profile), `sessionStorage` and `document.cookie`, MutationObserver, Range and
+  StaticRange, NodeIterator and TreeWalker, `getSelection()` and named access on the Window. The parser
   runs scripts as it goes, with `document.write`; script changes restyle and relayout the
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
-  `dom/`, `url/`, `encoding/` and `fetch/api/headers/` tests (23833/31990 subtests so far).
+  `dom/`, `url/`, `encoding/` and `fetch/api/headers/` tests (65800/74082 subtests so far).
 - **JavaScript engine, first part (milestone D in progress):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262. Its interpreter has started: bytecode compiler, stack VM, garbage

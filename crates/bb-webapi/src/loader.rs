@@ -16,18 +16,55 @@ use crate::host::*;
 
 /// Run the parser on document 0 until a script element closes (or until the tokenizer
 /// passes `end`, for document.write).
-fn pump(h: &Host, end: Option<usize>) -> Option<NodeId> {
-    let mut p = h.parser.try_borrow_mut().ok()?;
-    let tb = p.as_mut()?;
-    let mut docs = h.docs.try_borrow_mut().ok()?;
-    std::mem::swap(&mut tb.doc, &mut docs[0]);
-    let r = match end {
-        Some(e) => tb.pump_until(e),
-        None => tb.pump(),
+fn pump(vm: &mut Vm, h: &Host, end: Option<usize>) -> Option<NodeId> {
+    let (r, before) = {
+        let mut p = h.parser.try_borrow_mut().ok()?;
+        let tb = p.as_mut()?;
+        let mut docs = h.docs.try_borrow_mut().ok()?;
+        let before = docs[0].len();
+        std::mem::swap(&mut tb.doc, &mut docs[0]);
+        let r = match end {
+            Some(e) => tb.pump_until(e),
+            None => tb.pump(),
+        };
+        std::mem::swap(&mut tb.doc, &mut docs[0]);
+        h.dirty.set(true);
+        (r, before)
     };
-    std::mem::swap(&mut tb.doc, &mut docs[0]);
-    h.dirty.set(true);
+    parsed_records(vm, h, before);
     r
+}
+
+/// Mutation records for the nodes the parser inserted (HTML §13.2.6.1 "insert an element
+/// at the adjusted insertion location" inserts each node as it is created, so each gets a
+/// childList record on its parent). New nodes are the ones past `before` in the arena.
+fn parsed_records(vm: &mut Vm, h: &Host, before: usize) {
+    if !h.mo.borrow().any() {
+        return;
+    }
+    let recs: Vec<(NodeId, NodeId, Option<NodeId>, Option<NodeId>)> = {
+        let Ok(docs) = h.docs.try_borrow() else { return };
+        let d = &docs[0];
+        (before..d.len())
+            .filter_map(|i| {
+                let id = NodeId(i as u32);
+                let p = d.parent(id)?;
+                // Siblings as they were when it went in: earlier nodes before it; after it,
+                // only nodes that were there already (foster parenting inserts before them).
+                let prev = d.prev_sibling(id).filter(|x| x.0 < id.0);
+                let next = d.next_sibling(id).filter(|x| (x.0 as usize) < before);
+                Some((id, p, prev, next))
+            })
+            .collect()
+    };
+    let n = |id: NodeId| NodeRef { doc: 0, id };
+    for (id, p, prev, next) in recs {
+        if let Err(e) =
+            crate::mutation::tree_record(vm, h, n(p), vec![n(id)], Vec::new(), prev.map(n), next.map(n))
+        {
+            crate::events::report_exception(vm, e);
+        }
+    }
 }
 
 /// Parse `html` into document 0, running its scripts; then the end of parsing (deferred
@@ -38,8 +75,11 @@ pub fn load(vm: &mut Vm, h: &Host, html: &str) {
     tb.set_scripting(true);
     *h.parser.borrow_mut() = Some(Box::new(tb));
     h.ready_state.set(ReadyState::Loading);
-    while let Some(script) = pump(h, None) {
+    while let Some(script) = pump(vm, h, None) {
         register_handlers(vm, h);
+        // HTML §13.2.6.4.8 a "script" end tag: a microtask checkpoint first (the JavaScript
+        // execution context stack is empty here).
+        vm.run_jobs();
         prepare_script(vm, h, NodeRef { doc: 0, id: script }, true);
     }
     *h.parser.borrow_mut() = None;
@@ -299,7 +339,7 @@ pub fn document_write(vm: &mut Vm, c: &NativeCall, newline: bool) -> JsResult<Va
     h.write_ends.borrow_mut().push(end);
     loop {
         let end = h.write_ends.borrow().last().copied().unwrap_or(end);
-        match pump(&h, Some(end)) {
+        match pump(vm, &h, Some(end)) {
             Some(script) => {
                 register_handlers(vm, &h);
                 prepare_script(vm, &h, NodeRef { doc: 0, id: script }, true);

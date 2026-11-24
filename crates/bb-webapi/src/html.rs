@@ -119,11 +119,7 @@ fn reflect_set(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
         _ => Some(rstr(vm, &c.arg(0))?),
     };
     let (h, n) = this_node(vm, &c.this, C::Element)?;
-    with_doc_mut(vm, &h, n.doc, |d| match &v {
-        Some(s) => d.set_attr(n.id, &name, s),
-        None => d.remove_attr(n.id, &name),
-    })?;
-    crate::events::attribute_changed(vm, &h, n, &name)?;
+    crate::mutation::set_or_remove(vm, &h, n, &name, v.as_deref())?;
     Ok(Value::Undefined)
 }
 
@@ -165,7 +161,7 @@ pub fn setup_html_element(vm: &mut Vm, proto: ObjRef) {
         Some(|vm, c| {
             let v = rstr(vm, &c.arg(0))?;
             let (h, n) = this_node(vm, &c.this, C::HTMLElement)?;
-            with_doc_mut(vm, &h, n.doc, |d| d.set_attr(n.id, "dir", &v))?;
+            crate::mutation::set_or_remove(vm, &h, n, "dir", Some(&v))?;
             Ok(Value::Undefined)
         }),
     );
@@ -192,7 +188,7 @@ pub fn setup_html_element(vm: &mut Vm, proto: ObjRef) {
         Some(|vm, c| {
             let v = vm.to_int32(&c.arg(0))?;
             let (h, n) = this_node(vm, &c.this, C::HTMLElement)?;
-            with_doc_mut(vm, &h, n.doc, |d| d.set_attr(n.id, "tabindex", &v.to_string()))?;
+            crate::mutation::set_or_remove(vm, &h, n, "tabindex", Some(&v.to_string()))?;
             Ok(Value::Undefined)
         }),
     );
@@ -315,6 +311,18 @@ pub fn outer_html_get(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
 /// HTML §13.4 fragment parsing with `context`, imported into document `doc` as a fragment.
 /// Scripts in it never run (they are marked "already started").
 fn parse_fragment_into(vm: &mut Vm, h: &Host, doc: u32, context: NodeRef, markup: &str) -> JsResult<NodeRef> {
+    parse_fragment_scripts(vm, h, doc, context, markup, false)
+}
+
+/// Fragment parsing; `scripts_run` leaves the scripts able to run when inserted.
+fn parse_fragment_scripts(
+    vm: &mut Vm,
+    h: &Host,
+    doc: u32,
+    context: NodeRef,
+    markup: &str,
+    scripts_run: bool,
+) -> JsResult<NodeRef> {
     let (ns, name) = with_doc(vm, h, context.doc, |d| {
         d.element(context.id).map_or((Namespace::Html, "body".to_string()), |e| (e.ns, e.name.clone()))
     })?;
@@ -337,8 +345,33 @@ fn parse_fragment_into(vm: &mut Vm, h: &Host, doc: u32, context: NodeRef, markup
             .map(|(_, new)| NodeRef { doc, id: *new }.pack())
             .collect()
     })?;
-    h.started_scripts.borrow_mut().extend(scripts);
+    if !scripts_run {
+        h.started_scripts.borrow_mut().extend(scripts);
+    }
     Ok(NodeRef { doc, id: frag })
+}
+
+/// Range.createContextualFragment (HTML "DOM parsing and serialization APIs"): parse
+/// `markup` in the context of `node` (the range's start node). Unlike innerHTML, its
+/// scripts run when the fragment is inserted.
+pub fn create_contextual_fragment(vm: &mut Vm, h: &Host, node: NodeRef, markup: &str) -> JsResult<NodeRef> {
+    // Steps 1–5: the context element.
+    let element = with_doc(vm, h, node.doc, |d| match &d.node(node.id).data {
+        NodeData::Element(_) => Some(node.id),
+        NodeData::Text(_) | NodeData::Comment(_) => d.parent(node.id).filter(|&p| d.element(p).is_some()),
+        _ => None,
+    })?;
+    let is_html_root = match element {
+        Some(e) => {
+            with_doc(vm, h, node.doc, |d| crate::dom::is_html_doc(h, node.doc) && d.is_html(e, "html"))?
+        }
+        None => true,
+    };
+    let context = match element {
+        Some(e) if !is_html_root => node.with(e),
+        _ => node.with(with_doc_mut(vm, h, node.doc, |d| d.create_html_element("body"))?),
+    };
+    parse_fragment_scripts(vm, h, node.doc, context, markup, true)
 }
 
 pub fn inner_html_set(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
@@ -468,7 +501,7 @@ fn data_attr_name(vm: &mut Vm, name: &str) -> JsResult<String> {
 pub fn dataset_set(vm: &mut Vm, h: &Host, kind: &CollKind, name: &str, v: &str) -> JsResult<bool> {
     let Some(n) = dataset_element(kind) else { return Ok(false) };
     let a = data_attr_name(vm, name)?;
-    with_doc_mut(vm, h, n.doc, |d| d.set_attr(n.id, &a, v))?;
+    crate::mutation::set_or_remove(vm, h, n, &a, Some(v))?;
     Ok(true)
 }
 
@@ -502,7 +535,7 @@ pub fn dataset_delete(vm: &mut Vm, h: &Host, kind: &CollKind, k: &PropKey) -> Js
         return Ok(None);
     }
     let Ok(a) = data_attr_name(vm, &name) else { return Ok(Some(true)) };
-    with_doc_mut(vm, h, n.doc, |d| d.remove_attr(n.id, &a))?;
+    crate::mutation::set_or_remove(vm, h, n, &a, None)?;
     Ok(Some(true))
 }
 
@@ -556,7 +589,7 @@ fn hyperlink_set(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
     let v = rstr(vm, &c.arg(0))?;
     let (h, n, url, _) = hyperlink_url(vm, &c)?;
     if part == "href" {
-        with_doc_mut(vm, &h, n.doc, |d| d.set_attr(n.id, "href", &v))?;
+        crate::mutation::set_or_remove(vm, &h, n, "href", Some(&v))?;
         return Ok(Value::Undefined);
     }
     // Without a URL (or with an opaque path, for most parts) nothing changes.
@@ -574,7 +607,7 @@ fn hyperlink_set(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
         _ => return Ok(Value::Undefined),
     }
     let href = u.href();
-    with_doc_mut(vm, &h, n.doc, |d| d.set_attr(n.id, "href", &href))?;
+    crate::mutation::set_or_remove(vm, &h, n, "href", Some(&href))?;
     Ok(Value::Undefined)
 }
 

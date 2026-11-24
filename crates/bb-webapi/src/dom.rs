@@ -123,7 +123,7 @@ fn tag_name(h: &Host, doc: u32, e: &bb_dom::ElementData) -> String {
     }
 }
 
-fn node_type(d: &NodeData) -> u16 {
+pub fn node_type(d: &NodeData) -> u16 {
     match d {
         NodeData::Element(_) => 1,
         NodeData::Text(_) => 3,
@@ -333,7 +333,7 @@ pub fn setup_node(vm: &mut Vm, proto: ObjRef, ctor: ObjRef) {
             return Ok(Value::Undefined);
         }
         let (h, n) = this(vm, &c)?;
-        with_doc_mut(vm, &h, n.doc, |d| normalize(d, n.id))?;
+        normalize(vm, &h, n)?;
         Ok(Value::Undefined)
     });
     op(vm, proto, "cloneNode", 0, |vm, c| {
@@ -483,7 +483,7 @@ fn node_value_set(vm: &mut Vm, c: NativeCall) -> R {
     let (h, n) = this(vm, &c)?;
     let is_cd = with_doc(vm, &h, n.doc, |d| char_data(d, n.id).is_some())?;
     if is_cd {
-        with_doc_mut(vm, &h, n.doc, |d| d.set_text(n.id, &v))?;
+        crate::mutation::set_data(vm, &h, n, &v)?;
     }
     Ok(Value::Undefined)
 }
@@ -524,45 +524,65 @@ pub fn text_content_set(vm: &mut Vm, c: NativeCall) -> R {
             };
             tree::replace_all(vm, &h, node, n)?;
         }
-        2 => with_doc_mut(vm, &h, n.doc, |d| d.set_text(n.id, &v))?,
+        2 => crate::mutation::set_data(vm, &h, n, &v)?,
         _ => {}
     }
     Ok(Value::Undefined)
 }
 
 /// Node.normalize (DOM §4.4).
-fn normalize(d: &mut Document, root: NodeId) {
-    let texts: Vec<NodeId> =
-        d.descendants(root).filter(|&x| matches!(d.node(x).data, NodeData::Text(_))).collect();
+fn normalize(vm: &mut Vm, h: &Host, root: NodeRef) -> JsResult<()> {
+    let texts: Vec<NodeId> = with_doc(vm, h, root.doc, |d| {
+        d.descendants(root.id)
+            .filter(|&x| x != root.id && matches!(d.node(x).data, NodeData::Text(_)))
+            .collect()
+    })?;
     for t in texts {
-        if d.parent(t).is_none() && t != root {
-            continue; // removed while merging
-        }
-        let len = d.node(t).as_text().map_or(0, str::len);
-        if len == 0 {
-            d.detach(t);
+        let node = root.with(t);
+        // Merged into an earlier node (removed) meanwhile?
+        let inside = with_doc(vm, h, root.doc, |d| d.ancestors(t).any(|a| a == root.id))?;
+        if !inside {
             continue;
         }
-        let mut data = d.node(t).as_text().unwrap_or("").to_string();
-        let mut cur = d.next_sibling(t);
-        let mut merged = Vec::new();
-        while let Some(x) = cur {
-            match d.node(x).as_text() {
-                Some(s) => {
-                    data.push_str(s);
-                    merged.push(x);
-                    cur = d.next_sibling(x);
-                }
-                None => break,
-            }
+        // Steps 1–2.
+        let mut len = with_doc(vm, h, root.doc, |d| crate::range::node_len(d, t))?;
+        if len == 0 {
+            tree::remove(vm, h, node, false)?;
+            continue;
         }
-        if !merged.is_empty() {
-            d.set_text(t, &data);
-            for m in merged {
-                d.detach(m);
+        // Steps 3–4.
+        let (data, following) = with_doc(vm, h, root.doc, |d| {
+            let mut s = String::new();
+            let mut nodes = Vec::new();
+            let mut cur = d.next_sibling(t);
+            while let Some(x) = cur {
+                let Some(text) = d.node(x).as_text() else { break };
+                s.push_str(text);
+                nodes.push(x);
+                cur = d.next_sibling(x);
             }
+            (s, nodes)
+        })?;
+        if following.is_empty() {
+            continue;
+        }
+        crate::mutation::replace_data(vm, h, node, len, 0, &data)?;
+        // Steps 5–6: live ranges move into the merged node.
+        for &x in &following {
+            let (parent, i, xl) = with_doc(vm, h, root.doc, |d| {
+                (d.parent(x), crate::range::index(d, x), crate::range::node_len(d, x))
+            })?;
+            if let Some(p) = parent {
+                crate::range::merging(h, node, root.with(x), root.with(p), i, len);
+            }
+            len += xl;
+        }
+        // Step 7.
+        for x in following {
+            tree::remove(vm, h, root.with(x), false)?;
         }
     }
+    Ok(())
 }
 
 /// DOM §4.4 "clone a node".
@@ -900,7 +920,7 @@ fn setup_child_node(vm: &mut Vm, proto: ObjRef) {
     });
     op(vm, proto, "remove", 0, |vm, c| {
         let (h, n) = this(vm, &c)?;
-        with_doc_mut(vm, &h, n.doc, |d| d.detach(n.id))?;
+        tree::remove(vm, &h, n, false)?;
         Ok(Value::Undefined)
     });
 }
@@ -1006,6 +1026,9 @@ fn doc_this(vm: &mut Vm, c: &NativeCall) -> JsResult<(Rc<Host>, NodeRef)> {
 
 pub fn setup_document(vm: &mut Vm, proto: ObjRef) {
     setup_parent_node(vm, proto);
+    crate::range::setup_document(vm, proto);
+    crate::traversal::setup_document(vm, proto);
+    crate::selection::setup_document(vm, proto);
     setup_get_element_by_id(vm, proto);
     setup_get_elements(vm, proto);
     attr(
@@ -1322,26 +1345,22 @@ fn body_set(vm: &mut Vm, c: NativeCall) -> R {
 fn title_set(vm: &mut Vm, c: NativeCall) -> R {
     let v = rstr(vm, &c.arg(0))?;
     let (h, n) = doc_this(vm, &c)?;
-    with_doc_mut(vm, &h, n.doc, |d| {
-        let title = d.descendants(Document::ROOT).find(|&x| d.is_html(x, "title"));
-        let t = match title {
-            Some(t) => t,
-            None => {
-                let Some(head) = d.head() else { return };
-                let t = d.create_html_element("title");
-                d.append_child(head, t);
-                t
-            }
-        };
-        let kids: Vec<NodeId> = d.children(t).collect();
-        for k in kids {
-            d.detach(k);
-        }
-        if !v.is_empty() {
-            let tx = d.create_text(&v);
-            d.append_child(t, tx);
-        }
+    let (title, head) = with_doc(vm, &h, n.doc, |d| {
+        (d.descendants(Document::ROOT).find(|&x| d.is_html(x, "title")), d.head())
     })?;
+    let t = match title {
+        Some(t) => n.with(t),
+        None => {
+            let Some(head) = head else { return Ok(Value::Undefined) };
+            let t = n.with(with_doc_mut(vm, &h, n.doc, |d| d.create_html_element("title"))?);
+            tree::append(vm, &h, t, n.with(head))?;
+            t
+        }
+    };
+    // DOM §4.4 "string replace all".
+    let node =
+        if v.is_empty() { None } else { Some(n.with(with_doc_mut(vm, &h, n.doc, |d| d.create_text(&v))?)) };
+    tree::replace_all(vm, &h, node, t)?;
     Ok(Value::Undefined)
 }
 
@@ -1467,29 +1486,6 @@ fn cd_this(vm: &mut Vm, c: &NativeCall) -> JsResult<(Rc<Host>, NodeRef, Vec<u16>
     Ok((h, n, data.encode_utf16().collect()))
 }
 
-/// DOM §4.10 "replace data".
-fn replace_data(
-    vm: &mut Vm,
-    h: &Host,
-    n: NodeRef,
-    data: &[u16],
-    offset: u32,
-    count: u32,
-    with: &str,
-) -> JsResult<()> {
-    let len = data.len() as u32;
-    if offset > len {
-        return throw(vm, "IndexSizeError", "the offset is past the end of the data");
-    }
-    let end = offset.saturating_add(count).min(len);
-    let mut out: Vec<u16> = data[..offset as usize].to_vec();
-    out.extend(with.encode_utf16());
-    out.extend_from_slice(&data[end as usize..]);
-    let s = String::from_utf16_lossy(&out);
-    with_doc_mut(vm, h, n.doc, |d| d.set_text(n.id, &s))?;
-    Ok(())
-}
-
 pub fn setup_chardata(vm: &mut Vm, proto: ObjRef) {
     setup_child_node(vm, proto);
     setup_non_doctype_child(vm, proto);
@@ -1504,7 +1500,7 @@ pub fn setup_chardata(vm: &mut Vm, proto: ObjRef) {
         Some(|vm, c| {
             let v = rstr_null_empty(vm, &c.arg(0))?;
             let (h, n, _) = cd_this(vm, &c)?;
-            with_doc_mut(vm, &h, n.doc, |d| d.set_text(n.id, &v))?;
+            crate::mutation::set_data(vm, &h, n, &v)?;
             Ok(Value::Undefined)
         }),
     );
@@ -1532,29 +1528,29 @@ pub fn setup_chardata(vm: &mut Vm, proto: ObjRef) {
         let s = rstr(vm, &c.arg(0))?;
         let (h, n, d) = cd_this(vm, &c)?;
         let len = d.len() as u32;
-        replace_data(vm, &h, n, &d, len, 0, &s)?;
+        crate::mutation::replace_data(vm, &h, n, len, 0, &s)?;
         Ok(Value::Undefined)
     });
     op(vm, proto, "insertData", 2, |vm, c| {
         let off = to_ulong(vm, &c.arg(0))?;
         let s = rstr(vm, &c.arg(1))?;
-        let (h, n, d) = cd_this(vm, &c)?;
-        replace_data(vm, &h, n, &d, off, 0, &s)?;
+        let (h, n, _) = cd_this(vm, &c)?;
+        crate::mutation::replace_data(vm, &h, n, off, 0, &s)?;
         Ok(Value::Undefined)
     });
     op(vm, proto, "deleteData", 2, |vm, c| {
         let off = to_ulong(vm, &c.arg(0))?;
         let count = to_ulong(vm, &c.arg(1))?;
-        let (h, n, d) = cd_this(vm, &c)?;
-        replace_data(vm, &h, n, &d, off, count, "")?;
+        let (h, n, _) = cd_this(vm, &c)?;
+        crate::mutation::replace_data(vm, &h, n, off, count, "")?;
         Ok(Value::Undefined)
     });
     op(vm, proto, "replaceData", 3, |vm, c| {
         let off = to_ulong(vm, &c.arg(0))?;
         let count = to_ulong(vm, &c.arg(1))?;
         let s = rstr(vm, &c.arg(2))?;
-        let (h, n, d) = cd_this(vm, &c)?;
-        replace_data(vm, &h, n, &d, off, count, &s)?;
+        let (h, n, _) = cd_this(vm, &c)?;
+        crate::mutation::replace_data(vm, &h, n, off, count, &s)?;
         Ok(Value::Undefined)
     });
 }
@@ -1580,27 +1576,37 @@ pub fn comment_ctor(vm: &mut Vm, c: NativeCall) -> R {
     new_char_node(vm, &c, true)
 }
 
+/// DOM §4.11 "split a Text node" `n` at `offset`; returns the new node.
+pub fn split_text(vm: &mut Vm, h: &Host, n: NodeRef, offset: u32) -> JsResult<NodeRef> {
+    let data = crate::mutation::data16(vm, h, n)?;
+    // Steps 1–4.
+    let len = data.len() as u32;
+    if offset > len {
+        return throw(vm, "IndexSizeError", "the offset is past the end of the data");
+    }
+    let count = len - offset;
+    let tail = String::from_utf16_lossy(&data[offset as usize..]);
+    // Steps 5–7.
+    let new = n.with(with_doc_mut(vm, h, n.doc, |d| d.create_text(&tail))?);
+    let parent = with_doc(vm, h, n.doc, |d| {
+        d.parent(n.id).map(|p| (p, crate::range::index(d, n.id), d.next_sibling(n.id)))
+    })?;
+    if let Some((p, i, next)) = parent {
+        let p = n.with(p);
+        tree::insert(vm, h, new, p, next, false)?;
+        crate::range::split(h, n, new, offset, p, i);
+    }
+    // Step 8.
+    crate::mutation::replace_data(vm, h, n, offset, count, "")?;
+    Ok(new)
+}
+
 pub fn setup_text(vm: &mut Vm, proto: ObjRef) {
     op(vm, proto, "splitText", 1, |vm, c| {
         let off = to_ulong(vm, &c.arg(0))?;
         let (h, n) = this_node(vm, &c.this, C::Text)?;
-        let data: Vec<u16> =
-            with_doc(vm, &h, n.doc, |d| char_data(d, n.id).unwrap_or_default())?.encode_utf16().collect();
-        if off as usize > data.len() {
-            return throw(vm, "IndexSizeError", "the offset is past the end of the data");
-        }
-        let (head, tail) = data.split_at(off as usize);
-        let (head, tail) = (String::from_utf16_lossy(head), String::from_utf16_lossy(tail));
-        let new = with_doc_mut(vm, &h, n.doc, |d| {
-            let t = d.create_text(&tail);
-            if let Some(p) = d.parent(n.id) {
-                let next = d.next_sibling(n.id);
-                d.insert_before(p, t, next);
-            }
-            d.set_text(n.id, &head);
-            t
-        })?;
-        wrap(vm, &h, n.with(new))
+        let new = split_text(vm, &h, n, off)?;
+        wrap(vm, &h, new)
     });
     attr(
         vm,
@@ -1826,19 +1832,15 @@ pub fn setup_element(vm: &mut Vm, proto: ObjRef) {
         if !valid_attribute_local_name(&q) {
             return throw(vm, "InvalidCharacterError", &format!("'{q}' is not a valid attribute name"));
         }
-        with_doc_mut(vm, &h, n.doc, |d| match attr_index_by_name(&h, n, d, &q) {
+        let target = with_doc(vm, &h, n.doc, |d| match attr_index_by_name(&h, n, d, &q) {
             Some(i) => {
-                let a = d.element(n.id).map(|e| e.attrs[i].clone());
-                if let Some(a) = a {
-                    set_attr_raw(d, n.id, a.ns, a.prefix, &a.name, &v);
-                }
+                d.element(n.id).map(|e| (e.attrs[i].ns, e.attrs[i].prefix.clone(), e.attrs[i].name.clone()))
             }
-            None => {
-                let q = lookup_name(&h, n, d, &q);
-                set_attr_raw(d, n.id, Namespace::None, None, &q, &v);
-            }
+            None => Some((Namespace::None, None, lookup_name(&h, n, d, &q))),
         })?;
-        crate::events::attribute_changed(vm, &h, n, &q)?;
+        if let Some((ns, prefix, local)) = target {
+            crate::mutation::set_attr(vm, &h, n, ns, prefix, &local, &v)?;
+        }
         Ok(Value::Undefined)
     });
     op(vm, proto, "setAttributeNS", 3, |vm, c| {
@@ -1847,24 +1849,15 @@ pub fn setup_element(vm: &mut Vm, proto: ObjRef) {
         let v = rstr(vm, &c.arg(2))?;
         let (h, n) = el_this(vm, &c)?;
         let (ns, prefix, local) = validate_and_extract(vm, ns, &q, false)?;
-        with_doc_mut(vm, &h, n.doc, |d| set_attr_raw(d, n.id, ns, prefix, &local, &v))?;
+        crate::mutation::set_attr(vm, &h, n, ns, prefix, &local, &v)?;
         Ok(Value::Undefined)
     });
     op(vm, proto, "removeAttribute", 1, |vm, c| {
         let q = rstr(vm, &c.arg(0))?;
         let (h, n) = el_this(vm, &c)?;
-        let removed = with_doc_mut(vm, &h, n.doc, |d| {
-            let i = attr_index_by_name(&h, n, d, &q)?;
-            let a = d.element(n.id)?.attrs[i].clone();
-            if a.ns == Namespace::None {
-                d.remove_attr(n.id, &a.name);
-            } else if let Some(e) = d.element_mut(n.id) {
-                e.attrs.remove(i);
-            }
-            Some(a)
-        })?;
-        if let Some(a) = removed {
-            crate::attr::detach_attr(&h, n, &a);
+        let i = with_doc(vm, &h, n.doc, |d| attr_index_by_name(&h, n, d, &q))?;
+        if let Some(i) = i {
+            crate::mutation::remove_attr_at(vm, &h, n, i)?;
         }
         Ok(Value::Undefined)
     });
@@ -1872,20 +1865,7 @@ pub fn setup_element(vm: &mut Vm, proto: ObjRef) {
         let ns = rstr_opt(vm, &c.arg(0), false)?.unwrap_or_default();
         let local = rstr(vm, &c.arg(1))?;
         let (h, n) = el_this(vm, &c)?;
-        let ns = Namespace::from_url(&ns);
-        let removed = with_doc_mut(vm, &h, n.doc, |d| {
-            let i = d.element(n.id)?.attrs.iter().position(|a| a.ns == ns && a.name == local)?;
-            let a = d.element(n.id)?.attrs[i].clone();
-            if ns == Namespace::None {
-                d.remove_attr(n.id, &local);
-            } else if let Some(e) = d.element_mut(n.id) {
-                e.attrs.remove(i);
-            }
-            Some(a)
-        })?;
-        if let Some(a) = removed {
-            crate::attr::detach_attr(&h, n, &a);
-        }
+        crate::mutation::remove_attr(vm, &h, n, Namespace::from_url(&ns), &local)?;
         Ok(Value::Undefined)
     });
     op(vm, proto, "toggleAttribute", 1, |vm, c| {
@@ -1898,24 +1878,26 @@ pub fn setup_element(vm: &mut Vm, proto: ObjRef) {
         if !valid_attribute_local_name(&q) {
             return throw(vm, "InvalidCharacterError", &format!("'{q}' is not a valid attribute name"));
         }
-        let r = with_doc_mut(vm, &h, n.doc, |d| match attr_index_by_name(&h, n, d, &q) {
+        let (i, name) =
+            with_doc(vm, &h, n.doc, |d| (attr_index_by_name(&h, n, d, &q), lookup_name(&h, n, d, &q)))?;
+        let r = match i {
             None => {
                 if force == Some(false) {
-                    return false;
+                    false
+                } else {
+                    crate::mutation::set_attr(vm, &h, n, Namespace::None, None, &name, "")?;
+                    true
                 }
-                let q = lookup_name(&h, n, d, &q);
-                set_attr_raw(d, n.id, Namespace::None, None, &q, "");
-                true
             }
             Some(i) => {
                 if force == Some(true) {
-                    return true;
+                    true
+                } else {
+                    crate::mutation::remove_attr_at(vm, &h, n, i)?;
+                    false
                 }
-                let name = d.element(n.id).map(|e| e.attrs[i].name.clone()).unwrap_or_default();
-                d.remove_attr(n.id, &name);
-                false
             }
-        })?;
+        };
         Ok(Value::Bool(r))
     });
     op(vm, proto, "hasAttribute", 1, |vm, c| {

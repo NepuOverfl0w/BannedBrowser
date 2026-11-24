@@ -152,6 +152,14 @@ interfaces! {
     TextEncoder: None;
     TextDecoder: None;
     Storage: None;
+    MutationObserver: None;
+    MutationRecord: None;
+    AbstractRange: None;
+    StaticRange: AbstractRange;
+    Range: AbstractRange;
+    NodeIterator: None;
+    TreeWalker: None;
+    Selection: None;
 }
 
 pub fn name(c: C) -> &'static str {
@@ -327,6 +335,9 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::TextEncoder => (crate::net::text_encoder_ctor, 0),
         C::TextDecoder => (crate::net::text_decoder_ctor, 0),
         C::URLSearchParams => (crate::url::params_ctor, 0),
+        C::MutationObserver => (crate::mutation::observer_ctor, 1),
+        C::Range => (crate::range::range_ctor, 0),
+        C::StaticRange => (crate::range::static_range_ctor, 1),
         _ => return None,
     })
 }
@@ -365,6 +376,8 @@ pub fn install(vm: &mut Vm, h: &Host) {
         let (p, k) = (protos[c as usize], ctors[c as usize]);
         setup(vm, c, p, k);
     }
+    crate::traversal::install_node_filter(vm);
+    crate::window::install_window_properties(vm, h);
     // The global object is the Window (HTML §7.2); its prototype chain is Window's.
     vm.heap.obj_mut(g).proto = Some(protos[C::Window as usize]);
 }
@@ -398,7 +411,10 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::MouseEvent => crate::events::setup_mouse_event(vm, proto),
         C::KeyboardEvent => crate::events::setup_keyboard_event(vm, proto),
         C::ErrorEvent => crate::events::setup_error_event(vm, proto),
-        C::Window => crate::window::setup_window(vm, proto),
+        C::Window => {
+            crate::window::setup_window(vm, proto);
+            crate::selection::setup_window(vm, proto);
+        }
         C::CSSStyleDeclaration => crate::css::setup_style_declaration(vm, proto),
         C::DOMRectReadOnly => crate::css::setup_rect_readonly(vm, proto),
         C::DOMRect => crate::css::setup_rect(vm, proto),
@@ -416,6 +432,14 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::TextEncoder => crate::net::setup_text_encoder(vm, proto),
         C::TextDecoder => crate::net::setup_text_decoder(vm, proto),
         C::Storage => crate::storage::setup_storage(vm, proto),
+        C::MutationObserver => crate::mutation::setup_observer(vm, proto),
+        C::MutationRecord => crate::mutation::setup_record(vm, proto),
+        C::AbstractRange => crate::range::setup_abstract_range(vm, proto),
+        C::StaticRange => {}
+        C::Range => crate::range::setup_range(vm, proto, ctor),
+        C::NodeIterator => crate::traversal::setup_node_iterator(vm, proto),
+        C::TreeWalker => crate::traversal::setup_tree_walker(vm, proto),
+        C::Selection => crate::selection::setup_selection(vm, proto),
         _ => crate::html::setup_element_interface(vm, c, proto),
     }
 }

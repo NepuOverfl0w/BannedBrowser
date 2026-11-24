@@ -319,7 +319,7 @@ fn write(vm: &mut Vm, h: &Host, kind: &CollKind, ds: &[(String, String, bool)]) 
         return throw(vm, "NoModificationAllowedError", "computed styles are read-only");
     };
     let text = serialize(ds);
-    with_doc_mut(vm, h, n.doc, |d| d.set_attr(n.id, "style", &text))
+    crate::mutation::set_or_remove(vm, h, *n, "style", Some(&text))
 }
 
 fn property_name(p: &str) -> String {
@@ -490,7 +490,7 @@ pub fn setup_inline_style(vm: &mut Vm, proto: ObjRef) {
             // [PutForwards=cssText]
             let v = rstr_null_empty(vm, &c.arg(0))?;
             let (h, n) = this_node(vm, &c.this, C::Element)?;
-            with_doc_mut(vm, &h, n.doc, |d| d.set_attr(n.id, "style", &v))?;
+            crate::mutation::set_or_remove(vm, &h, n, "style", Some(&v))?;
             Ok(Value::Undefined)
         }),
     );

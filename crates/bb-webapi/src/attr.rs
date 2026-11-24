@@ -67,11 +67,7 @@ pub fn set_value(vm: &mut Vm, this: &Value, v: &str) -> JsResult<()> {
     let rec = h.attrs.borrow().get(id as usize).cloned();
     let Some(a) = rec else { return Ok(()) };
     match a.owner {
-        Some(o) => {
-            with_doc_mut(vm, &h, o.doc, |d| {
-                crate::dom::set_attr_raw(d, o.id, a.ns, a.prefix.clone(), &a.local, v)
-            })?;
-        }
+        Some(o) => crate::mutation::set_attr(vm, &h, o, a.ns, a.prefix.clone(), &a.local, v)?,
         None => {
             if let Some(r) = h.attrs.borrow_mut().get_mut(id as usize) {
                 r.value = v.to_string();
@@ -312,14 +308,7 @@ pub fn setup_element_attr_nodes(vm: &mut Vm, proto: ObjRef) {
         if a.owner != Some(n) {
             return throw(vm, "NotFoundError", "the attribute is not this element's");
         }
-        let removed = with_doc_mut(vm, &h, n.doc, |d| {
-            let e = d.element_mut(n.id)?;
-            let i = e.attrs.iter().position(|x| x.ns == a.ns && x.name == a.local)?;
-            Some(e.attrs.remove(i))
-        })?;
-        if let Some(r) = removed {
-            detach_attr(&h, n, &r);
-        }
+        crate::mutation::remove_attr(vm, &h, n, a.ns, &a.local)?;
         Ok(c.arg(0))
     });
 }
@@ -344,9 +333,8 @@ fn set_attribute_node(vm: &mut Vm, h: &Rc<Host>, n: NodeRef, v: &Value) -> JsRes
     if let Some(o) = &old {
         detach_attr(h, n, o);
     }
-    with_doc_mut(vm, h, n.doc, |d| {
-        crate::dom::set_attr_raw(d, n.id, a.ns, a.prefix.clone(), &a.local, &a.value)
-    })?;
+    // "replace an attribute" or "append an attribute".
+    crate::mutation::set_attr(vm, h, n, a.ns, a.prefix.clone(), &a.local, &a.value)?;
     if let Some(r) = h.attrs.borrow_mut().get_mut(id as usize) {
         r.owner = Some(n);
         r.doc = n.doc;

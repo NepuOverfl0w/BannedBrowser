@@ -271,7 +271,7 @@ pub fn params_ctor(vm: &mut Vm, c: NativeCall) -> R {
 }
 
 /// Iterate `v` with its @@iterator `f` (WebIDL sequence conversion).
-fn iter_values(vm: &mut Vm, v: &Value, f: &Value) -> JsResult<Vec<Value>> {
+pub(crate) fn iter_values(vm: &mut Vm, v: &Value, f: &Value) -> JsResult<Vec<Value>> {
     if !vm.is_callable(f) {
         return vm.type_error("not iterable");
     }

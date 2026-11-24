@@ -179,6 +179,8 @@ pub enum CollKind {
     Options(NodeRef),
     /// HTMLFormElement.elements (its listed controls).
     FormElements(NodeRef),
+    /// The Window's named objects with this name (HTML §7.2.2.3).
+    WindowNamed(String),
 }
 
 /// The document's readiness (HTML §3.1.1).
@@ -278,6 +280,14 @@ pub struct Host {
     pub local_mem: RefCell<Vec<(String, String)>>,
     /// Nodes of document 0 up to this index have had their `on…` attributes registered.
     pub scanned: Cell<u32>,
+    /// Mutation observers and the nodes they observe (DOM §4.3).
+    pub mo: RefCell<crate::mutation::State>,
+    /// Ranges' boundary points, by the objects' payloads (DOM §5).
+    pub ranges: RefCell<Vec<crate::range::RangeData>>,
+    /// NodeIterators' and TreeWalkers' states (DOM §6).
+    pub traversers: RefCell<Vec<crate::traversal::Traverser>>,
+    /// The window's document's selection.
+    pub selection: RefCell<crate::selection::State>,
 }
 
 impl Host {
@@ -322,6 +332,10 @@ impl Host {
             session: RefCell::default(),
             local_mem: RefCell::default(),
             scanned: Cell::new(0),
+            mo: RefCell::default(),
+            ranges: RefCell::default(),
+            traversers: RefCell::default(),
+            selection: RefCell::default(),
         }
     }
 
@@ -372,6 +386,8 @@ impl Host {
         for (_, f) in self.frame_callbacks.borrow().iter() {
             push(f, out);
         }
+        self.mo.borrow().trace(out);
+        self.selection.borrow().trace(out);
         push(&self.current_script.borrow(), out);
         if let Some(w) = self.window.get() {
             out.push(w);

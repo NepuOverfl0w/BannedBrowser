@@ -208,12 +208,21 @@ pub fn pre_insert(
     if reference == Some(node.id) && node.doc == parent.doc {
         reference = with_doc(vm, h, parent.doc, |d| d.next_sibling(node.id))?;
     }
-    insert(vm, h, node, parent, reference)?;
+    insert(vm, h, node, parent, reference, false)?;
     Ok(node)
 }
 
-/// DOM §4.2.3 "insert" (validity already checked).
-pub fn insert(vm: &mut Vm, h: &Host, node: NodeRef, parent: NodeRef, child: Option<NodeId>) -> JsResult<()> {
+/// DOM §4.2.3 "insert" `node` into `parent` before `child` (validity already checked);
+/// returns the inserted nodes (where they are now).
+pub fn insert(
+    vm: &mut Vm,
+    h: &Host,
+    node: NodeRef,
+    parent: NodeRef,
+    child: Option<NodeId>,
+    suppress: bool,
+) -> JsResult<Vec<NodeRef>> {
+    // Steps 1–3.
     let is_frag = with_doc(vm, h, node.doc, |d| matches!(d.node(node.id).data, NodeData::DocumentFragment))?;
     let nodes: Vec<NodeRef> = if is_frag {
         let kids = with_doc(vm, h, node.doc, |d| d.children(node.id).collect::<Vec<_>>())?;
@@ -221,14 +230,42 @@ pub fn insert(vm: &mut Vm, h: &Host, node: NodeRef, parent: NodeRef, child: Opti
     } else {
         vec![node]
     };
+    if nodes.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Step 4.
+    if is_frag {
+        for k in &nodes {
+            remove(vm, h, *k, true)?;
+        }
+        crate::mutation::tree_record(vm, h, node, Vec::new(), nodes.clone(), None, None)?;
+    }
+    // Steps 5–6.
+    let prev = with_doc(vm, h, parent.doc, |d| match child {
+        Some(c) => {
+            crate::range::inserting(h, parent, crate::range::index(d, c), nodes.len() as u32);
+            d.prev_sibling(c)
+        }
+        None => d.last_child(parent.id),
+    })?;
+    // Step 7.
     let mut inserted = Vec::with_capacity(nodes.len());
     for n in nodes {
         let n = adopt(vm, h, n, parent.doc)?;
-        with_doc_mut(vm, h, parent.doc, |d| {
-            d.detach(n.id);
-            d.insert_before(parent.id, n.id, child);
-        })?;
+        with_doc_mut(vm, h, parent.doc, |d| d.insert_before(parent.id, n.id, child))?;
         inserted.push(n);
+    }
+    // Step 8.
+    if !suppress {
+        crate::mutation::tree_record(
+            vm,
+            h,
+            parent,
+            inserted.clone(),
+            Vec::new(),
+            prev.map(|p| parent.with(p)),
+            child.map(|c| parent.with(c)),
+        )?;
     }
     // HTML §4.12.1 "node insertion steps": connected script elements are prepared (in tree
     // order); a script whose text was added to a connected script element is too.
@@ -256,7 +293,7 @@ pub fn insert(vm: &mut Vm, h: &Host, node: NodeRef, parent: NodeRef, child: Opti
             crate::loader::script_inserted(vm, h, s);
         }
     }
-    Ok(())
+    Ok(inserted)
 }
 
 /// DOM §4.2.3 "append".
@@ -279,14 +316,34 @@ pub fn replace(vm: &mut Vm, h: &Host, child: NodeRef, node: NodeRef, parent: Nod
     if let Err(name) = r {
         return throw(vm, name, "the node can't replace that child");
     }
-    let mut reference = with_doc(vm, h, parent.doc, |d| d.next_sibling(child.id))?;
+    // Steps 7–9.
+    let (mut reference, mut prev) =
+        with_doc(vm, h, parent.doc, |d| (d.next_sibling(child.id), d.prev_sibling(child.id)))?;
     if reference == Some(node.id) && node.doc == parent.doc {
         reference = with_doc(vm, h, parent.doc, |d| d.next_sibling(node.id))?;
     }
-    if !(node.doc == child.doc && node.id == child.id) {
-        with_doc_mut(vm, h, parent.doc, |d| d.detach(child.id))?;
+    if prev == Some(node.id) && node.doc == parent.doc {
+        prev = with_doc(vm, h, parent.doc, |d| d.prev_sibling(node.id))?;
     }
-    insert(vm, h, node, parent, reference)?;
+    // Step 11.
+    let node = adopt(vm, h, node, parent.doc)?;
+    // Steps 10–11.
+    let mut removed = Vec::new();
+    if with_doc(vm, h, child.doc, |d| d.parent(child.id).is_some())? {
+        removed.push(child);
+        remove(vm, h, child, true)?;
+    }
+    // Steps 12–14.
+    let nodes = insert(vm, h, node, parent, reference, true)?;
+    crate::mutation::tree_record(
+        vm,
+        h,
+        parent,
+        nodes,
+        removed,
+        prev.map(|p| parent.with(p)),
+        reference.map(|r| parent.with(r)),
+    )?;
     Ok(child)
 }
 
@@ -297,28 +354,59 @@ pub fn pre_remove(vm: &mut Vm, h: &Host, child: NodeRef, parent: NodeRef) -> JsR
     if !ok {
         return throw(vm, "NotFoundError", "the node is not a child of this node");
     }
-    with_doc_mut(vm, h, parent.doc, |d| d.detach(child.id))?;
+    remove(vm, h, child, false)?;
     Ok(child)
+}
+
+/// DOM §4.2.3 "remove" `node` from its parent (if it has one).
+pub fn remove(vm: &mut Vm, h: &Host, node: NodeRef, suppress: bool) -> JsResult<()> {
+    let info = with_doc(vm, h, node.doc, |d| {
+        let p = d.parent(node.id)?;
+        let i = crate::range::index(d, node.id);
+        // Steps 4–7: live ranges and node iterators.
+        crate::range::removing(h, d, node, node.with(p), i);
+        crate::traversal::pre_removing(h, d, node);
+        Some((node.with(p), d.prev_sibling(node.id), d.next_sibling(node.id)))
+    })?;
+    let Some((parent, prev, next)) = info else { return Ok(()) };
+    // Step 10.
+    with_doc_mut(vm, h, node.doc, |d| d.detach(node.id))?;
+    // Steps 14–15.
+    crate::mutation::add_transient_observers(vm, h, parent, node)?;
+    if !suppress {
+        crate::mutation::tree_record(
+            vm,
+            h,
+            parent,
+            Vec::new(),
+            vec![node],
+            prev.map(|p| node.with(p)),
+            next.map(|n| node.with(n)),
+        )?;
+    }
+    Ok(())
 }
 
 /// Replace all children of `parent` with `node` (DOM §4.2.3 "replace all").
 pub fn replace_all(vm: &mut Vm, h: &Host, node: Option<NodeRef>, parent: NodeRef) -> JsResult<()> {
     let kids = with_doc(vm, h, parent.doc, |d| d.children(parent.id).collect::<Vec<_>>())?;
-    with_doc_mut(vm, h, parent.doc, |d| {
-        for k in kids {
-            d.detach(k);
-        }
-    })?;
-    if let Some(n) = node {
-        insert(vm, h, n, parent, None)?;
+    let removed: Vec<NodeRef> = kids.into_iter().map(|k| parent.with(k)).collect();
+    for k in &removed {
+        remove(vm, h, *k, true)?;
     }
-    Ok(())
+    let added = match node {
+        Some(n) => insert(vm, h, n, parent, None, true)?,
+        None => Vec::new(),
+    };
+    crate::mutation::tree_record(vm, h, parent, added, removed, None, None)
 }
 
-/// DOM §4.5 "adopt" `node` into document `doc`: nodes live in their document's arena, so a
-/// node from another document is copied over, and its wrappers (and those of its
-/// descendants) now point at the copies. Returns where the node is now.
+/// DOM §4.5 "adopt" `node` into document `doc`: it is removed from its parent; nodes live in
+/// their document's arena, so a node from another document is copied over, and its wrappers
+/// (and those of its descendants, and what observes them) now point at the copies. Returns
+/// where the node is now.
 pub fn adopt(vm: &mut Vm, h: &Host, node: NodeRef, doc: u32) -> JsResult<NodeRef> {
+    remove(vm, h, node, false)?;
     if node.doc == doc {
         return Ok(node);
     }
@@ -330,23 +418,38 @@ pub fn adopt(vm: &mut Vm, h: &Host, node: NodeRef, doc: u32) -> JsResult<NodeRef
         drop(docs);
         return vm.type_error("no such document");
     }
-    // Detach from the old parent, then copy the subtree across.
-    docs[node.doc as usize].detach(node.id);
     let (copy, pairs) = {
         let (src, dst) = two_docs(&mut docs, node.doc, doc);
         dst.import_node(src, node.id, true)
     };
     drop(docs);
     h.mark_dirty();
+    let packed: Vec<(u64, u64)> =
+        pairs.iter().map(|&(old, new)| (node.with(old).pack(), NodeRef { doc, id: new }.pack())).collect();
     // Move wrappers to the copies, keeping identity (and anything stored on them).
-    let mut wrappers = h.wrappers.borrow_mut();
-    for (old, new) in pairs {
-        let (ok, nk) = (node.with(old).pack(), NodeRef { doc, id: new }.pack());
-        if let Some(o) = wrappers.remove(&ok) {
-            if let Some(ho) = vm.host_obj_mut(o) {
-                ho.id = nk;
+    {
+        let mut wrappers = h.wrappers.borrow_mut();
+        for &(ok, nk) in &packed {
+            if let Some(o) = wrappers.remove(&ok) {
+                if let Some(ho) = vm.host_obj_mut(o) {
+                    ho.id = nk;
+                }
+                wrappers.insert(nk, o);
             }
-            wrappers.insert(nk, o);
+        }
+    }
+    h.mo.borrow_mut().remap(&packed);
+    crate::range::remap(h, &packed);
+    crate::traversal::remap(h, &packed);
+    // Static node lists (mutation records' addedNodes, …) follow too.
+    let map: std::collections::HashMap<u64, u64> = packed.iter().copied().collect();
+    for c in h.collections.borrow_mut().iter_mut() {
+        if let crate::host::CollKind::Static(list) = c {
+            for n in list.iter_mut() {
+                if let Some(x) = map.get(&n.pack()) {
+                    *n = NodeRef::unpack(*x);
+                }
+            }
         }
     }
     Ok(NodeRef { doc, id: copy })
