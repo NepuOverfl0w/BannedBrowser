@@ -17,6 +17,7 @@ the banned list on every CI run.
 | `flate2`, `brotli-decompressor` | bb-net | `gzip`/`deflate`/`br` content codings. |
 | `encoding_rs` | bb-net, bb-engine | WHATWG Encoding Standard decoders (windows-1252, Shift_JIS, …). |
 | `arboard` | shell | Clipboard. |
+| `getrandom` | bb-webapi | The operating system's secure random generator (platform glue, already in the tree through `ring`): `crypto.getRandomValues`/`randomUUID`, blob URL UUIDs, multipart boundaries. |
 | `dirs` | shell | Platform cache and data directories (the Public Suffix List cache, the profile). |
 | `rusqlite` (`bundled`: SQLite compiled in, no system library) | bb-profile | The profile database (`profile.sqlite`): persistent cookies and prefs, with SQLite's locking and crash-safe transactions. Pulls in `libsqlite3-sys` and small helpers (`hashlink`, `fallible-iterator`, `fallible-streaming-iterator`). |
 | `serde_json` | shell, tests | GUI test-state file, spec-suite JSON. (`serde` derive comes with prefs in M8.) |

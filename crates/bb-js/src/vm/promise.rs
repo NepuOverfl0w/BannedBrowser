@@ -207,6 +207,11 @@ impl Vm {
         self.jobs.push_back(Job::Reaction { reaction: r, argument: Value::Undefined });
     }
 
+    /// Whether no script is running (the JavaScript execution context stack is empty).
+    pub fn stack_empty(&self) -> bool {
+        self.frames.is_empty() && self.nested == 0
+    }
+
     /// Run queued jobs until the queue is empty (a microtask checkpoint).
     pub fn run_jobs(&mut self) {
         loop {

@@ -162,6 +162,12 @@ interfaces! {
     Selection: None;
     DOMParser: None;
     XMLSerializer: None;
+    Blob: None;
+    File: Blob;
+    FileReader: EventTarget;
+    FormData: None;
+    FormDataEvent: Event;
+    Crypto: None;
 }
 
 pub fn name(c: C) -> &'static str {
@@ -341,6 +347,11 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::MutationObserver => (crate::mutation::observer_ctor, 1),
         C::Range => (crate::range::range_ctor, 0),
         C::DOMParser => (crate::xml::dom_parser_ctor, 0),
+        C::Blob => (crate::blob::blob_ctor, 0),
+        C::File => (crate::blob::file_ctor, 2),
+        C::FileReader => (crate::blob::file_reader_ctor, 0),
+        C::FormData => (crate::blob::form_data_ctor, 0),
+        C::FormDataEvent => (crate::events::event_ctor, 2),
         C::XMLSerializer => (crate::xml::xml_serializer_ctor, 0),
         C::StaticRange => (crate::range::static_range_ctor, 1),
         _ => return None,
@@ -383,6 +394,7 @@ pub fn install(vm: &mut Vm, h: &Host) {
     }
     crate::traversal::install_node_filter(vm);
     crate::window::install_window_properties(vm, h);
+    crate::blob::install_crypto(vm, h);
     // The global object is the Window (HTML §7.2); its prototype chain is Window's.
     vm.heap.obj_mut(g).proto = Some(protos[C::Window as usize]);
 }
@@ -424,7 +436,10 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::DOMRectReadOnly => crate::css::setup_rect_readonly(vm, proto),
         C::DOMRect => crate::css::setup_rect(vm, proto),
         C::DOMRectList => crate::css::setup_rect_list(vm, proto),
-        C::URL => crate::url::setup_url(vm, proto, ctor),
+        C::URL => {
+            crate::url::setup_url(vm, proto, ctor);
+            crate::blob::setup_url_statics(vm, ctor);
+        }
         C::URLSearchParams => crate::url::setup_params(vm, proto),
         C::Headers => crate::net::setup_headers(vm, proto),
         C::Request => crate::net::setup_request(vm, proto),
@@ -446,6 +461,12 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::TreeWalker => crate::traversal::setup_tree_walker(vm, proto),
         C::Selection => crate::selection::setup_selection(vm, proto),
         C::DOMParser => crate::xml::setup_dom_parser(vm, proto),
+        C::Blob => crate::blob::setup_blob(vm, proto),
+        C::File => crate::blob::setup_file(vm, proto),
+        C::FileReader => crate::blob::setup_file_reader(vm, proto, ctor),
+        C::FormData => crate::blob::setup_form_data(vm, proto),
+        C::FormDataEvent => crate::blob::setup_form_data_event(vm, proto),
+        C::Crypto => crate::blob::setup_crypto(vm, proto),
         C::XMLSerializer => crate::xml::setup_xml_serializer(vm, proto),
         _ => crate::html::setup_element_interface(vm, c, proto),
     }

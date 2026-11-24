@@ -17,10 +17,12 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   XMLHttpRequest, AbortController, URL/URLSearchParams, TextEncoder/TextDecoder, `localStorage`
   (saved in the profile), `sessionStorage` and `document.cookie`, MutationObserver, Range and
   StaticRange, NodeIterator and TreeWalker, `getSelection()` and named access on the Window, DOMParser and
-  XMLSerializer over a new XML parser (`bb-xml`), and XMLHttpRequest's `responseXML`. The parser
+  XMLSerializer over a new XML parser (`bb-xml`), XMLHttpRequest's `responseXML`, Blob, File,
+  FileReader, FormData, blob URLs and `crypto.getRandomValues`/`randomUUID`. The parser
   runs scripts as it goes, with `document.write`; script changes restyle and relayout the
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
-  `dom/`, `domparsing/`, `url/`, `encoding/` and `fetch/api/headers/` tests (66119/76443 subtests so far).
+  `dom/`, `domparsing/`, `FileAPI/`, `xhr/formdata/`, `url/`, `encoding/` and `fetch/api/headers/` tests
+  (66749/77195 subtests so far).
 - **JavaScript engine, first part (milestone D in progress):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262. Its interpreter has started: bytecode compiler, stack VM, garbage
@@ -124,6 +126,7 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   "Details"), the summary comes first, and clicking it toggles `open`.
 
 ### Fixed
+- A named `<button>` submitted an empty value with its form; it now submits its `value`.
 - Frame navigations are session history entries: Back after following a link inside a frameset
   goes back to the previous frame contents instead of leaving the frameset, and only the frames
   that differ are reloaded.

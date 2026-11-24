@@ -405,6 +405,15 @@ fn extract_body(vm: &mut Vm, v: &Value) -> JsResult<Option<(Vec<u8>, Option<Stri
             if let Some(b) = vm.buffer_source_bytes(v) {
                 return Ok(Some((b, None)));
             }
+            if let Some((b, ty, _)) = crate::blob::blob_data(vm, v) {
+                return Ok(Some((b, (!ty.is_empty()).then_some(ty))));
+            }
+            if let (Some((c, _)), Value::Object(o)) = (vm.host_data(v), v) {
+                if c == C::FormData as u32 {
+                    let (b, ty) = crate::blob::multipart_body(vm, *o);
+                    return Ok(Some((b, Some(ty))));
+                }
+            }
             if vm.host_data(v).is_some_and(|(c, _)| c == C::URLSearchParams as u32) {
                 let s = rstr(vm, v)?;
                 return Ok(Some((
@@ -552,6 +561,21 @@ fn json_parse(vm: &mut Vm, text: &str) -> R {
     vm.call(&parse, json, vec![js(text)])
 }
 
+/// The Content-Type of a Request or Response (both keep their Headers in slot 2).
+fn content_type(vm: &mut Vm, o: ObjRef) -> JsResult<Option<String>> {
+    const HEADERS_SLOT: usize = 2;
+    let Value::Object(hd) = slot(vm, o, HEADERS_SLOT) else { return Ok(None) };
+    Ok(header_list(vm, hd)?.into_iter().find(|(k, _)| k == "content-type").map(|(_, v)| v))
+}
+
+/// Do a request now, blocking: blob URLs from the blob URL store, others by the embedder.
+pub fn fetch_now(vm: &Vm, h: &Host, req: HttpRequest) -> Result<HttpResponse, String> {
+    match crate::blob::blob_fetch(vm, h, &req) {
+        Some(r) => r,
+        None => h.embedder.fetch_sync(req),
+    }
+}
+
 /// The Body mixin's methods on an interface whose body and bodyUsed are in `slots`.
 fn setup_body(vm: &mut Vm, proto: ObjRef, iface: C, body_slot: usize, used_slot: usize) {
     let data = vec![
@@ -600,6 +624,25 @@ fn setup_body(vm: &mut Vm, proto: ObjRef, iface: C, body_slot: usize, used_slot:
             let (o, b, u) = info(vm, &c)?;
             let bytes = consume(vm, o, b, u)?;
             Ok(Value::Object(vm.new_array_buffer(bytes)))
+        })
+    });
+    def(vm, "blob", |vm, c| {
+        settled(vm, |vm| {
+            let (o, b, u) = info(vm, &c)?;
+            let ty = content_type(vm, o)?;
+            let bytes = consume(vm, o, b, u)?;
+            let h = host(vm)?;
+            let ty = ty.map(|t| t.to_ascii_lowercase()).unwrap_or_default();
+            Ok(Value::Object(crate::blob::new_blob(vm, &h, bytes, &ty, None, None)))
+        })
+    });
+    def(vm, "formData", |vm, c| {
+        settled(vm, |vm| {
+            let (o, b, u) = info(vm, &c)?;
+            let ty = content_type(vm, o)?.unwrap_or_default();
+            let bytes = consume(vm, o, b, u)?;
+            let h = host(vm)?;
+            crate::blob::parse_form_body(vm, &h, &bytes, &ty)
         })
     });
     def(vm, "bytes", |vm, c| {
@@ -945,7 +988,8 @@ fn start(vm: &mut Vm, h: &Host, req: HttpRequest, pending: Pending) {
     let id = h.next_fetch.get();
     h.next_fetch.set(id + 1);
     h.pending.borrow_mut().insert(id, pending);
-    if !h.embedder.start_fetch(id, req.clone()) {
+    // Blob URLs are answered from the blob URL store in a task; others go to the embedder.
+    if req.url.scheme() == "blob" || !h.embedder.start_fetch(id, req.clone()) {
         h.tasks.borrow_mut().push_back(Task::Fetch(id, Box::new(req)));
     }
     let _ = vm;
@@ -1517,7 +1561,7 @@ pub fn setup_xhr(vm: &mut Vm, proto: ObjRef, ctor: ObjRef) {
         };
         let (req, is_async) = req;
         if !is_async {
-            let r = h.embedder.fetch_sync(req);
+            let r = fetch_now(vm, &h, req);
             xhr_complete(vm, &h, o, r)?;
             return Ok(Value::Undefined);
         }
@@ -1699,6 +1743,29 @@ pub fn setup_xhr(vm: &mut Vm, proto: ObjRef, ctor: ObjRef) {
                 }
                 "arraybuffer" => Ok(Value::Object(vm.new_array_buffer(body.unwrap_or_default()))),
                 "document" => document_response(vm, &h, id),
+                "blob" => {
+                    let ty = {
+                        let xs = h.xhrs.borrow();
+                        let x = xs.get(id);
+                        x.and_then(|x| x.mime_override.clone()).or_else(|| {
+                            x.and_then(|x| x.response.as_ref()).and_then(|r| {
+                                r.headers
+                                    .iter()
+                                    .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                                    .map(|(_, v)| v.clone())
+                            })
+                        })
+                    };
+                    let ty = ty.map(|t| t.to_ascii_lowercase()).unwrap_or_default();
+                    Ok(Value::Object(crate::blob::new_blob(
+                        vm,
+                        &h,
+                        body.unwrap_or_default(),
+                        &ty,
+                        None,
+                        None,
+                    )))
+                }
                 _ => Ok(Value::Null),
             }
         },

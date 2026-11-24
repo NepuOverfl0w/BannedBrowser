@@ -270,3 +270,33 @@ fn dom_parser_and_xml_serializer() {
         "urn:f|1|a & b<x>|4|parsererror|<feed xmlns=\"urn:f\"><e n=\"1\">a &amp; b<![CDATA[<x>]]></e></feed>|undefined"
     );
 }
+
+#[test]
+fn blobs_files_form_data_and_crypto() {
+    let mut p = page(
+        "<!doctype html><form id=f><input name=a value=1><input name=b value=2></form><p id=out>wait</p><script>\
+           var parts = [];\
+           var b = new Blob(['hello ', new Uint8Array([119, 111, 114, 108, 100])], { type: 'Text/Plain' });\
+           parts.push(b.size + b.type + new File(['x'], 'n.txt').name);\
+           var fd = new FormData(document.getElementById('f'));\
+           fd.append('file', b, 'h.txt');\
+           parts.push([...fd.keys()].join(','));\
+           var r = new FileReader();\
+           r.onload = function () {\
+             parts.push(r.result);\
+             var u = new Uint8Array(16); crypto.getRandomValues(u);\
+             parts.push(/^[0-9a-f-]{36}$/.test(crypto.randomUUID()) && u.some(function (x) { return x; }));\
+             fetch(URL.createObjectURL(b.slice(0, 5))).then(function (res) { return res.text(); }).then(function (t) {\
+               parts.push(t);\
+               return new Response(fd).formData();\
+             }).then(function (back) {\
+               parts.push(back.get('a') + back.get('file').name + back.get('file').size);\
+               document.getElementById('out').textContent = parts.join('|');\
+             });\
+           };\
+           r.readAsText(b);\
+         </script>",
+    );
+    wait_for_change(&mut p, "out", "wait");
+    assert_eq!(text(&p, "out"), "11text/plainn.txt|a,b,file|hello world|true|hello|1h.txt11");
+}

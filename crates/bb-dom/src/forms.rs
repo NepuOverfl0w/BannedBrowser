@@ -240,6 +240,10 @@ impl Document {
                 None => crate::normalize_newlines(&self.child_text(el)),
             };
         }
+        // A button's value is its value attribute (HTML §4.10.6).
+        if self.is_html(el, "button") {
+            return self.attr(el, "value").unwrap_or("").to_string();
+        }
         if !self.is_html(el, "input") {
             return String::new();
         }

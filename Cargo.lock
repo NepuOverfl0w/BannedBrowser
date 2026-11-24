@@ -202,6 +202,7 @@ name = "bb-dom"
 version = "0.2.0-dev"
 dependencies = [
  "bitflags 2.13.2",
+ "encoding_rs",
 ]
 
 [[package]]
@@ -363,6 +364,7 @@ dependencies = [
  "bb-url",
  "bb-xml",
  "encoding_rs",
+ "getrandom 0.3.4",
  "log",
 ]
 

@@ -25,6 +25,8 @@ const DIRS: &[&str] = &[
     "dom/ranges",
     "dom/traversal",
     "domparsing",
+    "FileAPI",
+    "xhr/formdata",
     "url",
     "encoding",
     "fetch/api/headers",

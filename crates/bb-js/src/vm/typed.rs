@@ -391,6 +391,14 @@ impl Vm {
         self.buffer_write(b, at, &raw[..kind.size()]);
     }
 
+    /// A typed array's element kind and the bytes it views: (kind, buffer, byte offset,
+    /// byte length); None for anything else or an out-of-bounds view.
+    pub fn ta_view(&self, o: ObjRef) -> Option<(TaKind, ObjRef, usize, usize)> {
+        let Kind::TypedArray(t) = &self.heap.obj(o).kind else { return None };
+        let n = self.ta_length(o)? * t.kind.size();
+        Some((t.kind, t.buffer, t.offset, n))
+    }
+
     /// A typed array's buffer and byte offset.
     pub fn ta_buffer(&self, o: ObjRef) -> Option<(ObjRef, usize)> {
         match &self.heap.obj(o).kind {

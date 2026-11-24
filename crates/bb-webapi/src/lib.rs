@@ -10,6 +10,7 @@
 //! or work was queued; each task is followed by a microtask checkpoint.
 
 pub mod attr;
+pub mod blob;
 pub mod class;
 pub mod collections;
 pub mod css;
@@ -122,9 +123,10 @@ impl Window {
                     Ok(())
                 }
                 host::Task::Fetch(id, req) => {
-                    let r = h.embedder.fetch_sync(*req);
+                    let r = net::fetch_now(&self.vm, &h, *req);
                     net::complete(&mut self.vm, &h, id, r)
                 }
+                host::Task::Read(t) => blob::run_read_task(&mut self.vm, &h, *t),
             };
             self.end_task(r);
         }

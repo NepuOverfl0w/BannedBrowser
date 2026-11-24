@@ -113,7 +113,7 @@ pub fn set_field(vm: &mut Vm, o: ObjRef, name: &str, v: Value) {
     }
 }
 
-fn get_field(vm: &Vm, o: ObjRef, name: &str) -> Option<Value> {
+pub fn get_field(vm: &Vm, o: ObjRef, name: &str) -> Option<Value> {
     match slot(vm, o, S_EXTRA) {
         Value::Object(x) => vm.heap.obj(x).props.get(&PropKey::named(name)).and_then(|p| match &p.slot {
             Slot::Data(v) => Some(v.clone()),
@@ -171,6 +171,7 @@ fn init_fields(c: C) -> Vec<(&'static str, char, Value)> {
             ("loaded", 'd', Value::Number(0.0)),
             ("total", 'd', Value::Number(0.0)),
         ],
+        C::FormDataEvent => vec![("formData", 'F', Value::Undefined)],
         C::ErrorEvent => vec![
             ("colno", 'l', Value::Number(0.0)),
             ("error", 'a', Value::Undefined),
@@ -203,6 +204,12 @@ pub fn event_ctor(vm: &mut Vm, c: NativeCall) -> R {
     for (name, kind, def) in init_fields(class) {
         let v = dict_get(vm, &dict, name)?;
         let v = match (kind, &v) {
+            ('F', _) => {
+                if !vm.host_data(&v).is_some_and(|(k, _)| k == C::FormData as u32) {
+                    return vm.type_error("FormDataEvent needs a FormData formData");
+                }
+                v
+            }
             (_, Value::Undefined) => def,
             ('b', _) => Value::Bool(vm.to_boolean(&v)),
             ('l', _) => Value::Number(vm.to_int32(&v)? as f64),
@@ -770,6 +777,12 @@ fn invoke(
                 return Err(err);
             }
             report_exception(vm, err);
+        }
+        // HTML §8.1.4.4 "clean up after running script" (WebIDL runs it after each callback):
+        // with no script running (the event came from a task, not dispatchEvent), a
+        // microtask checkpoint.
+        if vm.stack_empty() {
+            vm.run_jobs();
         }
         if flags(vm, e) & STOP_IMMEDIATE != 0 {
             break;

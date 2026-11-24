@@ -344,21 +344,31 @@ pub fn setup_form(vm: &mut Vm, proto: ObjRef) {
             Ok(Value::Undefined)
         }),
     );
-    attr(
-        vm,
-        proto,
-        "enctype",
-        |vm, c| {
-            let (h, n) = el(vm, &c, C::HTMLFormElement)?;
-            let m = with_doc(vm, &h, n.doc, |d| d.attr(n.id, "enctype").unwrap_or("").to_ascii_lowercase())?;
-            Ok(js(if matches!(m.as_str(), "multipart/form-data" | "text/plain") {
-                &m
-            } else {
-                "application/x-www-form-urlencoded"
-            }))
-        },
-        None,
-    );
+    // enctype and its alias encoding reflect the enctype attribute, limited to known values
+    // (HTML §4.10.18.6).
+    for name in ["enctype", "encoding"] {
+        attr(
+            vm,
+            proto,
+            name,
+            |vm, c| {
+                let (h, n) = el(vm, &c, C::HTMLFormElement)?;
+                let m =
+                    with_doc(vm, &h, n.doc, |d| d.attr(n.id, "enctype").unwrap_or("").to_ascii_lowercase())?;
+                Ok(js(if matches!(m.as_str(), "multipart/form-data" | "text/plain") {
+                    &m
+                } else {
+                    "application/x-www-form-urlencoded"
+                }))
+            },
+            Some(|vm, c| {
+                let v = rstr(vm, &c.arg(0))?;
+                let (h, n) = el(vm, &c, C::HTMLFormElement)?;
+                crate::mutation::set_or_remove(vm, &h, n, "enctype", Some(&v))?;
+                Ok(Value::Undefined)
+            }),
+        );
+    }
     op(vm, proto, "reset", 0, |vm, c| {
         let (h, n) = el(vm, &c, C::HTMLFormElement)?;
         with_doc_mut(vm, &h, n.doc, |d| d.reset_form(n.id))?;

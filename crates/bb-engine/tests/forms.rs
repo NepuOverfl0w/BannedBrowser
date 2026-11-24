@@ -294,7 +294,7 @@ fn legacy_encodings() {
 fn multipart_and_text_plain() {
     let entries = vec![
         ("na\"me\n".to_string(), EntryValue::Text("v1\nv2".into())),
-        ("file".to_string(), EntryValue::File(String::new())),
+        ("file".to_string(), EntryValue::empty_file("")),
     ];
     let body = String::from_utf8(multipart(&entries, encoding_rs::UTF_8, "XyZ")).unwrap();
     assert_eq!(
@@ -421,4 +421,13 @@ fn textarea_editing_near_multibyte_line_ends() {
         p.key(PageKey::Down, KeyMods { shift: true, ..Default::default() });
         p.insert_text("é");
     }
+}
+
+#[test]
+fn a_named_button_submits_its_value() {
+    let mut p = page(
+        r#"<form action="/s"><input name=q value=x><button id=go name=act value=save>Save</button></form>"#,
+    );
+    let o = click(&mut p, "go");
+    assert!(submitted_url(&o).ends_with("/s?q=x&act=save"), "{}", submitted_url(&o));
 }

@@ -16,6 +16,7 @@ bb-js.workspace = true
 bb-dom.workspace = true
 bb-html.workspace = true
 bb-xml.workspace = true
+getrandom.workspace = true
 bb-css.workspace = true
 bb-style.workspace = true
 bb-url.workspace = true

@@ -148,6 +148,8 @@ pub enum Task {
     /// Fetch and run a script element a script inserted (HTML §4.12.1.1: such external
     /// scripts are async).
     Script(NodeRef),
+    /// A step of a FileReader read (File API).
+    Read(Box<crate::blob::ReadTask>),
 }
 
 /// What a live (or static) collection object lists.
@@ -290,6 +292,10 @@ pub struct Host {
     pub selection: RefCell<crate::selection::State>,
     /// Documents made by createDocument: their interface is XMLDocument (DOM §4.5.1).
     pub xml_documents: RefCell<HashSet<u32>>,
+    /// FileReader states, by the objects' payloads.
+    pub readers: RefCell<Vec<crate::blob::ReaderState>>,
+    /// The blob URL store (File API §8.3): URL → Blob.
+    pub blob_urls: RefCell<HashMap<String, Value>>,
 }
 
 impl Host {
@@ -339,6 +345,8 @@ impl Host {
             traversers: RefCell::default(),
             selection: RefCell::default(),
             xml_documents: RefCell::default(),
+            readers: RefCell::default(),
+            blob_urls: RefCell::default(),
         }
     }
 
@@ -383,6 +391,10 @@ impl Host {
                     }
                 }
                 Task::Event(t, ..) => push(t, out),
+                Task::Read(r) => {
+                    out.push(r.reader);
+                    out.push(r.blob);
+                }
                 Task::Fetch(..) | Task::Script(..) => {}
             }
         }
@@ -391,6 +403,9 @@ impl Host {
         }
         self.mo.borrow().trace(out);
         self.selection.borrow().trace(out);
+        for v in self.blob_urls.borrow().values() {
+            push(v, out);
+        }
         push(&self.current_script.borrow(), out);
         if let Some(w) = self.window.get() {
             out.push(w);

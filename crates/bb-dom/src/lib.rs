@@ -8,6 +8,7 @@
 //! style/layout stages can later do incremental work.
 
 mod dump;
+pub mod form_data;
 mod forms;
 mod select;
 pub use dump::{dump_html5lib, serialize_html};
