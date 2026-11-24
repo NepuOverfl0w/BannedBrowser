@@ -493,6 +493,10 @@ impl Exotic {
 fn setup(vm: &mut Vm, class: u32, id: u64) -> JsResult<Option<(std::rc::Rc<Host>, C, CollKind)>> {
     let Some(c) = class::from_u32(class) else { return Ok(None) };
     let h = host(vm)?;
+    if c == C::Storage {
+        // Storage's payload is its area (0 local, 1 session), not a collection.
+        return Ok(Some((h, c, CollKind::Static(Vec::new()))));
+    }
     let Some(k) = kind_of(&h, id) else { return Ok(None) };
     Ok(Some((h, c, k)))
 }
@@ -507,6 +511,19 @@ impl HostExotic for Exotic {
         k: &PropKey,
     ) -> JsResult<Option<PropDesc>> {
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
+        if c == C::Storage {
+            if matches!(k, PropKey::Sym(_)) {
+                return Ok(None);
+            }
+            let name = k.display();
+            let Some((_, v)) = crate::storage::names(&h, id).into_iter().find(|x| x.0 == name) else {
+                return Ok(None);
+            };
+            if !named_visible(vm, o, k)? {
+                return Ok(None);
+            }
+            return Ok(Some(PropDesc::data(js(&v), true, true, true)));
+        }
         if let PropKey::Index(i) = k {
             if c != C::DOMStringMap {
                 return Ok(self.indexed_get(vm, &h, c, &kind, *i as usize)?.map(index_desc));
@@ -531,6 +548,16 @@ impl HostExotic for Exotic {
 
     fn own_keys(&self, vm: &mut Vm, o: ObjRef, class: u32, id: u64) -> JsResult<Vec<PropKey>> {
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(Vec::new()) };
+        if c == C::Storage {
+            let mut keys = Vec::new();
+            for (name, _) in crate::storage::names(&h, id) {
+                let k = PropKey::named(&name);
+                if named_visible(vm, o, &k)? {
+                    keys.push(k);
+                }
+            }
+            return Ok(keys);
+        }
         let mut keys: Vec<PropKey> = (0..self.indexed_len(&h, c, &kind) as u32).map(PropKey::Index).collect();
         for (name, _) in self.names(vm, &h, c, &kind)? {
             let k = PropKey::named(&name);
@@ -551,6 +578,9 @@ impl HostExotic for Exotic {
         d: &PropDesc,
     ) -> JsResult<Option<bool>> {
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
+        if c == C::Storage {
+            return crate::storage::define(vm, &h, id, k, d);
+        }
         if c == C::DOMStringMap {
             return crate::html::dataset_define(vm, &h, &kind, k, d);
         }
@@ -571,6 +601,9 @@ impl HostExotic for Exotic {
 
     fn delete(&self, vm: &mut Vm, o: ObjRef, class: u32, id: u64, k: &PropKey) -> JsResult<Option<bool>> {
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
+        if c == C::Storage {
+            return crate::storage::delete(vm, &h, id, k);
+        }
         if c == C::DOMStringMap {
             return crate::html::dataset_delete(vm, &h, &kind, k);
         }
@@ -590,13 +623,32 @@ impl HostExotic for Exotic {
     fn set(
         &self,
         vm: &mut Vm,
-        _o: ObjRef,
+        o: ObjRef,
         class: u32,
         id: u64,
         k: &PropKey,
         v: &Value,
     ) -> JsResult<Option<bool>> {
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
+        if c == C::Storage {
+            if matches!(k, PropKey::Sym(_)) {
+                return Ok(None);
+            }
+            // The named setter, unless the object or its prototype chain has the property
+            // (WebIDL §3.9.2 via LegacyPlatformObjectGetOwnProperty without named props).
+            if vm.heap.obj(o).props.get(k).is_none() {
+                let proto_has = match vm.heap.obj(o).proto {
+                    Some(p) => vm.has_property(p, k)?,
+                    None => false,
+                };
+                if !proto_has {
+                    let s = rstr(vm, v)?;
+                    crate::storage::set_item(vm, &h, id == 0, &k.display(), &s)?;
+                    return Ok(Some(true));
+                }
+            }
+            return Ok(None);
+        }
         if c == C::DOMStringMap {
             if let PropKey::Str(_) = k {
                 let s = rstr(vm, v)?;

@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS cookies (
 CREATE TABLE IF NOT EXISTS prefs (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS local_storage (
+    origin TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (origin, key)
 );";
 
 /// How opening the profile went.
@@ -236,6 +242,36 @@ impl Profile {
         })
     }
 
+    /// The saved localStorage entries: (origin, key, value).
+    pub fn load_storage(&self) -> Vec<(String, String, String)> {
+        let r = self.with_conn(|c| {
+            let mut st = c.prepare("SELECT origin, key, value FROM local_storage ORDER BY rowid")?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            Ok(rows.filter_map(Result::ok).collect())
+        });
+        r.unwrap_or_else(|e| {
+            log::warn!("couldn't load local storage: {e}");
+            Vec::new()
+        })
+    }
+
+    /// Replace the saved localStorage entries, in one transaction.
+    pub fn save_storage(&self, entries: &[(String, String, String)]) -> rusqlite::Result<()> {
+        self.with_conn(|c| {
+            let tx = c.transaction()?;
+            tx.execute("DELETE FROM local_storage", [])?;
+            {
+                let mut st = tx.prepare(
+                    "INSERT OR REPLACE INTO local_storage (origin, key, value) VALUES (?1, ?2, ?3)",
+                )?;
+                for (o, k, v) in entries {
+                    st.execute(params![o, k, v])?;
+                }
+            }
+            tx.commit()
+        })
+    }
+
     /// Replace the saved cookies with `cookies` (their persistent ones), in one transaction.
     pub fn save_cookies(&self, cookies: &[Cookie]) -> rusqlite::Result<()> {
         self.with_conn(|c| {
@@ -314,15 +350,26 @@ pub struct CookieSaver {
 impl CookieSaver {
     pub fn start(profile: Arc<Profile>, jar: Arc<dyn JarSource>) -> CookieSaver {
         let (tx, rx) = mpsc::channel::<()>();
+        // Read before the thread starts, so changes made right after `start` still count.
+        let mut saved = jar.jar().generation();
+        let mut saved_storage = jar.storage().map(|s| s.generation());
         let thread = std::thread::Builder::new()
             .name("cookie-saver".into())
             .spawn(move || {
-                let mut saved = jar.jar().generation();
                 loop {
                     let stop = match rx.recv_timeout(SAVE_INTERVAL) {
                         Ok(()) | Err(RecvTimeoutError::Disconnected) => true,
                         Err(RecvTimeoutError::Timeout) => false,
                     };
+                    if let Some(s) = jar.storage() {
+                        let g = s.generation();
+                        if Some(g) != saved_storage {
+                            match profile.save_storage(&s.all()) {
+                                Ok(()) => saved_storage = Some(g),
+                                Err(e) => log::warn!("couldn't save local storage: {e}"),
+                            }
+                        }
+                    }
                     let g = jar.jar().generation();
                     // At exit, save even without changes: last-access times moved.
                     if g != saved || stop {
@@ -361,14 +408,20 @@ impl Drop for CookieSaver {
     }
 }
 
-/// Where the saver finds the jar (the network client owns it).
+/// Where the saver finds the jar (the network client owns it), and the localStorage areas.
 pub trait JarSource: Send + Sync + 'static {
     fn jar(&self) -> &CookieJar;
+    fn storage(&self) -> Option<&bb_net::storage::WebStorage> {
+        None
+    }
 }
 
 impl JarSource for bb_net::Client {
     fn jar(&self) -> &CookieJar {
         self.cookies()
+    }
+    fn storage(&self) -> Option<&bb_net::storage::WebStorage> {
+        Some(bb_net::Client::storage(self))
     }
 }
 

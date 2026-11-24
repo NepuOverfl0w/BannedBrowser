@@ -253,6 +253,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
     let profile = profile.map(Arc::new);
     if let Some(p) = &profile {
         client.cookies().load(p.load_cookies());
+        client.storage().load(p.load_storage());
     }
     let cookie_saver = profile.clone().map(|p| bb_profile::CookieSaver::start(p, client.clone()));
     let saved_size = profile.as_ref().and_then(|p| p.pref("window.size")).and_then(|s| parse_size(&s));

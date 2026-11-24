@@ -22,6 +22,7 @@ pub mod html;
 pub mod idl;
 pub mod loader;
 pub mod net;
+pub mod storage;
 pub mod tree;
 pub mod url;
 pub mod window;

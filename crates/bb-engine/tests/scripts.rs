@@ -192,3 +192,28 @@ fn inserted_scripts_and_images() {
     let [_, _, w, h] = rect(&p, "img2");
     assert_eq!((w, h), (2.0, 3.0), "an image inserted later loads too");
 }
+
+#[test]
+fn storage_and_cookies() {
+    let client = new_client(Vec::new());
+    let url = Url::parse("http://example.test/page.html").unwrap();
+    let cfg = PageConfig { viewport: (800.0, 600.0), ..Default::default() };
+    let first = "<!doctype html><p id=o></p><script>localStorage.setItem('a', '1'); localStorage.b = '2';\
+                 sessionStorage.s = 'x'; document.cookie = 'c=3; path=/';\
+                 document.getElementById('o').textContent = localStorage.length + ' ' + localStorage.getItem('b') +\
+                   ' ' + Object.keys(localStorage).join(',') + ' ' + document.cookie;</script>";
+    let p = Page::from_html(&client, first, &url, cfg, 200, false);
+    assert_eq!(text(&p, "o"), "2 2 a,b c=3");
+    // Another page of the same origin, with the same client: localStorage and the cookie stay;
+    // sessionStorage is the window's.
+    let second = "<!doctype html><p id=o></p><script>delete localStorage.a;\
+                  document.getElementById('o').textContent = JSON.stringify(localStorage) + ' ' +\
+                    sessionStorage.length + ' ' + document.cookie;</script>";
+    let p2 = Page::from_html(&client, second, &url, cfg, 200, false);
+    assert_eq!(text(&p2, "o"), "{\"b\":\"2\"} 0 c=3");
+    assert_eq!(client.storage().area("http://example.test"), vec![("b".to_string(), "2".to_string())]);
+    // Another origin sees none of it.
+    let other = Url::parse("http://other.test/").unwrap();
+    let p3 = Page::from_html(&client, second, &other, cfg, 200, false);
+    assert_eq!(text(&p3, "o"), "{} 0 ");
+}

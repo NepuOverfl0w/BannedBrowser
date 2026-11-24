@@ -69,6 +69,21 @@ pub trait Embedder {
     fn poll_fetches(&self) -> Vec<(u64, Result<crate::net::HttpResponse, String>)> {
         Vec::new()
     }
+    /// Whether the embedder keeps localStorage (else it lives with the window).
+    fn has_storage(&self) -> bool {
+        false
+    }
+    /// The page's origin's localStorage area.
+    fn storage_area(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    fn set_storage_area(&self, _area: Vec<(String, String)>) {}
+    /// The page's cookies as document.cookie sees them.
+    fn cookie(&self) -> String {
+        String::new()
+    }
+    /// Store a cookie set through document.cookie.
+    fn set_cookie(&self, _cookie: &str) {}
     /// An element's computed values (CSSOM §9 getComputedStyle), as (property, CSS text).
     fn computed_style(&self, _doc: &Document, _node: NodeId) -> Vec<(String, String)> {
         Vec::new()
@@ -258,6 +273,9 @@ pub struct Host {
     pub next_fetch: Cell<u64>,
     /// XMLHttpRequest states, by the objects' payloads.
     pub xhrs: RefCell<Vec<crate::net::XhrState>>,
+    /// sessionStorage, and localStorage when the embedder keeps none.
+    pub session: RefCell<Vec<(String, String)>>,
+    pub local_mem: RefCell<Vec<(String, String)>>,
     /// Nodes of document 0 up to this index have had their `on…` attributes registered.
     pub scanned: Cell<u32>,
 }
@@ -301,6 +319,8 @@ impl Host {
             pending: RefCell::default(),
             next_fetch: Cell::new(1),
             xhrs: RefCell::default(),
+            session: RefCell::default(),
+            local_mem: RefCell::default(),
             scanned: Cell::new(0),
         }
     }

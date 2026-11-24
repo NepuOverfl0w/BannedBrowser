@@ -102,6 +102,18 @@ pub struct PageEmbedder {
     done_rx: std::sync::mpsc::Receiver<(u64, Result<bb_webapi::net::HttpResponse, String>)>,
 }
 
+impl PageEmbedder {
+    /// document.cookie is a non-HTTP API in the page's own site (HTML §3.1.5).
+    fn document_cookie_context(&self) -> bb_net::cookies::CookieContext {
+        bb_net::cookies::CookieContext {
+            site_for_cookies: Some(self.page_url.clone()),
+            top_level_navigation: false,
+            method: "GET".into(),
+            http_api: false,
+        }
+    }
+}
+
 /// Do a script's HTTP request with the page's client (its cookies and cache).
 fn http(
     client: &Client,
@@ -176,6 +188,23 @@ impl bb_webapi::Embedder for PageEmbedder {
                 let _ = tx.send((id, r));
             })
             .is_ok()
+    }
+    fn has_storage(&self) -> bool {
+        true
+    }
+    fn storage_area(&self) -> Vec<(String, String)> {
+        self.client.storage().area(&self.page_url.origin().serialize())
+    }
+    fn set_storage_area(&self, area: Vec<(String, String)>) {
+        self.client.storage().set_area(&self.page_url.origin().serialize(), area);
+    }
+    fn cookie(&self) -> String {
+        let ctx = self.document_cookie_context();
+        self.client.cookies().cookie_header(&self.page_url, &ctx).unwrap_or_default()
+    }
+    fn set_cookie(&self, cookie: &str) {
+        let ctx = self.document_cookie_context();
+        self.client.cookies().store(&self.page_url, cookie, &ctx);
     }
     fn poll_fetches(&self) -> Vec<(u64, Result<bb_webapi::net::HttpResponse, String>)> {
         self.done_rx.try_iter().collect()

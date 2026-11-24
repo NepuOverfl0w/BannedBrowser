@@ -151,6 +151,7 @@ interfaces! {
     ProgressEvent: Event;
     TextEncoder: None;
     TextDecoder: None;
+    Storage: None;
 }
 
 pub fn name(c: C) -> &'static str {
@@ -414,6 +415,7 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::ProgressEvent => crate::net::setup_progress_event(vm, proto),
         C::TextEncoder => crate::net::setup_text_encoder(vm, proto),
         C::TextDecoder => crate::net::setup_text_decoder(vm, proto),
+        C::Storage => crate::storage::setup_storage(vm, proto),
         _ => crate::html::setup_element_interface(vm, c, proto),
     }
 }

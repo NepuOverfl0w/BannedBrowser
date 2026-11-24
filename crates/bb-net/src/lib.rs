@@ -20,6 +20,7 @@ mod http;
 pub mod mime;
 mod proxy;
 pub mod psl;
+pub mod storage;
 mod tls;
 
 pub use headers::Headers;
@@ -260,6 +261,8 @@ pub struct ClientInner {
     pool_changed: std::sync::Condvar,
     /// This client's cookies (one client per browsing profile; private windows have their own).
     cookies: cookies::CookieJar,
+    /// Its pages' localStorage, by origin (shared and partitioned like the cookies).
+    storage: storage::WebStorage,
 }
 
 impl Client {
@@ -279,6 +282,7 @@ impl Client {
             pool: Mutex::new(http::Pool::default()),
             pool_changed: std::sync::Condvar::new(),
             cookies: cookies::CookieJar::new(),
+            storage: storage::WebStorage::new(),
         }))
     }
 
@@ -291,6 +295,11 @@ impl Client {
     /// The `User-Agent` this client sends.
     pub fn user_agent(&self) -> &str {
         self.config.user_agent()
+    }
+
+    /// This client's localStorage areas.
+    pub fn storage(&self) -> &storage::WebStorage {
+        &self.storage
     }
 
     /// This client's cookie jar.

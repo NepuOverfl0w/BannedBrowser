@@ -14,7 +14,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   interfaces, innerHTML), events with capture and bubbling and `on…` handlers, timers,
   `requestAnimationFrame`, `queueMicrotask`, console, `location` and `navigator`, `element.style`,
   `getComputedStyle` and element geometry (`getBoundingClientRect`, `offsetWidth`, …), `fetch()`,
-  XMLHttpRequest, AbortController, URL/URLSearchParams and TextEncoder/TextDecoder. The parser
+  XMLHttpRequest, AbortController, URL/URLSearchParams, TextEncoder/TextDecoder, `localStorage`
+  (saved in the profile), `sessionStorage` and `document.cookie`. The parser
   runs scripts as it goes, with `document.write`; script changes restyle and relayout the
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
   `dom/`, `url/`, `encoding/` and `fetch/api/headers/` tests (23833/31990 subtests so far).

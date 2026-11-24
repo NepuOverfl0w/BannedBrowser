@@ -155,3 +155,29 @@ fn unusable_directories_fail_cleanly() {
     assert_eq!(st.code(), "failed");
     let _ = std::fs::remove_file(&dir);
 }
+
+#[test]
+fn local_storage_survives_a_restart() {
+    let dir = temp("storage");
+    {
+        let (p, _) = Profile::open(&dir);
+        let p = Arc::new(p.unwrap());
+        let client = Arc::new(bb_net::Client::new(bb_net::ClientConfig::default()));
+        let saver = CookieSaver::start(p.clone(), client.clone());
+        client
+            .storage()
+            .set_area("https://example.com", vec![("k".into(), "v".into()), ("x".into(), "y".into())]);
+        client.storage().set_area("https://other.example", vec![("a".into(), "b".into())]);
+        saver.finish();
+    }
+    let (p, _) = Profile::open(&dir);
+    let p = p.unwrap();
+    let s = bb_net::storage::WebStorage::new();
+    s.load(p.load_storage());
+    assert_eq!(
+        s.area("https://example.com"),
+        vec![("k".to_string(), "v".to_string()), ("x".to_string(), "y".to_string())]
+    );
+    assert_eq!(s.area("https://other.example"), vec![("a".to_string(), "b".to_string())]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
