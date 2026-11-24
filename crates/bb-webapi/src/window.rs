@@ -173,6 +173,7 @@ pub fn setup_global_scope(vm: &mut Vm, g: ObjRef) {
     });
     op(vm, g, "fetch", 1, crate::net::fetch);
     op(vm, g, "structuredClone", 1, crate::worker::structured_clone);
+    op(vm, g, "createImageBitmap", 1, crate::canvas::create_image_bitmap);
     install_console(vm, g);
     install_performance(vm, g);
     if let Ok(h) = host(vm) {

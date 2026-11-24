@@ -30,6 +30,7 @@ const DIRS: &[&str] = &[
     "workers",
     "html/webappapis/structured-clone",
     "webmessaging",
+    "html/canvas/element",
     "url",
     "encoding",
     "fetch/api/headers",
@@ -73,6 +74,21 @@ impl Embedder for TestEmbedder {
     }
     fn worker_net(&self) -> Option<std::sync::Arc<dyn bb_webapi::worker::WorkerNet>> {
         Some(std::sync::Arc::new(FileNet))
+    }
+    /// Images decode from the checkout (as a browser would have loaded them).
+    fn image_bitmap(&self, url: &Url) -> Option<(u32, u32, Vec<u8>)> {
+        let req = bb_webapi::net::HttpRequest {
+            method: "GET".into(),
+            url: url.clone(),
+            headers: Vec::new(),
+            body: None,
+        };
+        let r = serve(req);
+        if r.status != 200 {
+            return None;
+        }
+        let img = bb_image::decode(&r.body).ok()?;
+        Some((img.width, img.height, img.pixels().to_vec()))
     }
 }
 
@@ -314,6 +330,17 @@ fn run_file(rel: &str) -> (usize, usize, Vec<String>) {
     (passed, n, fails)
 }
 
+/// Whether an HTML test is a reftest (`<link rel=match>` / `mismatch`).
+fn is_reftest(p: &Path) -> bool {
+    let Ok(src) = std::fs::read_to_string(p) else { return false };
+    let s = src.to_ascii_lowercase();
+    (s.contains("rel=match")
+        || s.contains("rel=\"match\"")
+        || s.contains("rel='match'")
+        || s.contains("rel=\"mismatch\""))
+        && !s.contains("testharness.js")
+}
+
 fn collect(dir: &Path, rel: &str, out: &mut Vec<String>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
@@ -340,6 +367,7 @@ fn collect(dir: &Path, rel: &str, out: &mut Vec<String>) {
             && !name.contains(".https.")
             && !name.contains(".sub.")
             && !name.contains("-ref.")
+            && !name.contains("-expected.")
         {
             if name.ends_with(".any.js") {
                 let src = std::fs::read_to_string(&p).unwrap_or_default();
@@ -349,6 +377,8 @@ fn collect(dir: &Path, rel: &str, out: &mut Vec<String>) {
                 if any_in_worker(&src) {
                     out.push(format!("{r}#worker"));
                 }
+            } else if name.ends_with(".html") && is_reftest(&p) {
+                // Reftests compare renderings; this runner only runs testharness tests.
             } else {
                 out.push(r);
             }

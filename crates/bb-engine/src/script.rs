@@ -78,7 +78,7 @@ impl LayoutCtx {
                 container_margins: c.container_margins,
             };
             let styles = bb_style::Stylist::new(&self.sheets, media).compute(doc, &env);
-            let res = crate::PageResources { base: &self.base, images: &self.images };
+            let res = crate::PageResources { base: &self.base, images: &self.images, canvases: None };
             let mut tree = bb_layout::build_tree(doc, &styles, &res, c.viewport);
             bb_layout::layout(&mut tree);
             self.cache = Some((key, styles, tree));
@@ -185,6 +185,13 @@ impl bb_webapi::worker::WorkerNet for WorkerNet {
 }
 
 impl bb_webapi::Embedder for PageEmbedder {
+    fn image_bitmap(&self, url: &Url) -> Option<(u32, u32, Vec<u8>)> {
+        let ctx = self.layout.try_borrow().ok()?;
+        match ctx.images.get(&url.href())? {
+            bb_layout::tree::ImageState::Ready(img) => Some((img.width, img.height, img.pixels().to_vec())),
+            _ => None,
+        }
+    }
     fn worker_net(&self) -> Option<std::sync::Arc<dyn bb_webapi::worker::WorkerNet>> {
         Some(std::sync::Arc::new(WorkerNet { client: self.client.clone(), page_url: self.page_url.clone() }))
     }

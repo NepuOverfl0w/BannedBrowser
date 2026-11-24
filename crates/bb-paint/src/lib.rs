@@ -5,6 +5,7 @@
 //! reference implementation used by every test.
 
 pub mod canvas;
+pub mod canvas2d;
 pub mod display;
 pub mod glyphs;
 pub mod path;

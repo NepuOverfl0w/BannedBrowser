@@ -73,6 +73,10 @@ pub trait Embedder {
     fn worker_net(&self) -> Option<std::sync::Arc<dyn crate::worker::WorkerNet>> {
         None
     }
+    /// A loaded image's pixels (premultiplied RGBA: width, height, bytes), for drawImage.
+    fn image_bitmap(&self, _url: &Url) -> Option<(u32, u32, Vec<u8>)> {
+        None
+    }
     /// Wakes the embedder's event loop from another thread (a worker sent a message).
     fn waker(&self) -> Option<crate::worker::Waker> {
         None
@@ -314,6 +318,8 @@ pub struct Host {
     pub ports: RefCell<Vec<crate::port::PortState>>,
     /// BroadcastChannels of this global.
     pub broadcasts: RefCell<Vec<crate::port::BroadcastState>>,
+    /// Canvases' 2D contexts and the canvas API objects' data.
+    pub canvas: RefCell<crate::canvas::CanvasState>,
 }
 
 impl Host {
@@ -369,6 +375,7 @@ impl Host {
             closing: Cell::new(false),
             ports: RefCell::default(),
             broadcasts: RefCell::default(),
+            canvas: RefCell::default(),
         }
     }
 
@@ -429,6 +436,7 @@ impl Host {
         self.workers.borrow().trace(out);
         crate::port::trace(self, out);
         crate::port::trace_broadcasts(self, out);
+        self.canvas.borrow().trace(out);
         for v in self.blob_urls.borrow().values() {
             push(v, out);
         }

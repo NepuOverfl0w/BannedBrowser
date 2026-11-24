@@ -115,6 +115,16 @@ pub fn rasterize(path: &Path, clip: (i32, i32, i32, i32)) -> Option<Mask> {
 }
 
 pub fn rasterize_polys(polys: &[Vec<Point>], clip: (i32, i32, i32, i32)) -> Option<Mask> {
+    rasterize_polys_rule(polys, clip, false)
+}
+
+/// As [`rasterize_polys`], with the even-odd fill rule when `even_odd` (coverage from the
+/// accumulated winding folded to 0..1: |w| mod 2, mirrored above 1).
+pub fn rasterize_polys_rule(
+    polys: &[Vec<Point>],
+    clip: (i32, i32, i32, i32),
+    even_odd: bool,
+) -> Option<Mask> {
     let (mut minx, mut miny, mut maxx, mut maxy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     for poly in polys {
         for p in poly {
@@ -154,7 +164,16 @@ pub fn rasterize_polys(polys: &[Vec<Point>], clip: (i32, i32, i32, i32)) -> Opti
         let row = &acc.a[y * (w + 2)..y * (w + 2) + w + 2];
         for x in 0..w {
             sum += row[x];
-            let c = sum.abs().min(1.0);
+            let c = if even_odd {
+                let t = sum.abs() % 2.0;
+                if t > 1.0 {
+                    2.0 - t
+                } else {
+                    t
+                }
+            } else {
+                sum.abs().min(1.0)
+            };
             data[y * w + x] = (c * 255.0 + 0.5) as u8;
         }
     }

@@ -27,7 +27,7 @@ bytes ─▶ bb-net ─▶ encoding sniff ─▶ bb-html tokenizer ─▶ tree b
 | `bb-style` | Cascade, custom properties, computed values, UA stylesheet, HTML presentational hints |
 | `bb-text` | Font discovery (fontdb), CSS font matching + aliases, per-character fallback, shaping (rustybuzz), outlines, UAX #14/#9 helpers, the text editing model shared by the chrome and page form controls (`edit.rs`) |
 | `bb-image` | PNG/JPEG/GIF/WebP via allowed codecs; own BMP/ICO decoders; premultiplied RGBA |
-| `bb-paint` | Paths, exact-area anti-aliased rasterizer, gradients, clips, layers, blur shadows, glyph cache, display list renderer |
+| `bb-paint` | Paths, exact-area anti-aliased rasterizer (nonzero and even-odd), gradients, clips, layers, blur shadows, glyph cache, display list renderer; `canvas2d.rs`: the canvas 2D context's drawing model (state stack, stroker, gradients, patterns, compositing and blending, shadows, images, text, SVG path data) |
 | `bb-layout` | Box tree, block/inline/float/table/flex/positioned layout, list markers, replaced elements, display-list generation, hit testing |
 | `bb-engine` | Page pipeline (fetch → … → display list), parallel subresources, internal `about:` pages, error pages, frames (`frames.rs`), focus and interaction with page content (`interact.rs`), form submission (`forms.rs`) |
 | `bb-profile` | The profile directory's SQLite database: persistent cookies (saved by a background thread shortly after changes and at exit), prefs (window size); an exclusive lock per session, damaged files moved aside, newer schemas left alone |

@@ -177,6 +177,13 @@ interfaces! {
     MessageChannel: None;
     MessagePort: EventTarget;
     BroadcastChannel: EventTarget;
+    CanvasRenderingContext2D: None;
+    CanvasGradient: None;
+    CanvasPattern: None;
+    ImageData: None;
+    TextMetrics: None;
+    Path2D: None;
+    ImageBitmap: None;
 }
 
 pub fn name(c: C) -> &'static str {
@@ -365,6 +372,8 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::Worker => (crate::worker::worker_ctor, 1),
         C::MessageChannel => (crate::port::message_channel_ctor, 0),
         C::BroadcastChannel => (crate::port::broadcast_channel_ctor, 1),
+        C::ImageData => (crate::canvas::image_data_ctor, 2),
+        C::Path2D => (crate::canvas::path2d_ctor, 0),
         C::XMLSerializer => (crate::xml::xml_serializer_ctor, 0),
         C::StaticRange => (crate::range::static_range_ctor, 1),
         _ => return None,
@@ -407,6 +416,9 @@ fn exposed_in_worker(c: C) -> bool {
             | C::MessageChannel
             | C::MessagePort
             | C::BroadcastChannel
+            | C::ImageData
+            | C::Path2D
+            | C::ImageBitmap
     )
 }
 
@@ -548,6 +560,13 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::MessageChannel => crate::port::setup_message_channel(vm, proto),
         C::MessagePort => crate::port::setup_message_port(vm, proto),
         C::BroadcastChannel => crate::port::setup_broadcast_channel(vm, proto),
+        C::CanvasRenderingContext2D => crate::canvas::setup_context(vm, proto),
+        C::CanvasGradient => crate::canvas::setup_gradient(vm, proto),
+        C::CanvasPattern => crate::canvas::setup_pattern(vm, proto),
+        C::ImageData => crate::canvas::setup_image_data(vm, proto),
+        C::TextMetrics => crate::canvas::setup_text_metrics(vm, proto),
+        C::Path2D => crate::canvas::setup_path2d(vm, proto),
+        C::ImageBitmap => crate::canvas::setup_image_bitmap(vm, proto),
         C::WorkerGlobalScope | C::DedicatedWorkerGlobalScope | C::WorkerLocation | C::WorkerNavigator => {}
         C::XMLSerializer => crate::xml::setup_xml_serializer(vm, proto),
         _ => crate::html::setup_element_interface(vm, c, proto),

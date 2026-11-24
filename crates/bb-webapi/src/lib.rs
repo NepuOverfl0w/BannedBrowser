@@ -11,6 +11,7 @@
 
 pub mod attr;
 pub mod blob;
+pub mod canvas;
 pub mod class;
 pub mod collections;
 pub mod css;

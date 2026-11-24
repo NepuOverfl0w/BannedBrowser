@@ -593,6 +593,10 @@ fn handle_change(
     )?;
     if ns == Namespace::None {
         crate::events::attribute_changed(vm, h, n, local)?;
+        // HTML §4.12.5: a canvas's width or height attribute set resets its bitmap.
+        if matches!(local, "width" | "height") && with_doc(vm, h, n.doc, |d| d.is_html(n.id, "canvas"))? {
+            crate::canvas::size_changed(vm, h, n)?;
+        }
     }
     Ok(())
 }

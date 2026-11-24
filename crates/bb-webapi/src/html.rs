@@ -900,6 +900,7 @@ pub fn setup_element_interface(vm: &mut Vm, c: C, proto: ObjRef) {
         C::HTMLCanvasElement => {
             reflect(vm, proto, "width", "width", ULong(300));
             reflect(vm, proto, "height", "height", ULong(150));
+            crate::canvas::setup_canvas_element(vm, proto);
         }
         C::HTMLTemplateElement => {
             attr(

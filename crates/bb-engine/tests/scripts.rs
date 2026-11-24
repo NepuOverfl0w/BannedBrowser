@@ -347,3 +347,28 @@ fn message_channels_and_ports_in_workers() {
     wait_for_change(&mut p, "out", "wait");
     assert_eq!(text(&p, "out"), "local:tick|via port hello");
 }
+
+#[test]
+fn canvas_drawings_are_painted() {
+    let p = page(
+        "<!doctype html><style>body{margin:0}</style><canvas id=c width=100 height=50></canvas>\
+         <p id=out></p><script>\
+           var ctx = document.getElementById('c').getContext('2d');\
+           ctx.fillStyle = 'rgb(255, 0, 0)';\
+           ctx.fillRect(0, 0, 50, 50);\
+           ctx.fillStyle = '#00f';\
+           ctx.beginPath(); ctx.arc(75, 25, 20, 0, Math.PI * 2); ctx.fill();\
+           var d = ctx.getImageData(75, 25, 1, 1).data;\
+           out.textContent = [d[0], d[1], d[2], d[3], c.toDataURL().slice(0, 22)].join(',');\
+         </script>",
+    );
+    assert_eq!(text(&p, "out"), "0,0,255,255,data:image/png;base64,");
+    let r = p.render(0.0, 1.0, 120, 60);
+    let at = |x: usize, y: usize| {
+        let i = (y * r.w as usize + x) * 4;
+        [r.pixels[i], r.pixels[i + 1], r.pixels[i + 2]]
+    };
+    assert_eq!(at(10, 10), [255, 0, 0], "the canvas is painted");
+    assert_eq!(at(75, 25), [0, 0, 255]);
+    assert_eq!(at(110, 10), [255, 255, 255], "outside the canvas");
+}

@@ -27,6 +27,10 @@ pub trait Resources {
     fn is_visited(&self, _url: &str) -> bool {
         false
     }
+    /// A canvas element's bitmap (premultiplied, as an image), if scripts drew into it.
+    fn canvas(&self, _node: NodeId) -> Option<Arc<bb_image::Image>> {
+        None
+    }
 }
 
 /// A form control's rendering data.
@@ -616,6 +620,28 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// A canvas: its bitmap as an image, or a transparent box of its size (HTML §4.12.5:
+    /// the width and height attributes, 300 × 150 by default).
+    fn canvas_replaced(&self, node: NodeId) -> Replaced {
+        if let Some(img) = self.res.canvas(node) {
+            return Replaced::Image { image: Some(img), attr_size: (None, None), alt: None, broken: false };
+        }
+        let dim = |name: &str, def: f32| {
+            self.doc
+                .attr(node, name)
+                .and_then(|v| {
+                    v.trim().split(|c: char| !c.is_ascii_digit()).next().and_then(|d| d.parse::<f32>().ok())
+                })
+                .unwrap_or(def)
+        };
+        Replaced::Image {
+            image: None,
+            attr_size: (Some(dim("width", 300.0)), Some(dim("height", 150.0))),
+            alt: None,
+            broken: false,
+        }
+    }
+
     /// Build boxes for `node` (and descendants) into `parent`.
     fn build(&mut self, node: NodeId, parent: BoxId, prev_space: &mut bool, word_start: &mut bool) {
         let doc = self.doc;
@@ -651,7 +677,8 @@ impl<'a> Builder<'a> {
                             None => return,
                         },
                         "iframe" => Some(Replaced::Frame { default: (300.0, 150.0) }),
-                        "embed" | "object" | "video" | "canvas" | "audio" | "applet" => {
+                        "canvas" => Some(self.canvas_replaced(node)),
+                        "embed" | "object" | "video" | "audio" | "applet" => {
                             if name == "object"
                                 && doc.children(node).any(|c| {
                                     doc.node(c).is_element()

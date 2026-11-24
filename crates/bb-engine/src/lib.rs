@@ -117,16 +117,23 @@ pub struct Page {
     pub script_title_changed: bool,
     /// What scripts' layout queries style and lay out with (kept current here).
     layout_ctx: Rc<std::cell::RefCell<script::LayoutCtx>>,
+    /// Canvas bitmaps as images for layout, and the canvas generation they are from.
+    canvas_images: HashMap<bb_dom::NodeId, Arc<bb_image::Image>>,
+    canvas_gen: u64,
 }
 
 pub(crate) struct PageResources<'a> {
     pub(crate) base: &'a Url,
     pub(crate) images: &'a HashMap<String, ImageState>,
+    pub(crate) canvases: Option<&'a HashMap<bb_dom::NodeId, Arc<bb_image::Image>>>,
 }
 
 impl Resources for PageResources<'_> {
     fn image(&self, url: &str) -> ImageState {
         self.images.get(url).cloned().unwrap_or(ImageState::Loading)
+    }
+    fn canvas(&self, node: bb_dom::NodeId) -> Option<Arc<bb_image::Image>> {
+        self.canvases?.get(&node).cloned()
     }
     fn resolve(&self, url: &str) -> String {
         self.base.join(url.trim()).map(|u| u.href()).unwrap_or_else(|_| url.to_string())
@@ -689,6 +696,8 @@ impl Page {
         let title = doc.title();
         let favicon_url = favicon(&doc, &base);
         let mut page = Page {
+            canvas_images: HashMap::new(),
+            canvas_gen: u64::MAX,
             url: url.clone(),
             base_url: base,
             title,
@@ -858,9 +867,34 @@ impl Page {
         }
     }
 
+    /// The window's canvas bitmaps as images (rebuilt when scripts drew).
+    fn refresh_canvases(&mut self) {
+        let Some(w) = &self.script else { return };
+        let st = w.host.canvas.borrow();
+        if st.generation == self.canvas_gen {
+            return;
+        }
+        self.canvas_gen = st.generation;
+        self.canvas_images.clear();
+        for (&k, ctx) in &st.contexts {
+            let n = bb_webapi::NodeRef::unpack(k);
+            if n.doc != 0 || ctx.bitmap.w == 0 || ctx.bitmap.h == 0 {
+                continue;
+            }
+            let img = bb_image::Image {
+                width: ctx.bitmap.w,
+                height: ctx.bitmap.h,
+                frames: vec![bb_image::Frame { pixels: Arc::new(ctx.bitmap.data.clone()), delay_ms: 0 }],
+            };
+            self.canvas_images.insert(n.id, Arc::new(img));
+        }
+    }
+
     fn relayout_styles_ready(&mut self) {
         let tl = Instant::now();
-        let res = PageResources { base: &self.base_url, images: &self.images };
+        self.refresh_canvases();
+        let res =
+            PageResources { base: &self.base_url, images: &self.images, canvases: Some(&self.canvas_images) };
         let mut tree = bb_layout::build_tree(&self.doc, &self.styles, &res, self.config.viewport);
         bb_layout::layout(&mut tree);
         self.layout = tree;
