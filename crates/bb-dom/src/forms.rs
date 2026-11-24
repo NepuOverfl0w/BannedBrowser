@@ -403,6 +403,24 @@ impl Document {
     }
 
     /// §4.10.21.5 reset a form: every listed element's reset algorithm.
+    /// HTML §4.10.4 a label's labeled control: the labelable element its `for` names, else
+    /// its first labelable descendant.
+    pub fn labeled_control(&self, label: NodeId) -> Option<NodeId> {
+        let labelable = |n: NodeId| {
+            self.element(n).is_some_and(|e| {
+                e.ns == crate::Namespace::Html
+                    && (matches!(
+                        e.name.as_str(),
+                        "button" | "meter" | "output" | "progress" | "select" | "textarea"
+                    ) || (e.name == "input" && self.input_type(n) != InputType::Hidden))
+            })
+        };
+        if let Some(id) = self.attr(label, "for") {
+            return self.get_element_by_id(id).filter(|&n| labelable(n));
+        }
+        self.descendants(label).skip(1).find(|&n| labelable(n))
+    }
+
     pub fn reset_form(&mut self, form: NodeId) {
         for el in self.form_controls(form) {
             self.form_state.values.remove(&el);

@@ -324,6 +324,9 @@ fn after_script_event(
     }
     if let Some(u) = p.take_script_navigation() {
         notify(id, TabEvent::Clicked { link: Some(NavRequest::get(u)), open: LinkOpen::Current });
+    } else if let Some(s) = p.take_script_submission() {
+        // A script's form.submit(): the whole tab navigates (its target isn't followed yet).
+        notify(id, TabEvent::Clicked { link: Some(s.request), open: LinkOpen::Current });
     }
 }
 

@@ -34,6 +34,7 @@ const DIRS: &[&str] = &[
     "url",
     "encoding",
     "fetch/api/headers",
+    "css/geometry",
 ];
 
 fn root() -> PathBuf {
@@ -63,6 +64,11 @@ impl Embedder for TestEmbedder {
         if path == "/resources/testharnessreport.js" {
             return Ok(REPORT.to_string());
         }
+        let path = if path == "/resources/WebIDLParser.js" {
+            "/resources/webidl2/lib/webidl2.js".to_string()
+        } else {
+            path
+        };
         let file = root().join(path.trim_start_matches('/'));
         std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))
     }
@@ -107,7 +113,11 @@ impl bb_webapi::worker::WorkerNet for FileNet {
 /// Requests are answered from the checkout (as wptserve would serve the files), with the
 /// wrapper wptserve generates for an `.any.js` test's dedicated-worker variant.
 fn serve(req: bb_webapi::net::HttpRequest) -> bb_webapi::net::HttpResponse {
-    let path = req.url.pathname();
+    let mut path = req.url.pathname();
+    // wptserve's alias for the WebIDL parser idlharness.js loads.
+    if path == "/resources/WebIDLParser.js" {
+        path = "/resources/webidl2/lib/webidl2.js".to_string();
+    }
     let generated = path.strip_suffix(".any.worker.js").map(|base| worker_wrapper(&format!("{base}.any.js")));
     let file = root().join(path.trim_start_matches('/'));
     let (status, status_text, body) = match generated {
@@ -261,6 +271,21 @@ fn run_file(rel: &str) -> (usize, usize, Vec<String>) {
         // Workers run in real time: while they live, wait for them rather than skip ahead.
         if w.has_live_workers() && real_start.elapsed() < std::time::Duration::from_secs(20) {
             std::thread::sleep(std::time::Duration::from_millis(1));
+            continue;
+        }
+        // Work is waiting (messages, tasks): run it before any time passes.
+        if w.has_queued_tasks() {
+            continue;
+        }
+        // Animation frames come every 16 ms (unless a timer is due sooner).
+        if w.has_animation_frames() {
+            let now = emb.now_ms();
+            let step = w.next_timer_due().map_or(16.0, |t| (t - now).clamp(0.0, 16.0));
+            clock.set(clock.get() + step);
+            w.run_animation_frames();
+            if emb.now_ms() > 60_000.0 {
+                break;
+            }
             continue;
         }
         // Idle: jump to the next timer (or give up after a minute of virtual time).

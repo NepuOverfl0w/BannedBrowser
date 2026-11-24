@@ -374,17 +374,53 @@ pub fn setup_form(vm: &mut Vm, proto: ObjRef) {
         with_doc_mut(vm, &h, n.doc, |d| d.reset_form(n.id))?;
         Ok(Value::Undefined)
     });
-    for name in ["submit", "requestSubmit"] {
-        op(vm, proto, name, 0, |vm, c| {
-            let (h, n) = el(vm, &c, C::HTMLFormElement)?;
+    // submit() submits without a submit event; requestSubmit(submitter) fires one first and
+    // submits unless it is canceled (HTML §4.10.18.4). The embedder does the submission.
+    op(vm, proto, "submit", 0, |vm, c| {
+        let (h, n) = el(vm, &c, C::HTMLFormElement)?;
+        h.pending_submit.set(Some(n));
+        Ok(Value::Undefined)
+    });
+    op(vm, proto, "requestSubmit", 0, |vm, c| {
+        let (h, n) = el(vm, &c, C::HTMLFormElement)?;
+        let submitter = match c.arg(0) {
+            Value::Undefined | Value::Null => None,
+            v => {
+                let Some(s) = node_of(vm, &v) else {
+                    return vm.type_error("the submitter must be an element");
+                };
+                let ok = with_doc(vm, &h, s.doc, |d| {
+                    d.form_owner(s.id) == Some(n.id) && crate::forms::submit_button(d, s.id)
+                })?;
+                if !ok || s.doc != n.doc {
+                    return crate::exception::throw(
+                        vm,
+                        "NotFoundError",
+                        "the submitter isn't a submit button of this form",
+                    );
+                }
+                Some(s)
+            }
+        };
+        if crate::events::fire_submit(vm, &h, n, submitter)? {
             h.pending_submit.set(Some(n));
-            Ok(Value::Undefined)
-        });
-    }
+        }
+        Ok(Value::Undefined)
+    });
     for name in ["checkValidity", "reportValidity"] {
         op(vm, proto, name, 0, |vm, c| {
             el(vm, &c, C::HTMLFormElement)?;
             Ok(Value::Bool(true))
         });
     }
+}
+
+/// Whether `el` is a submit button (HTML §4.10.2): a `<button>` in the Submit Button state
+/// (the default), `<input type=submit>` or `<input type=image>`.
+pub fn submit_button(d: &bb_dom::Document, el: bb_dom::NodeId) -> bool {
+    if d.is_html(el, "button") {
+        let ty = d.attr(el, "type").map(|t| t.trim().to_ascii_lowercase());
+        return !matches!(ty.as_deref(), Some("button") | Some("reset"));
+    }
+    d.is_html(el, "input") && matches!(d.input_type(el), bb_dom::InputType::Submit | bb_dom::InputType::Image)
 }

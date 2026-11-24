@@ -16,7 +16,19 @@ pub fn run(args: &Args) -> Result<()> {
         ..Default::default()
     };
     let t0 = std::time::Instant::now();
-    let page = Page::load(&client, &url, config);
+    let mut page = Page::load(&client, &url, config);
+    // Let the page's scripts finish what they started at load (timers, requests, frames),
+    // as a window would before anyone looks at it.
+    let wait_until =
+        std::time::Instant::now() + std::time::Duration::from_millis(args.script_wait.unwrap_or(1000));
+    while let Some(d) = page.script_wakeup() {
+        let now = std::time::Instant::now();
+        if now >= wait_until {
+            break;
+        }
+        std::thread::sleep(d.min(wait_until - now).min(std::time::Duration::from_millis(50)));
+        page.run_scripts();
+    }
     log::info!(
         "loaded {} in {:?} (fetch {}ms, parse {}ms, subresources {}ms [{} sheets, {} images, {} failed], style {}ms, layout {}ms)",
         page.url,

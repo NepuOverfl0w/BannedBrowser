@@ -20,6 +20,8 @@ pub struct Args {
     pub urls: Vec<String>,
     pub no_images: bool,
     pub user_agent: Option<String>,
+    /// Headless: how long the page's scripts may keep running after load (ms).
+    pub script_wait: Option<u64>,
 }
 
 pub const HELP: &str = "BannedBrowser — a web browser written from scratch in Rust.
@@ -43,6 +45,8 @@ OPTIONS:
     --new-tab <URL>            Open URL in a new tab
     --profile <DIR>            Use DIR as the profile directory
     --no-images                Don't load images
+    --script-wait <MS>         Headless: let the page's timers and tasks run this long after
+                               load, or until nothing is pending (default 1000)
     -h, --help                 Show this help
     -V, --version              Show the version
 ";
@@ -79,6 +83,9 @@ pub fn parse(argv: impl Iterator<Item = String>) -> Result<Args, String> {
             "--new-tab" => a.new_tab.push(val("--new-tab")?),
             "--profile" => a.profile = Some(val("--profile")?.into()),
             "--no-images" => a.no_images = true,
+            "--script-wait" => {
+                a.script_wait = Some(val("--script-wait")?.parse().map_err(|_| "bad --script-wait")?)
+            }
             "-h" | "--help" => return Err(HELP.to_string()),
             "-V" | "--version" => return Err(format!("BannedBrowser {}", env!("CARGO_PKG_VERSION"))),
             s if s.starts_with("--") => return Err(format!("unknown option {s}\n\n{HELP}")),

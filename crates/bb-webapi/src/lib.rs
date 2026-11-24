@@ -9,6 +9,7 @@
 //! Event loop (HTML §8.1.7): the embedder calls [`Window::run_tasks`] when a timer is due
 //! or work was queued; each task is followed by a microtask checkpoint.
 
+pub mod activation;
 pub mod attr;
 pub mod blob;
 pub mod canvas;
@@ -20,6 +21,7 @@ pub mod events;
 pub mod exception;
 pub mod forms;
 pub mod frames;
+pub mod geometry;
 pub mod host;
 pub mod html;
 pub mod idl;
@@ -139,13 +141,24 @@ impl Window {
 
     /// Whether tasks are waiting (queued tasks or animation frame callbacks) in any window.
     pub fn has_tasks(&self) -> bool {
+        self.has_queued_tasks()
+            || frames::family(&self.host).iter().any(|h| !h.frame_callbacks.borrow().is_empty())
+    }
+
+    /// Whether tasks, messages or finished requests are waiting (animation frames aside, which
+    /// wait for the next frame).
+    pub fn has_queued_tasks(&self) -> bool {
         frames::family(&self.host).iter().any(|h| {
             !h.tasks.borrow().is_empty()
-                || !h.frame_callbacks.borrow().is_empty()
                 || !h.pending.borrow().is_empty()
                 || h.workers.borrow().has_messages()
                 || port::has_messages(h)
         })
+    }
+
+    /// Whether animation frame callbacks are waiting in any window.
+    pub fn has_animation_frames(&self) -> bool {
+        frames::family(&self.host).iter().any(|h| !h.frame_callbacks.borrow().is_empty())
     }
 
     /// Run queued tasks and the timers due now, in every window of the page (each in its
@@ -254,6 +267,27 @@ impl Window {
                 r
             })
             .flatten()
+    }
+
+    /// Fire the submit event at form `form` of the window's document, with its submitter;
+    /// false if a listener canceled it (HTML §4.10.21.3 "submit" step 6.3).
+    pub fn fire_submit(&mut self, form: bb_dom::NodeId, submitter: Option<bb_dom::NodeId>) -> bool {
+        let h = self.host.clone();
+        self.begin_task();
+        let r = events::fire_submit(
+            &mut self.vm,
+            &h,
+            NodeRef { doc: 0, id: form },
+            submitter.map(|id| NodeRef { doc: 0, id }),
+        );
+        let proceed = *r.as_ref().unwrap_or(&true);
+        self.end_task(r.map(|_| ()));
+        proceed
+    }
+
+    /// The form a script asked to submit (`form.submit()`, or `requestSubmit()` not canceled).
+    pub fn take_pending_submit(&self) -> Option<bb_dom::NodeId> {
+        self.host.pending_submit.take().filter(|n| n.doc == 0).map(|n| n.id)
     }
 
     /// Dispatch a trusted event at node `target` of the window's document (or at the window

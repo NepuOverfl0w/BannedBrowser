@@ -109,6 +109,8 @@ pub struct Page {
     /// For a frame of a scripted page: the frame's window in the page's Window (whose
     /// document this page shows; it is lent back to the window whenever scripts run).
     pub frame_host: Option<Rc<bb_webapi::Host>>,
+    /// A form submission scripts asked for (the tab follows it).
+    script_submission: Option<forms::FormSubmission>,
     /// The client the page loaded with (scripts fetch with it; stylesheets are re-collected
     /// with it after scripts change them).
     pub client: Client,
@@ -793,6 +795,7 @@ impl Page {
             focus: interact::FocusState { window_focus: true, ..Default::default() },
             script: window,
             frame_host,
+            script_submission: None,
             client: client.clone(),
             style_signature,
             script_repaint: false,
@@ -816,6 +819,13 @@ impl Page {
         self.lend_frame_documents();
         w.swap_document(&mut self.doc);
         let dirty = w.take_dirty();
+        // form.submit(): a submission without a submit event (HTML §4.10.21.3 step 6).
+        if let Some(form) = w.take_pending_submit() {
+            if self.doc.is_html(form, "form") {
+                self.script_submission =
+                    forms::submission(&self.doc, form, None, None, &self.url, &self.base_url, self.encoding);
+            }
+        }
         for line in w.take_console() {
             log::info!("console [{}]: {line}", self.url);
         }

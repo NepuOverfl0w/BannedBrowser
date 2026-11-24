@@ -137,6 +137,9 @@ pub struct FocusState {
     pub(crate) editor: Option<TextField>,
     /// The browser window gives the page keyboard focus (the caret shows).
     pub(crate) window_focus: bool,
+    /// The focused text control's value when it got focus (a change event fires on blur if
+    /// it differs, HTML §4.10.5.5).
+    pub(crate) edit_start: Option<String>,
 }
 
 /// The focus kind of an element if it is focusable (§6.6.2 "focusable area", for the elements
@@ -180,16 +183,7 @@ pub fn focus_kind(doc: &Document, n: NodeId) -> Option<FocusKind> {
 /// §4.10.4 the labeled control of a `<label>`: the element its `for` names (if labelable),
 /// else its first labelable descendant.
 fn labeled_control(doc: &Document, label: NodeId) -> Option<NodeId> {
-    let labelable = |n: NodeId| {
-        doc.element(n).is_some_and(|e| {
-            matches!(e.name.as_str(), "button" | "meter" | "output" | "progress" | "select" | "textarea")
-                || (e.name == "input" && doc.input_type(n) != InputType::Hidden)
-        })
-    };
-    if let Some(id) = doc.attr(label, "for") {
-        return doc.get_element_by_id(id).filter(|&n| labelable(n));
-    }
-    doc.descendants(label).skip(1).find(|&n| labelable(n))
+    doc.labeled_control(label)
 }
 
 impl Page {
@@ -230,12 +224,23 @@ impl Page {
                 f.page.blur();
             }
         }
-        self.focus.node = None;
+        let left = self.focus.node.take();
         self.focus.editor = None;
         if had {
             self.rebuild_display();
         }
+        self.committed(left);
         had
+    }
+
+    /// A text control lost focus: `change` if its value changed since it got focus.
+    fn committed(&mut self, left: Option<NodeId>) {
+        let start = self.focus.edit_start.take();
+        if let (Some(n), Some(start)) = (left, start) {
+            if self.doc.control_value(n) != start {
+                self.script_event("change", n, false);
+            }
+        }
     }
 
     /// Focus `n` in this document (no frame).
@@ -257,8 +262,19 @@ impl Page {
                 ed
             });
         }
+        let left = self.focus.node.filter(|&o| Some(o) != n);
+        let start = if left.is_some() { self.focus.edit_start.take() } else { None };
+        if self.focus.node != n {
+            self.focus.edit_start =
+                n.filter(|&n| self.doc.is_text_control(n)).map(|n| self.doc.control_value(n));
+        }
         self.focus.node = n;
         self.rebuild_display();
+        if let (Some(o), Some(start)) = (left, start) {
+            if self.doc.control_value(o) != start {
+                self.script_event("change", o, false);
+            }
+        }
     }
 
     /// The edit view (caret, selection) of the focused text control, for layout to paint.
@@ -377,11 +393,13 @@ impl Page {
                 let c = self.doc.checkedness(el);
                 self.doc.set_checkedness(el, !c);
                 self.relayout_styles_ready();
+                self.script_changed(el);
             }
             Some(FocusKind::Radio) => {
                 if !self.doc.checkedness(el) {
                     self.doc.set_checkedness(el, true);
                     self.relayout_styles_ready();
+                    self.script_changed(el);
                 }
             }
             Some(FocusKind::Select) => out.popup = self.select_popup(el),
@@ -425,6 +443,10 @@ impl Page {
             return self.submit_form(form, Some(el), point);
         }
         if forms::is_reset_button(&self.doc, el) {
+            // HTML §4.10.21.5 "reset": a cancelable reset event first.
+            if !self.script_event("reset", form, true) {
+                return None;
+            }
             self.doc.reset_form(form);
             if let Some(ed) = self.focus.editor.as_mut() {
                 if let Some(n) = self.focus.node {
@@ -453,6 +475,10 @@ impl Page {
                 self.focus_node(Some(bad));
                 return None;
             }
+        }
+        // Step 6.3: the submit event, unless the form submits itself.
+        if !self.script_submit(form, submitter.filter(|&s| s != form)) {
+            return None;
         }
         forms::submission(&self.doc, form, submitter, point, &self.url, &self.base_url, self.encoding)
     }
@@ -542,6 +568,7 @@ impl Page {
             return false;
         }
         self.relayout_styles_ready();
+        self.script_changed(select);
         true
     }
 
@@ -643,6 +670,7 @@ impl Page {
                 let c = self.doc.checkedness(n);
                 self.doc.set_checkedness(n, !c);
                 self.relayout_styles_ready();
+                self.script_changed(n);
                 Outcome::changed()
             }
             FocusKind::Radio => match key {
@@ -650,6 +678,7 @@ impl Page {
                     if !self.doc.checkedness(n) {
                         self.doc.set_checkedness(n, true);
                         self.relayout_styles_ready();
+                        self.script_changed(n);
                     }
                     Outcome::changed()
                 }
@@ -672,6 +701,7 @@ impl Page {
                     self.doc.set_checkedness(r, true);
                     self.focus_node(Some(r));
                     self.relayout_styles_ready();
+                    self.script_changed(r);
                     Outcome::changed()
                 }
                 _ => Outcome::default(),

@@ -627,13 +627,34 @@ pub fn setup_rect(vm: &mut Vm, proto: ObjRef) {
     }
 }
 
+/// DOMRectList (Geometry §4): a legacy platform object whose rects are in its slots and
+/// whose indices come from `rect_list_get` (the collections' exotic hooks).
 pub fn setup_rect_list(vm: &mut Vm, proto: ObjRef) {
     op(vm, proto, "item", 1, |vm, c| {
         let i = to_ulong(vm, &c.arg(0))?;
+        this_of(vm, &c.this, C::DOMRectList)?;
         let Value::Object(o) = c.this else { return Ok(Value::Null) };
-        let v = vm.get(o, &bb_js::vm::PropKey::Index(i))?;
-        Ok(if v.is_undefined() { Value::Null } else { v })
+        Ok(rect_list_get(vm, o, i).unwrap_or(Value::Null))
     });
+    attr(
+        vm,
+        proto,
+        "length",
+        |vm, c| {
+            this_of(vm, &c.this, C::DOMRectList)?;
+            let Value::Object(o) = c.this else { return Ok(Value::Number(0.0)) };
+            Ok(Value::Number(rect_list_len(vm, o) as f64))
+        },
+        None,
+    );
+}
+
+pub fn rect_list_get(vm: &Vm, o: ObjRef, i: u32) -> Option<Value> {
+    vm.host_obj(o)?.slots.get(i as usize).cloned()
+}
+
+pub fn rect_list_len(vm: &Vm, o: ObjRef) -> usize {
+    vm.host_obj(o).map_or(0, |h| h.slots.len())
 }
 
 /// The box facts for an element of the window's document.
@@ -665,9 +686,11 @@ pub fn setup_element_geometry(vm: &mut Vm, el_proto: ObjRef, html_proto: ObjRef)
             Some(b) => vec![new_rect(vm, &h, b.border)],
             None => Vec::new(),
         };
-        let a = vm.new_array(rects);
-        vm.heap.obj_mut(a).proto = Some(h.proto(C::DOMRectList));
-        Ok(Value::Object(a))
+        let o = vm.new_host_object(Some(h.proto(C::DOMRectList)), C::DOMRectList as u32, 0, true);
+        if let Some(ho) = vm.host_obj_mut(o) {
+            ho.slots = rects;
+        }
+        Ok(Value::Object(o))
     });
     for (name, i) in [("clientLeft", 0usize), ("clientTop", 1), ("clientWidth", 2), ("clientHeight", 3)] {
         attr_with(

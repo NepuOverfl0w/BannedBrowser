@@ -168,7 +168,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Frames: `<frameset>`, `<iframe>` (src/srcdoc), link targets, per-frame scrolling, frame navigations in history | ✅ |
 | SVG | 📋 |
 | JavaScript engine | ✅ our own `bb-js`: all of test262 (`language`, `built-ins`, `annexB`) |
-| Web APIs for scripts | 🚧 the DOM (MutationObserver, Range, TreeWalker, Selection), events, timers, `document.write`, fetch/XHR, URL, TextEncoder, localStorage/sessionStorage, `document.cookie`, DOMParser/XMLSerializer, Blob/File/FileReader/FormData, dedicated workers, MessageChannel, BroadcastChannel, Canvas 2D, iframes with their own windows (same-origin access, cross-origin wrappers, `postMessage`), `document.open`; Shadow DOM, custom elements still to come |
+| Web APIs for scripts | 🚧 the DOM (MutationObserver, Range, TreeWalker, Selection), events, timers, `document.write`, fetch/XHR, URL, TextEncoder, localStorage/sessionStorage, `document.cookie`, DOMParser/XMLSerializer, Blob/File/FileReader/FormData, dedicated workers, MessageChannel, BroadcastChannel, Canvas 2D, DOMMatrix and the other geometry interfaces, form events, iframes with their own windows (same-origin access, cross-origin wrappers, `postMessage`), `document.open`; Shadow DOM, custom elements still to come |
 
 </details>
 
@@ -180,6 +180,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | theoldnet.com (start page + lite) | ✅ |
 | myip.wtf, myip.wtf/headers | ✅ |
 | Archived 1996–99 sites via theoldnet: GeoCities (home + a fan page), Netscape, WinZip, Microsoft IE | ✅ live + offline snapshots |
+| whatismybrowser.com | ✅ renders and its scripts run (JavaScript, cookies, screen size detected); our User-Agent string is read as "Netscape Navigator 5" |
 | Wikipedia, Hacker News | 📋 not tested yet |
 
 | Test suite | Pass rate |
@@ -192,7 +193,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | test262 execution | **48803 / 48803 (100 %)** |
 | Unicode NormalizationTest (UAX #15) | **all lines + every other code point** |
 | Public Suffix List tests | **78 / 78 (100 %)** |
-| WPT Web API tests (`dom/`, `domparsing/`, `FileAPI/`, `workers/`, `webmessaging/`, `html/canvas/element/`, …) | **81897 / 102185 subtests** (in progress) |
+| WPT Web API tests (`dom/`, `domparsing/`, `FileAPI/`, `workers/`, `webmessaging/`, `html/canvas/element/`, …) | **85965 / 106378 subtests** (in progress) |
 
 ## 🏗 Architecture
 
@@ -307,6 +308,7 @@ bannedbrowser [OPTIONS] [URL]...
   --private-window           Open a private window
   --new-tab <URL>            Open URL in a new tab
   --profile <DIR>            Profile directory (also BB_PROFILE)
+  --script-wait <MS>         Headless: let page scripts run this long after load (default 1000)
 ```
 
 HTTPS/HTTP proxies are taken from `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY`.

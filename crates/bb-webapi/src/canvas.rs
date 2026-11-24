@@ -491,7 +491,8 @@ pub fn setup_context(vm: &mut Vm, proto: ObjRef) {
             let Some(a) = finite_args(vm, &c, 6)? else { return Ok(Value::Undefined) };
             Matrix::new(a[0], a[1], a[2], a[3], a[4], a[5])
         } else {
-            matrix_init(vm, &c.arg(0))?
+            let Some(m) = matrix_init(vm, &c.arg(0))? else { return Ok(Value::Undefined) };
+            m
         };
         with_ctx(vm, &c, false, |x| x.state.transform = m)?;
         Ok(Value::Undefined)
@@ -501,11 +502,10 @@ pub fn setup_context(vm: &mut Vm, proto: ObjRef) {
     });
     op(vm, proto, "getTransform", 0, |vm, c| {
         let m = with_ctx(vm, &c, false, |x| x.state.transform)?;
-        let o = vm.new_object();
-        for (k, v) in [("a", m.a), ("b", m.b), ("c", m.c), ("d", m.d), ("e", m.e), ("f", m.f)] {
-            vm.create_data_property(o, PropKey::named(k), Value::Number(v as f64))?;
-        }
-        Ok(Value::Object(o))
+        let f = |x: f32| x as f64;
+        let mat = crate::geometry::Mat::from_2d(f(m.a), f(m.b), f(m.c), f(m.d), f(m.e), f(m.f));
+        let h = host(vm)?;
+        Ok(crate::geometry::new_matrix(vm, &h, C::DOMMatrix, &mat))
     });
     // Compositing and image smoothing.
     num_attr(
@@ -958,31 +958,16 @@ fn long(vm: &mut Vm, v: &Value) -> JsResult<i64> {
 }
 
 /// DOMMatrix2DInit (a, b, c, d, e, f with m11 … m42 aliases), for setTransform.
-fn matrix_init(vm: &mut Vm, v: &Value) -> JsResult<Matrix> {
-    if matches!(v, Value::Undefined | Value::Null) {
-        return Ok(Matrix::IDENTITY);
+/// A DOMMatrix2DInit, validated and fixed up (Geometry §6.1); None if an entry isn't finite
+/// (the canvas methods then do nothing).
+fn matrix_init(vm: &mut Vm, v: &Value) -> JsResult<Option<Matrix>> {
+    let m = crate::geometry::matrix_2d_init(vm, v)?;
+    let vals = [m.m[0][0], m.m[0][1], m.m[1][0], m.m[1][1], m.m[3][0], m.m[3][1]];
+    if vals.iter().any(|x| !x.is_finite()) {
+        return Ok(None);
     }
-    let mut out = [1.0f32, 0.0, 0.0, 1.0, 0.0, 0.0];
-    for (i, (short, long_name)) in
-        [("a", "m11"), ("b", "m12"), ("c", "m21"), ("d", "m22"), ("e", "m41"), ("f", "m42")]
-            .iter()
-            .enumerate()
-    {
-        let s = dict_get(vm, v, short)?;
-        let l = dict_get(vm, v, long_name)?;
-        let x = if !s.is_undefined() {
-            vm.to_number(&s)?
-        } else if !l.is_undefined() {
-            vm.to_number(&l)?
-        } else {
-            out[i] as f64
-        };
-        if !x.is_finite() {
-            return vm.type_error("the matrix has a non-finite component");
-        }
-        out[i] = x as f32;
-    }
-    Ok(Matrix::new(out[0], out[1], out[2], out[3], out[4], out[5]))
+    let f = |x: f64| x as f32;
+    Ok(Some(Matrix::new(f(vals[0]), f(vals[1]), f(vals[2]), f(vals[3]), f(vals[4]), f(vals[5]))))
 }
 
 /// A numeric attribute of the context (unrestricted double: non-finite values are ignored).
@@ -1164,7 +1149,7 @@ pub fn setup_gradient(vm: &mut Vm, proto: ObjRef) {
 pub fn setup_pattern(vm: &mut Vm, proto: ObjRef) {
     op(vm, proto, "setTransform", 0, |vm, c| {
         let (_, id) = this_of(vm, &c.this, C::CanvasPattern)?;
-        let m = matrix_init(vm, &c.arg(0))?;
+        let Some(m) = matrix_init(vm, &c.arg(0))? else { return Ok(Value::Undefined) };
         let h = host(vm)?;
         if let Some(p) = h.canvas.borrow_mut().patterns.get_mut(id as usize) {
             p.transform = m;
@@ -1329,7 +1314,7 @@ pub fn setup_path2d(vm: &mut Vm, proto: ObjRef) {
         let (_, id) = this_of(vm, &c.this, C::Path2D)?;
         let h = host(vm)?;
         let Some(other) = path_arg(vm, &h, &c.arg(0)) else { return vm.type_error("addPath needs a Path2D") };
-        let m = matrix_init(vm, &c.arg(1))?;
+        let Some(m) = matrix_init(vm, &c.arg(1))? else { return Ok(Value::Undefined) };
         if let Some(p) = h.canvas.borrow_mut().paths.get_mut(id as usize) {
             p.add(&other.transformed(&m));
         }

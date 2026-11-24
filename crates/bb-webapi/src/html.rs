@@ -206,6 +206,14 @@ pub fn setup_html_element(vm: &mut Vm, proto: ObjRef) {
     attr(vm, proto, "outerText", inner_text_get, Some(outer_text_set));
     op(vm, proto, "click", 0, |vm, c| {
         let (h, n) = this_node(vm, &c.this, C::HTMLElement)?;
+        // HTML §6.5.3 click(): a disabled form control gets none.
+        let disabled = with_doc(vm, &h, n.doc, |d| {
+            ["button", "input", "select", "textarea"].iter().any(|t| d.is_html(n.id, t))
+                && d.is_disabled(n.id)
+        })?;
+        if disabled {
+            return Ok(Value::Undefined);
+        }
         crate::events::fire_synthetic_click(vm, &h, n)?;
         Ok(Value::Undefined)
     });

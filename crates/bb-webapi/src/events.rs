@@ -172,6 +172,7 @@ fn init_fields(c: C) -> Vec<(&'static str, char, Value)> {
             ("total", 'd', Value::Number(0.0)),
         ],
         C::FormDataEvent => vec![("formData", 'F', Value::Undefined)],
+        C::SubmitEvent => vec![("submitter", 'n', Value::Null)],
         C::MessageEvent => vec![
             ("data", 'a', Value::Null),
             ("lastEventId", 's', js("")),
@@ -497,6 +498,24 @@ pub fn setup_custom_event(vm: &mut Vm, proto: ObjRef) {
     });
 }
 
+/// SubmitEvent (HTML §4.10.21.3): its submitter.
+pub fn setup_submit_event(vm: &mut Vm, proto: ObjRef) {
+    define_fields(vm, proto, C::SubmitEvent, &[]);
+}
+
+/// Fire the submit event at `form` (HTML §4.10.21.3 "submit" step 6.3): a trusted,
+/// bubbling, cancelable SubmitEvent. Returns false if a listener canceled it.
+pub fn fire_submit(vm: &mut Vm, h: &Host, form: NodeRef, submitter: Option<NodeRef>) -> JsResult<bool> {
+    let e = trusted_event(vm, h, C::SubmitEvent, "submit", true, true);
+    let s = match submitter {
+        Some(s) => wrap(vm, h, s)?,
+        None => Value::Null,
+    };
+    set_field(vm, e, "submitter", s);
+    let t = wrap(vm, h, form)?;
+    dispatch(vm, h, e, t)
+}
+
 pub fn setup_ui_event(vm: &mut Vm, proto: ObjRef) {
     define_fields(vm, proto, C::UIEvent, &[]);
     attr(
@@ -720,6 +739,21 @@ pub fn dispatch(vm: &mut Vm, h: &Host, e: ObjRef, target: Value) -> JsResult<boo
     let arr = vm.new_array(path.iter().map(|o| Value::Object(*o)).collect());
     set_slot(vm, e, S_PATH, Value::Object(arr));
     let bubbles = flags(vm, e) & BUBBLES != 0;
+    // Steps 5 and 11: a script's click event gets the activation behavior of its target (or
+    // the nearest ancestor with one); the browser does that itself for trusted clicks.
+    let activation = match node_of(vm, &target) {
+        Some(n)
+            if ty == "click"
+                && flags(vm, e) & TRUSTED == 0
+                && matches!(vm.host_data(&Value::Object(e)), Some((c, _)) if c == C::MouseEvent as u32) =>
+        {
+            match crate::activation::target(vm, h, n, bubbles)? {
+                Some(t) => Some((t, crate::activation::pre(vm, h, t)?)),
+                None => None,
+            }
+        }
+        _ => None,
+    };
     // Capturing: from the top down to the target.
     for (i, &t) in path.iter().enumerate().rev() {
         if flags(vm, e) & STOP != 0 {
@@ -744,6 +778,14 @@ pub fn dispatch(vm: &mut Vm, h: &Host, e: ObjRef, target: Value) -> JsResult<boo
     set_slot(vm, e, S_PATH, Value::Undefined);
     let f = flags(vm, e);
     set_flags(vm, e, f & !(DISPATCH | STOP | STOP_IMMEDIATE));
+    // Steps 13–14.
+    if let Some((t, saved)) = activation {
+        if f & CANCELED != 0 {
+            crate::activation::canceled(vm, h, t, &saved)?;
+        } else {
+            crate::activation::activate(vm, h, t, &saved)?;
+        }
+    }
     Ok(f & CANCELED == 0)
 }
 

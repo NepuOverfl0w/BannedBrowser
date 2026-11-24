@@ -457,4 +457,41 @@ impl Page {
             w.dispatch_ui(C::Event, "input", Some(target), true, false, &[]);
         });
     }
+
+    /// `input` then `change` at a control whose checkedness or selection the user changed
+    /// (HTML §4.10.5.5 "input activation behavior", §4.10.7 select).
+    pub(crate) fn script_changed(&mut self, n: NodeId) {
+        if self.script.is_none() {
+            return;
+        }
+        self.with_window(|w| {
+            w.dispatch_ui(C::Event, "input", Some(n), true, false, &[]);
+            w.dispatch_ui(C::Event, "change", Some(n), true, false, &[]);
+        });
+    }
+
+    /// A simple bubbling event at `n` from the browser; false if a listener canceled it.
+    pub(crate) fn script_event(&mut self, ty: &str, n: NodeId, cancelable: bool) -> bool {
+        if self.script.is_none() {
+            return true;
+        }
+        let mut proceed = true;
+        self.with_window(|w| proceed = w.dispatch_ui(C::Event, ty, Some(n), true, cancelable, &[]));
+        proceed
+    }
+
+    /// The submit event at `form` before a submission; false if a listener canceled it.
+    pub(crate) fn script_submit(&mut self, form: NodeId, submitter: Option<NodeId>) -> bool {
+        if self.script.is_none() {
+            return true;
+        }
+        let mut proceed = true;
+        self.with_window(|w| proceed = w.fire_submit(form, submitter));
+        proceed
+    }
+
+    /// A submission a script asked for (`form.submit()`, `requestSubmit()`), taken.
+    pub fn take_script_submission(&mut self) -> Option<crate::forms::FormSubmission> {
+        self.script_submission.take()
+    }
 }

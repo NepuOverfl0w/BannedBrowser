@@ -9,6 +9,8 @@ Everything on `main` after the 0.1.0 release commit counts toward v0.2.
 The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 
 ### Added
+- Headless screenshots let the page's scripts run for a moment after load (`--script-wait <ms>`,
+  default 1000), so pages that finish with timers or requests are captured as they settle.
 - **Pages run JavaScript** (milestone E, in progress): the new `bb-webapi` crate gives each page
   a Window with the DOM (Node, Document, Element, Text, Attr, collections, HTML element
   interfaces, innerHTML), events with capture and bubbling and `on…` handlers, timers,
@@ -27,11 +29,17 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   `frameElement` and `postMessage` work between them, and a frame of another origin is only
   reachable through a cross-origin wrapper (`postMessage`, `location` assignment, a few
   properties; anything else throws a SecurityError). `document.open`/`close` and
-  `document.write` after loading replace the document, as in other browsers. The parser
+  `document.write` after loading replace the document, as in other browsers. Form events:
+  `input`/`change` from checkboxes, radios, selects and edited text fields, cancelable `reset`
+  and `submit` (SubmitEvent with `submitter`), `form.submit()` and `requestSubmit()`, and
+  activation behavior for clicks scripts dispatch (`checkbox.click()` toggles it, `link.click()`
+  navigates, labels and summaries work). The
+  Geometry Interfaces: DOMPoint, DOMQuad, DOMMatrix (with CSS transform strings) and
+  `WebKitCSSMatrix`, structured-cloneable, and canvas transforms as DOMMatrix. The parser
   runs scripts as it goes, with `document.write`; script changes restyle and relayout the
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
   `dom/`, `domparsing/`, `FileAPI/`, `xhr/formdata/`, `url/`, `encoding/` and `fetch/api/headers/` tests
-  and `workers/`, `webmessaging/`, structured clone (81897/102185 subtests so far).
+  and `workers/`, `webmessaging/`, structured clone (85965/106378 subtests so far).
 - **JavaScript engine (milestone D):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262, and an interpreter: bytecode compiler, stack VM, garbage

@@ -517,6 +517,10 @@ impl HostExotic for Exotic {
         if class == crate::window::WINDOW_PROPERTIES {
             return crate::window::properties_get_own(vm, k);
         }
+        if class == C::DOMRectList as u32 {
+            let PropKey::Index(i) = k else { return Ok(None) };
+            return Ok(crate::css::rect_list_get(vm, o, *i).map(index_desc));
+        }
         if class == crate::frames::CROSS_ORIGIN_WINDOW || class == crate::frames::CROSS_ORIGIN_LOCATION {
             return crate::frames::exotic_get_own(vm, o, class, k);
         }
@@ -560,6 +564,9 @@ impl HostExotic for Exotic {
         if class == crate::window::WINDOW_PROPERTIES {
             return crate::window::properties_keys(vm);
         }
+        if class == C::DOMRectList as u32 {
+            return Ok((0..crate::css::rect_list_len(vm, o) as u32).map(PropKey::Index).collect());
+        }
         if class == crate::frames::CROSS_ORIGIN_WINDOW || class == crate::frames::CROSS_ORIGIN_LOCATION {
             return crate::frames::exotic_keys(vm, o, class);
         }
@@ -600,6 +607,9 @@ impl HostExotic for Exotic {
         if class == crate::frames::CROSS_ORIGIN_WINDOW || class == crate::frames::CROSS_ORIGIN_LOCATION {
             return crate::frames::exotic_refuse(vm);
         }
+        if class == C::DOMRectList as u32 {
+            return Ok(if matches!(k, PropKey::Index(_)) { Some(false) } else { None });
+        }
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
         if c == C::Storage {
             return crate::storage::define(vm, &h, id, k, d);
@@ -629,6 +639,12 @@ impl HostExotic for Exotic {
         }
         if class == crate::frames::CROSS_ORIGIN_WINDOW || class == crate::frames::CROSS_ORIGIN_LOCATION {
             return crate::frames::exotic_refuse(vm);
+        }
+        if class == C::DOMRectList as u32 {
+            return Ok(match k {
+                PropKey::Index(i) => Some(*i as usize >= crate::css::rect_list_len(vm, o)),
+                _ => None,
+            });
         }
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
         if c == C::Storage {
@@ -661,6 +677,10 @@ impl HostExotic for Exotic {
     ) -> JsResult<Option<bool>> {
         if class == crate::frames::CROSS_ORIGIN_WINDOW || class == crate::frames::CROSS_ORIGIN_LOCATION {
             return crate::frames::exotic_set(vm, class, k);
+        }
+        if class == C::DOMRectList as u32 {
+            // No indexed setter: indices can't be set (WebIDL §3.9.2).
+            return Ok(if matches!(k, PropKey::Index(_)) { Some(false) } else { None });
         }
         let Some((h, c, kind)) = setup(vm, class, id)? else { return Ok(None) };
         if c == C::Storage {

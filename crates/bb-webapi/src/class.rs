@@ -138,6 +138,11 @@ interfaces! {
     DOMRectReadOnly: None;
     DOMRect: DOMRectReadOnly;
     DOMRectList: None;
+    DOMPointReadOnly: None;
+    DOMPoint: DOMPointReadOnly;
+    DOMQuad: None;
+    DOMMatrixReadOnly: None;
+    DOMMatrix: DOMMatrixReadOnly;
     URL: None;
     URLSearchParams: None;
     Headers: None;
@@ -167,6 +172,7 @@ interfaces! {
     FileReader: EventTarget;
     FormData: None;
     FormDataEvent: Event;
+    SubmitEvent: Event;
     Crypto: None;
     MessageEvent: Event;
     Worker: EventTarget;
@@ -350,6 +356,9 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::Document => (crate::dom::document_ctor, 0),
         C::DOMException => (crate::exception::ctor, 0),
         C::DOMRect | C::DOMRectReadOnly => (crate::css::rect_ctor, 0),
+        C::DOMPoint | C::DOMPointReadOnly => (crate::geometry::point_ctor, 0),
+        C::DOMQuad => (crate::geometry::quad_ctor, 0),
+        C::DOMMatrix | C::DOMMatrixReadOnly => (crate::geometry::matrix_ctor, 0),
         C::URL => (crate::url::url_ctor, 1),
         C::Headers => (crate::net::headers_ctor, 0),
         C::Request => (crate::net::request_ctor, 1),
@@ -368,6 +377,7 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::FileReader => (crate::blob::file_reader_ctor, 0),
         C::FormData => (crate::blob::form_data_ctor, 0),
         C::FormDataEvent => (crate::events::event_ctor, 2),
+        C::SubmitEvent => (crate::events::event_ctor, 1),
         C::MessageEvent => (crate::events::event_ctor, 1),
         C::Worker => (crate::worker::worker_ctor, 1),
         C::MessageChannel => (crate::port::message_channel_ctor, 0),
@@ -419,6 +429,13 @@ fn exposed_in_worker(c: C) -> bool {
             | C::ImageData
             | C::Path2D
             | C::ImageBitmap
+            | C::DOMRectReadOnly
+            | C::DOMRect
+            | C::DOMPointReadOnly
+            | C::DOMPoint
+            | C::DOMQuad
+            | C::DOMMatrixReadOnly
+            | C::DOMMatrix
     )
 }
 
@@ -474,7 +491,7 @@ pub fn install_scope(vm: &mut Vm, h: &Host, worker: bool) {
         if worker && c == C::Window {
             continue;
         }
-        setup(vm, c, p, k);
+        setup(vm, c, p, k, worker);
     }
     if worker {
         vm.heap.obj_mut(g).proto = Some(protos[C::DedicatedWorkerGlobalScope as usize]);
@@ -487,7 +504,7 @@ pub fn install_scope(vm: &mut Vm, h: &Host, worker: bool) {
     vm.heap.obj_mut(g).proto = Some(protos[C::Window as usize]);
 }
 
-fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
+fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef, worker: bool) {
     match c {
         C::EventTarget => crate::events::setup_event_target(vm, proto),
         C::Node => crate::dom::setup_node(vm, proto, ctor),
@@ -513,6 +530,7 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
         C::Event => crate::events::setup_event(vm, proto, ctor),
         C::CustomEvent => crate::events::setup_custom_event(vm, proto),
         C::UIEvent => crate::events::setup_ui_event(vm, proto),
+        C::SubmitEvent => crate::events::setup_submit_event(vm, proto),
         C::MouseEvent => crate::events::setup_mouse_event(vm, proto),
         C::KeyboardEvent => crate::events::setup_keyboard_event(vm, proto),
         C::ErrorEvent => crate::events::setup_error_event(vm, proto),
@@ -521,8 +539,19 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef) {
             crate::selection::setup_window(vm, proto);
         }
         C::CSSStyleDeclaration => crate::css::setup_style_declaration(vm, proto),
-        C::DOMRectReadOnly => crate::css::setup_rect_readonly(vm, proto),
-        C::DOMRect => crate::css::setup_rect(vm, proto),
+        C::DOMRectReadOnly => {
+            crate::css::setup_rect_readonly(vm, proto);
+            crate::geometry::setup_rect_statics(vm, ctor, c);
+        }
+        C::DOMRect => {
+            crate::css::setup_rect(vm, proto);
+            crate::geometry::setup_rect_statics(vm, ctor, c);
+        }
+        C::DOMPointReadOnly => crate::geometry::setup_point_readonly(vm, proto, ctor),
+        C::DOMPoint => crate::geometry::setup_point(vm, proto, ctor),
+        C::DOMQuad => crate::geometry::setup_quad(vm, proto, ctor),
+        C::DOMMatrixReadOnly => crate::geometry::setup_matrix_readonly(vm, proto, ctor, worker),
+        C::DOMMatrix => crate::geometry::setup_matrix(vm, proto, ctor, worker),
         C::DOMRectList => crate::css::setup_rect_list(vm, proto),
         C::URL => {
             crate::url::setup_url(vm, proto, ctor);

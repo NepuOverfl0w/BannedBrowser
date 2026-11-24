@@ -431,3 +431,66 @@ fn a_named_button_submits_its_value() {
     let o = click(&mut p, "go");
     assert!(submitted_url(&o).ends_with("/s?q=x&act=save"), "{}", submitted_url(&o));
 }
+
+#[test]
+fn form_events_reach_scripts() {
+    let mut p = page(
+        r#"<form id=f action="/go"><input id=c type=checkbox><input id=t name=t>
+        <select id=s><option>a<option>b</select><button id=r type=reset>R</button>
+        <button id=b>Go</button></form><p id=log></p>
+        <script>var log = [], f = document.getElementById('f'), cancel = true;
+        function rec(e) { log.push(e.type + ':' + e.target.id + (e.submitter ? '/' + e.submitter.id : '')); }
+        ['input', 'change', 'reset', 'submit'].forEach(function (t) { f.addEventListener(t, rec); });
+        f.addEventListener('submit', function (e) { if (cancel) e.preventDefault(); cancel = false; });
+        f.addEventListener('reset', function (e) { e.preventDefault(); });</script>"#,
+    );
+    click(&mut p, "c");
+    assert!(p.doc.checkedness(by_id(&p, "c")));
+    click(&mut p, "t");
+    p.insert_text("hi");
+    click(&mut p, "c");
+    let s = by_id(&p, "s");
+    assert!(p.choose_option(&[], s, 1));
+    p.doc.set_control_value(by_id(&p, "t"), "kept");
+    click(&mut p, "r");
+    assert_eq!(p.doc.control_value(by_id(&p, "t")), "kept", "a canceled reset keeps the values");
+    // The first submission is canceled, the second goes ahead.
+    assert!(click(&mut p, "b").submit.is_none());
+    let out = click(&mut p, "b");
+    assert!(submitted_url(&out).starts_with("http://example.test/go?t=kept"));
+    let log = |p: &mut Page| {
+        p.with_window(|w| w.run_script("document.getElementById('log').textContent = log.join(' ')"));
+        p.doc.text_content(by_id(p, "log"))
+    };
+    assert_eq!(
+        log(&mut p),
+        "input:c change:c change:t input:c change:c input:s change:s reset:f submit:f/b submit:f/b"
+    );
+    // form.submit() asks the page for a submission, without a submit event.
+    p.with_window(|w| w.run_script("f.submit()"));
+    let s = p.take_script_submission().expect("form.submit() submits");
+    assert!(s.request.url.href().starts_with("http://example.test/go?t=kept"));
+}
+
+#[test]
+fn script_clicks_have_activation_behavior() {
+    let mut p = page(
+        r#"<input id=c type=checkbox><label id=l for=r>R</label><input id=r type=radio name=g>
+        <input id=d type=checkbox disabled><a id=a href="/next">next</a><p id=log></p>
+        <script>var log = [];
+        document.addEventListener('change', function (e) { log.push('change:' + e.target.id); });
+        var c = document.getElementById('c');
+        c.click();
+        c.addEventListener('click', function (e) { e.preventDefault(); });
+        c.click();
+        document.getElementById('l').click();
+        document.getElementById('d').click();
+        log.push(c.checked, document.getElementById('r').checked, document.getElementById('d').checked);
+        document.getElementById('log').textContent = log.join(' ');
+        document.getElementById('a').click();</script>"#,
+    );
+    // The canceled second click puts the checkbox back.
+    assert_eq!(p.doc.text_content(by_id(&p, "log")), "change:c change:r true true false");
+    assert!(p.doc.checkedness(by_id(&p, "c")));
+    assert_eq!(p.take_script_navigation().map(|u| u.href()).as_deref(), Some("http://example.test/next"));
+}

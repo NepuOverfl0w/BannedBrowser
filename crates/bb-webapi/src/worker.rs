@@ -132,6 +132,9 @@ pub fn host_serialize(vm: &mut Vm, o: ObjRef) -> Option<JsResult<HostSer>> {
         strings.extend(name);
         return Some(Ok(HostSer { class, bytes, strings, numbers }));
     }
+    if let Some(g) = crate::geometry::serialize(vm, o, class) {
+        return Some(Ok(g));
+    }
     if class == C::DOMException as u32 {
         let slots = vm.host_obj(o).map(|h| h.slots.clone()).unwrap_or_default();
         let s = |v: Option<&Value>| match v {
@@ -168,6 +171,9 @@ pub fn host_deserialize(vm: &mut Vm, s: &HostSer) -> JsResult<Value> {
         let name = s.strings.first().cloned().unwrap_or_default();
         let msg = s.strings.get(1).cloned().unwrap_or_default();
         return Ok(crate::exception::make(vm, &name, &msg));
+    }
+    if let Some(v) = crate::geometry::deserialize(vm, &h, s) {
+        return Ok(v);
     }
     vm.type_error("that platform object can't be recreated here")
 }
