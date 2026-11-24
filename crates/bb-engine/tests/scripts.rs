@@ -429,3 +429,25 @@ fn removed_frames_stop_running() {
     assert_eq!(text(&p, "t"), "2,TypeError,TypeError,0,written");
     p.run_scripts();
 }
+
+#[test]
+fn module_scripts_import() {
+    let mut p = page(
+        "<!doctype html><p id=m>-</p><p id=d>-</p><p id=b>-</p>\
+         <script type=module>import { v } from 'data:text/javascript,export const v = 40 + 2';\
+         document.getElementById('m').textContent = 'static ' + v;\
+         import('data:text/javascript,export default 7').then(function (x) {\
+           document.getElementById('d').textContent = 'dynamic ' + x.default; });\
+         import('bare').catch(function (e) { document.getElementById('b').textContent = e.name; });</script>\
+         <p id=s>-</p><script id=late></script><script>\
+         document.getElementById('late').src = \"data:text/javascript,document.getElementById('s').textContent = 'src set'\";</script>",
+    );
+    assert_eq!(text(&p, "m"), "static 42");
+    wait_for_change(&mut p, "d", "-");
+    assert_eq!(text(&p, "d"), "dynamic 7");
+    // Bare specifiers need import maps, which aren't supported.
+    assert_eq!(text(&p, "b"), "TypeError");
+    // Setting src on a connected script that never ran runs it.
+    wait_for_change(&mut p, "s", "-");
+    assert_eq!(text(&p, "s"), "src set");
+}

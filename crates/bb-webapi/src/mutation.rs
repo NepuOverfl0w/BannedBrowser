@@ -597,6 +597,14 @@ fn handle_change(
         if matches!(local, "width" | "height") && with_doc(vm, h, n.doc, |d| d.is_html(n.id, "canvas"))? {
             crate::canvas::size_changed(vm, h, n)?;
         }
+        // HTML §4.12.1: a src attribute set on a connected script element that hasn't
+        // started prepares it.
+        if local == "src" && n.doc == 0 && !h.started_scripts.borrow().contains(&n.pack()) {
+            let set = with_doc(vm, h, n.doc, |d| d.is_html(n.id, "script") && d.attr(n.id, "src").is_some())?;
+            if set {
+                crate::loader::script_inserted(vm, h, n);
+            }
+        }
         if matches!(local, "src" | "srcdoc") && h.frames.borrow().nested {
             let hr = host(vm)?;
             if std::ptr::eq(&*hr, h) {

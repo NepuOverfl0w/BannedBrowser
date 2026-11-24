@@ -168,7 +168,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | Frames: `<frameset>`, `<iframe>` (src/srcdoc), link targets, per-frame scrolling, frame navigations in history | ✅ |
 | SVG | 📋 |
 | JavaScript engine | ✅ our own `bb-js`: all of test262 (`language`, `built-ins`, `annexB`) |
-| Web APIs for scripts | 🚧 the DOM (MutationObserver, Range, TreeWalker, Selection), events, timers, `document.write`, fetch/XHR, URL, TextEncoder, localStorage/sessionStorage, `document.cookie`, DOMParser/XMLSerializer, Blob/File/FileReader/FormData, dedicated workers, MessageChannel, BroadcastChannel, Canvas 2D, DOMMatrix and the other geometry interfaces, form events, iframes with their own windows (same-origin access, cross-origin wrappers, `postMessage`), `document.open`; Shadow DOM, custom elements still to come |
+| Web APIs for scripts | 🚧 the DOM (MutationObserver, Range, TreeWalker, Selection), events, timers, `document.write`, fetch/XHR, URL, TextEncoder, localStorage/sessionStorage, `document.cookie`, DOMParser/XMLSerializer, Blob/File/FileReader/FormData, dedicated and module workers, module imports, MessageChannel, BroadcastChannel, Canvas 2D, DOMMatrix and the other geometry interfaces, form events, iframes with their own windows (same-origin access, cross-origin wrappers, `postMessage`), `document.open`; Shadow DOM, custom elements still to come |
 
 </details>
 

@@ -105,6 +105,8 @@ pub struct WorkerState {
     pub link: Option<WorkerLink>,
     /// The worker's name (WorkerGlobalScope.name).
     pub name: String,
+    /// A module worker (its global's importScripts throws).
+    pub module: bool,
 }
 
 impl WorkerState {
@@ -669,17 +671,19 @@ fn run_worker(s: WorkerStart) {
         None => emb.fetch_script(&s.url),
     };
     let src = match src {
-        Ok(t) if !s.module => t,
-        Ok(_) => {
-            s.link.send(FromWorker::LoadFailed("module workers aren't supported yet".into()));
-            return;
-        }
+        Ok(t) => t,
         Err(e) => {
             s.link.send(FromWorker::LoadFailed(e));
             return;
         }
     };
-    w.run_script(&src);
+    if s.module {
+        // A module worker: its script is a module (with static imports through the loader).
+        w.host.workers.borrow_mut().module = true;
+        w.run_module_script(&src, &s.url.href());
+    } else {
+        w.run_script(&src);
+    }
     loop {
         if s.interrupt.load(Ordering::SeqCst) {
             break;
@@ -757,6 +761,10 @@ pub fn setup_worker_global(vm: &mut Vm, g: ObjRef) {
     // HTML §10.3.4 importScripts(...urls): fetch and run each, in order.
     op(vm, g, "importScripts", 0, |vm, c| {
         let h = host(vm)?;
+        // HTML §10.3.4 step 1: module workers can't importScripts.
+        if h.workers.borrow().module {
+            return vm.type_error("importScripts() can't be used in a module worker");
+        }
         let base = h.url.borrow().clone();
         let mut urls = Vec::with_capacity(c.args.len());
         for a in &c.args {

@@ -458,3 +458,26 @@ pub fn document_close(vm: &mut Vm, h: &Host, doc: u32) -> JsResult<()> {
     fire_load(vm, h);
     Ok(())
 }
+
+/// HTML §8.1.5.5 "resolve a module specifier" (without import maps: only URLs and `/`, `./`,
+/// `../` paths), then fetch the module script: (its URL, as the module map key; its source).
+pub fn fetch_module(
+    emb: &dyn Embedder,
+    base: &bb_url::Url,
+    specifier: &str,
+    referrer: Option<&str>,
+) -> Result<(String, Vec<u8>), String> {
+    let referrer = referrer.and_then(|r| bb_url::Url::parse(r).ok());
+    let base = referrer.as_ref().unwrap_or(base);
+    let relative = specifier.starts_with('/') || specifier.starts_with("./") || specifier.starts_with("../");
+    let url = if relative {
+        bb_url::Url::parse_with_base(specifier, Some(base)).ok()
+    } else {
+        bb_url::Url::parse(specifier).ok()
+    };
+    let Some(url) = url else {
+        return Err(format!("'{specifier}' is a bare specifier (import maps aren't supported)"));
+    };
+    let src = emb.fetch_script(&url)?;
+    Ok((url.href(), src.into_bytes()))
+}

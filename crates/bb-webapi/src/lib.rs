@@ -101,6 +101,12 @@ impl Window {
         vm.host_transferable = Some(port::transferable);
         vm.host_transfer = Some(port::transfer);
         vm.host_receive = Some(port::receive);
+        // HostLoadImportedModule: modules load through the embedder like classic scripts.
+        let loader_emb = host.embedder.clone();
+        let loader_base = host.url.borrow().clone();
+        vm.loader = Some(Box::new(move |spec, referrer| {
+            loader::fetch_module(&*loader_emb, &loader_base, spec, referrer)
+        }));
         host.window.set(Some(vm.realm.global));
         class::install_scope(&mut vm, &host, worker.is_some());
         Window { vm, host }
@@ -116,6 +122,13 @@ impl Window {
     pub fn fire_load(&mut self) {
         let h = self.host.clone();
         loader::fire_load(&mut self.vm, &h);
+    }
+
+    /// Run a module script whose URL (its module map key) is `key`.
+    pub fn run_module_script(&mut self, src: &str, key: &str) {
+        loader::run_source(&mut self.vm, src, key, true);
+        let h = self.host.clone();
+        loader::register_handlers(&mut self.vm, &h);
     }
 
     /// Run a classic script in the window (e.g. from a `javascript:` URL or a test).

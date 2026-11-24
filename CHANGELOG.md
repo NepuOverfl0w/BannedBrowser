@@ -33,7 +33,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   `input`/`change` from checkboxes, radios, selects and edited text fields, cancelable `reset`
   and `submit` (SubmitEvent with `submitter`), `form.submit()` and `requestSubmit()`, and
   activation behavior for clicks scripts dispatch (`checkbox.click()` toggles it, `link.click()`
-  navigates, labels and summaries work). The
+  navigates, labels and summaries work). Module scripts import other modules (static and
+  dynamic `import`, URL specifiers), and module workers (`type: 'module'`) run. The
   Geometry Interfaces: DOMPoint, DOMQuad, DOMMatrix (with CSS transform strings) and
   `WebKitCSSMatrix`, structured-cloneable, and canvas transforms as DOMMatrix. The parser
   runs scripts as it goes, with `document.write`; script changes restyle and relayout the
