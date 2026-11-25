@@ -479,3 +479,30 @@ fn custom_elements() {
         "ctor:e connected:e true ctor:new attr:v=1 connected:m true x-early SyntaxError defined:true ctor:late attr:v=2 connected:late"
     );
 }
+
+#[test]
+fn streams() {
+    let mut p = page(
+        "<!doctype html><p id=log>-</p><script>\
+         (async function () {\
+           var log = [];\
+           var r = new Blob(['hello ', 'streams']).stream().pipeThrough(new TextDecoderStream()).getReader();\
+           var s = ''; for (;;) { var x = await r.read(); if (x.done) break; s += x.value; }\
+           log.push(s);\
+           var res = new Response('body text');\
+           var reader = res.body.getReader();\
+           var first = await reader.read();\
+           log.push(first.value.length, res.bodyUsed);\
+           var up = new TransformStream({ transform(c, ctl) { ctl.enqueue(c.toUpperCase()); } });\
+           var w = up.writable.getWriter(); w.write('a'); w.write('b'); w.close();\
+           var collected = [];\
+           await up.readable.pipeTo(new WritableStream({ write(c) { collected.push(c); } }));\
+           log.push(collected.join(''));\
+           var text = await new Response(ReadableStream.from(['x', 'y'].map(c => new TextEncoder().encode(c)))).text();\
+           log.push(text);\
+           document.getElementById('log').textContent = log.join(' ');\
+         })().catch(function (e) { document.getElementById('log').textContent = 'error ' + e; });</script>",
+    );
+    wait_for_change(&mut p, "log", "-");
+    assert_eq!(text(&p, "log"), "hello streams 9 true AB xy");
+}

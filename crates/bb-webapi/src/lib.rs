@@ -33,6 +33,7 @@ pub mod port;
 pub mod range;
 pub mod selection;
 pub mod storage;
+pub mod streams;
 pub mod traversal;
 pub mod tree;
 pub mod url;

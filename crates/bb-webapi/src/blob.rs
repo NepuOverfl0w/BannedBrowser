@@ -264,6 +264,12 @@ pub fn setup_blob(vm: &mut Vm, proto: ObjRef) {
         let h = host(vm)?;
         Ok(Value::Object(new_blob(vm, &h, bytes, &ty, None, None)))
     });
+    // File API §3.3.4 stream(): the bytes in chunks of 64 KiB.
+    op(vm, proto, "stream", 0, |vm, c| {
+        let (b, _) = this_blob(vm, &c)?;
+        let chunks: Vec<Vec<u8>> = b.chunks(65536).map(<[u8]>::to_vec).collect();
+        crate::streams::from_chunks(vm, chunks)
+    });
     op(vm, proto, "text", 0, |vm, c| {
         settled(vm, |vm| {
             let (b, _) = this_blob(vm, &c)?;

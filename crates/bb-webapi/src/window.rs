@@ -119,6 +119,7 @@ pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
 /// The WindowOrWorkerGlobalScope members (HTML §8.1.7): timers, microtasks, base64,
 /// fetch, crypto, structuredClone, console and performance, on global `g`.
 pub fn setup_global_scope(vm: &mut Vm, g: ObjRef) {
+    crate::streams::setup(vm, g);
     attr(
         vm,
         g,

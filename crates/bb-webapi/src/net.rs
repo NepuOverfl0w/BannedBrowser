@@ -471,7 +471,16 @@ fn new_response(
 
 pub fn response_ctor(vm: &mut Vm, c: NativeCall) -> R {
     let Some(nt) = c.new_target else { return vm.type_error("Response requires 'new'") };
-    let body = extract_body(vm, &c.arg(0))?;
+    // A ReadableStream body stays a stream (Fetch §5.2 "extract a body" step 3).
+    let stream_body = if crate::streams::is_stream(vm, &c.arg(0))? {
+        if crate::streams::unusable(vm, &c.arg(0))? {
+            return vm.type_error("the body stream is locked or disturbed");
+        }
+        Some(c.arg(0))
+    } else {
+        None
+    };
+    let body = if stream_body.is_some() { None } else { extract_body(vm, &c.arg(0))? };
     let init = c.arg(1);
     let status = match dict_get(vm, &init, "status")? {
         Value::Undefined => 200,
@@ -496,7 +505,7 @@ pub fn response_ctor(vm: &mut Vm, c: NativeCall) -> R {
             }
             (Value::Object(vm.new_array_buffer(b)), ct)
         }
-        None => (Value::Null, None),
+        None => (stream_body.unwrap_or(Value::Null), None),
     };
     if let Some(ct) = ct {
         if !header_list(vm, headers)?.iter().any(|x| x.0 == "content-type") {
@@ -535,6 +544,80 @@ fn consume(vm: &mut Vm, o: ObjRef, body_slot: usize, used_slot: usize) -> JsResu
         Value::Object(buf) => vm.buffer_bytes(buf).cloned().unwrap_or_default(),
         _ => Vec::new(),
     })
+}
+
+/// A Body method (Fetch §5.1 "consume body"): `kind` is text, json, arrayBuffer, blob,
+/// formData or bytes. A body that is a stream is read to its end first.
+fn body_method(vm: &mut Vm, c: NativeCall, kind: u8) -> R {
+    let s = callee_slots(vm, c.callee);
+    let n = |i: usize| match s.get(i) {
+        Some(Value::Number(n)) => *n as usize,
+        _ => 0,
+    };
+    let iface = crate::class::from_u32(n(0) as u32).unwrap_or(C::Response);
+    let (bs, us) = (n(1), n(2));
+    let o = match obj_of(vm, &c.this, iface) {
+        Ok(o) => o,
+        Err(e) => return settled(vm, |_| Err(e)),
+    };
+    let body = slot(vm, o, bs);
+    if crate::streams::is_stream(vm, &body)? {
+        if matches!(slot(vm, o, us), Value::Bool(true)) || crate::streams::unusable(vm, &body)? {
+            return settled(vm, |vm| vm.type_error("the body has already been read"));
+        }
+        set_slot(vm, o, us, Value::Bool(true));
+        let all = crate::streams::read_all(vm, &body)?;
+        let k = realm::native_with(
+            vm,
+            "",
+            1,
+            |vm, c| {
+                let s = callee_slots(vm, c.callee);
+                let kind = match s.first() {
+                    Some(Value::Number(n)) => *n as u8,
+                    _ => 0,
+                };
+                let Some(Value::Object(o)) = s.get(1).cloned() else { return vm.type_error("no body") };
+                let bytes = typed_bytes(vm, &c.arg(0));
+                convert_body(vm, kind, o, bytes)
+            },
+            false,
+            vec![Value::Number(kind as f64), Value::Object(o)],
+        );
+        let Value::Object(p) = all else { return vm.type_error("reading the body failed") };
+        let then = vm.get(p, &PropKey::lit("then"))?;
+        return vm.call(&then, all, vec![Value::Object(k)]);
+    }
+    settled(vm, |vm| {
+        let bytes = consume(vm, o, bs, us)?;
+        convert_body(vm, kind, o, bytes)
+    })
+}
+
+/// The bytes a Uint8Array views.
+fn typed_bytes(vm: &Vm, v: &Value) -> Vec<u8> {
+    let Value::Object(o) = v else { return Vec::new() };
+    let Some((_, buf, off, len)) = vm.ta_view(*o) else { return Vec::new() };
+    vm.buffer_bytes(buf).and_then(|b| b.get(off..off + len)).map(<[u8]>::to_vec).unwrap_or_default()
+}
+
+fn convert_body(vm: &mut Vm, kind: u8, o: ObjRef, bytes: Vec<u8>) -> R {
+    match kind {
+        0 => Ok(js(&body_text(&bytes))),
+        1 => json_parse(vm, &body_text(&bytes)),
+        2 => Ok(Value::Object(vm.new_array_buffer(bytes))),
+        3 => {
+            let ty = content_type(vm, o)?.map(|t| t.to_ascii_lowercase()).unwrap_or_default();
+            let h = host(vm)?;
+            Ok(Value::Object(crate::blob::new_blob(vm, &h, bytes, &ty, None, None)))
+        }
+        4 => {
+            let ty = content_type(vm, o)?.unwrap_or_default();
+            let h = host(vm)?;
+            crate::blob::parse_form_body(vm, &h, &bytes, &ty)
+        }
+        _ => uint8_array(vm, bytes),
+    }
 }
 
 /// A promise already settled with the result of `f`.
@@ -605,60 +688,24 @@ fn setup_body(vm: &mut Vm, proto: ObjRef, iface: C, body_slot: usize, used_slot:
             },
         );
     };
-    def(vm, "text", |vm, c| {
-        settled(vm, |vm| {
-            let (o, b, u) = info(vm, &c)?;
-            let bytes = consume(vm, o, b, u)?;
-            Ok(js(&body_text(&bytes)))
-        })
-    });
-    def(vm, "json", |vm, c| {
-        settled(vm, |vm| {
-            let (o, b, u) = info(vm, &c)?;
-            let bytes = consume(vm, o, b, u)?;
-            json_parse(vm, &body_text(&bytes))
-        })
-    });
-    def(vm, "arrayBuffer", |vm, c| {
-        settled(vm, |vm| {
-            let (o, b, u) = info(vm, &c)?;
-            let bytes = consume(vm, o, b, u)?;
-            Ok(Value::Object(vm.new_array_buffer(bytes)))
-        })
-    });
-    def(vm, "blob", |vm, c| {
-        settled(vm, |vm| {
-            let (o, b, u) = info(vm, &c)?;
-            let ty = content_type(vm, o)?;
-            let bytes = consume(vm, o, b, u)?;
-            let h = host(vm)?;
-            let ty = ty.map(|t| t.to_ascii_lowercase()).unwrap_or_default();
-            Ok(Value::Object(crate::blob::new_blob(vm, &h, bytes, &ty, None, None)))
-        })
-    });
-    def(vm, "formData", |vm, c| {
-        settled(vm, |vm| {
-            let (o, b, u) = info(vm, &c)?;
-            let ty = content_type(vm, o)?.unwrap_or_default();
-            let bytes = consume(vm, o, b, u)?;
-            let h = host(vm)?;
-            crate::blob::parse_form_body(vm, &h, &bytes, &ty)
-        })
-    });
-    def(vm, "bytes", |vm, c| {
-        settled(vm, |vm| {
-            let (o, b, u) = info(vm, &c)?;
-            let bytes = consume(vm, o, b, u)?;
-            uint8_array(vm, bytes)
-        })
-    });
+    def(vm, "text", |vm, c| body_method(vm, c, 0));
+    def(vm, "json", |vm, c| body_method(vm, c, 1));
+    def(vm, "arrayBuffer", |vm, c| body_method(vm, c, 2));
+    def(vm, "blob", |vm, c| body_method(vm, c, 3));
+    def(vm, "formData", |vm, c| body_method(vm, c, 4));
+    def(vm, "bytes", |vm, c| body_method(vm, c, 5));
     attr_with(
         vm,
         proto,
         "bodyUsed",
         |vm, c| {
-            let (o, _, u) = info(vm, &c)?;
-            Ok(Value::Bool(matches!(slot(vm, o, u), Value::Bool(true))))
+            let (o, b, u) = info(vm, &c)?;
+            if matches!(slot(vm, o, u), Value::Bool(true)) {
+                return Ok(Value::Bool(true));
+            }
+            // A body that is a stream is used once it was read from (Fetch §5.1 bodyUsed).
+            let body = slot(vm, o, b);
+            Ok(Value::Bool(crate::streams::is_stream(vm, &body)? && crate::streams::disturbed(vm, &body)?))
         },
         None,
         data.clone(),
@@ -668,10 +715,22 @@ fn setup_body(vm: &mut Vm, proto: ObjRef, iface: C, body_slot: usize, used_slot:
         proto,
         "body",
         |vm, c| {
-            let (o, b, _) = info(vm, &c)?;
-            // No ReadableStream yet: a body is exposed as null.
-            let _ = slot(vm, o, b);
-            Ok(Value::Null)
+            // Fetch §5.1 body: the body's stream; a body held as bytes becomes one now.
+            let (o, b, u) = info(vm, &c)?;
+            let body = slot(vm, o, b);
+            if body.is_nullish() || crate::streams::is_stream(vm, &body)? {
+                return Ok(body);
+            }
+            let Value::Object(buf) = body else { return Ok(Value::Null) };
+            let bytes = if matches!(slot(vm, o, u), Value::Bool(true)) {
+                Vec::new()
+            } else {
+                vm.buffer_bytes(buf).cloned().unwrap_or_default()
+            };
+            let stream =
+                crate::streams::from_chunks(vm, if bytes.is_empty() { Vec::new() } else { vec![bytes] })?;
+            set_slot(vm, o, b, stream.clone());
+            Ok(stream)
         },
         None,
         data,
