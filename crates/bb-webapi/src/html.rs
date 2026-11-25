@@ -365,6 +365,7 @@ fn parse_fragment_scripts(
     })?;
     let (src, root) =
         bb_html::tree_builder::TreeBuilder::parse_fragment_with(markup, ns, &name, shadow_roots);
+    let before = with_doc(vm, h, doc, |d| d.len())?;
     let (frag, pairs) = with_doc_mut(vm, h, doc, |d| {
         let frag = d.create_fragment();
         let mut all = Vec::new();
@@ -386,6 +387,8 @@ fn parse_fragment_scripts(
     if !scripts_run {
         h.started_scripts.borrow_mut().extend(scripts);
     }
+    // The parser appended their attributes: details elements' steps run.
+    crate::details::parsed(vm, h, doc, before);
     Ok(NodeRef { doc, id: frag })
 }
 

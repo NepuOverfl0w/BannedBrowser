@@ -603,6 +603,7 @@ fn handle_change_steps(
     local: &str,
     old: Option<String>,
 ) -> JsResult<()> {
+    let old_value = old.clone();
     queue_record(
         vm,
         h,
@@ -620,6 +621,7 @@ fn handle_change_steps(
     )?;
     if ns == Namespace::None {
         crate::shadow::attribute_changed(vm, h, n, local);
+        crate::details::attribute_changed(vm, h, n, local, old_value.as_deref())?;
         crate::events::attribute_changed(vm, h, n, local)?;
         // HTML §4.12.5: a canvas's width or height attribute set resets its bitmap.
         if matches!(local, "width" | "height") && with_doc(vm, h, n.doc, |d| d.is_html(n.id, "canvas"))? {

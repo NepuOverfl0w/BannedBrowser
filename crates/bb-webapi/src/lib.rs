@@ -17,6 +17,7 @@ pub mod ce;
 pub mod class;
 pub mod collections;
 pub mod css;
+pub mod details;
 pub mod dom;
 pub mod events;
 pub mod exception;
@@ -301,6 +302,16 @@ impl Window {
         proceed
     }
 
+    /// Set (`Some`) or remove an attribute of element `n` of the window's document through
+    /// the DOM's "change an attribute" steps (records, reactions, element steps): for changes
+    /// the browser makes itself, such as a summary click opening its details.
+    pub fn set_attribute(&mut self, n: bb_dom::NodeId, name: &str, value: Option<&str>) {
+        let h = self.host.clone();
+        self.begin_task();
+        let r = crate::mutation::set_or_remove(&mut self.vm, &h, NodeRef { doc: 0, id: n }, name, value);
+        self.end_task(r);
+    }
+
     /// The form a script asked to submit (`form.submit()`, or `requestSubmit()` not canceled).
     pub fn take_pending_submit(&self) -> Option<bb_dom::NodeId> {
         self.host.pending_submit.take().filter(|n| n.doc == 0).map(|n| n.id)
@@ -414,6 +425,7 @@ fn run_host_tasks(vm: &mut Vm, h: &Rc<Host>) -> bool {
                 worker::deliver_window_message(vm, h, t, *s, &origin, from)
             }
             host::Task::Navigate(container, target) => frames::navigate_now(vm, h, container, target),
+            host::Task::Toggle(n, seq) => details::run_toggle(vm, h, n, seq),
         };
         end_task(vm, h, r);
     }

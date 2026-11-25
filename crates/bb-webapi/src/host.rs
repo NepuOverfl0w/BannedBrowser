@@ -177,6 +177,8 @@ pub enum Task {
     Message(Value, Box<bb_js::vm::clone::Serialized>, String, Option<Rc<crate::frames::Nav>>),
     /// Navigate the frame of this container element of document 0 (HTML §7.4.2.2).
     Navigate(NodeId, crate::frames::NavTarget),
+    /// A details element's toggle event task (HTML §4.11.1), with its number.
+    Toggle(NodeRef, u64),
 }
 
 /// What a live (or static) collection object lists.
@@ -341,6 +343,8 @@ pub struct Host {
     pub current_event: Cell<Option<ObjRef>>,
     /// Slots' last-known assigned nodes and the signal slots (DOM §4.2.2.5).
     pub slots: RefCell<crate::shadow::SlotState>,
+    /// Queued details toggle event tasks (HTML §4.11.1).
+    pub toggles: RefCell<crate::details::Toggles>,
 }
 
 impl Host {
@@ -401,6 +405,7 @@ impl Host {
             ce: RefCell::default(),
             current_event: Cell::new(None),
             slots: RefCell::default(),
+            toggles: RefCell::default(),
         }
     }
 
@@ -450,7 +455,7 @@ impl Host {
                     out.push(r.reader);
                     out.push(r.blob);
                 }
-                Task::Fetch(..) | Task::Script(..) | Task::Navigate(..) => {}
+                Task::Fetch(..) | Task::Script(..) | Task::Navigate(..) | Task::Toggle(..) => {}
             }
         }
         for (_, f) in self.frame_callbacks.borrow().iter() {

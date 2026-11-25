@@ -595,3 +595,24 @@ fn byte_streams_and_stream_bodies() {
     wait_for_change(&mut p, "log", "-");
     assert_eq!(text(&p, "log"), "5 hello ABC TypeError streamed streamed");
 }
+
+#[test]
+fn details_toggle_events_and_exclusive_groups() {
+    let mut p = page(
+        "<!doctype html><details id=a name=g open><summary>A</summary>a</details>\
+         <details id=b name=g><summary>B</summary>b</details><p id=log>-</p><script>\
+         var log = [];\
+         function note(e) { log.push(e.target.id + ':' + e.oldState + '>' + e.newState); }\
+         document.getElementById('a').addEventListener('toggle', note);\
+         document.getElementById('b').addEventListener('toggle', note);\
+         setTimeout(function () {\
+           document.getElementById('b').open = true;\
+           setTimeout(function () {\
+             log.push(document.getElementById('a').open);\
+             document.getElementById('log').textContent = log.join(' ');\
+           }, 30);\
+         }, 30);</script>",
+    );
+    wait_for_change(&mut p, "log", "-");
+    assert_eq!(text(&p, "log"), "a:closed>open a:open>closed b:closed>open false");
+}

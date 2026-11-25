@@ -173,6 +173,9 @@ fn init_fields(c: C) -> Vec<(&'static str, char, Value)> {
         ],
         C::FormDataEvent => vec![("formData", 'F', Value::Undefined)],
         C::SubmitEvent => vec![("submitter", 'n', Value::Null)],
+        C::ToggleEvent => {
+            vec![("newState", 's', js("")), ("oldState", 's', js("")), ("source", 'n', Value::Null)]
+        }
         C::MessageEvent => vec![
             ("data", 'a', Value::Null),
             ("lastEventId", 's', js("")),
@@ -498,6 +501,11 @@ pub fn setup_custom_event(vm: &mut Vm, proto: ObjRef) {
 /// SubmitEvent (HTML §4.10.21.3): its submitter.
 pub fn setup_submit_event(vm: &mut Vm, proto: ObjRef) {
     define_fields(vm, proto, C::SubmitEvent, &[]);
+}
+
+/// ToggleEvent (HTML §8.1.8.4): oldState and newState.
+pub fn setup_toggle_event(vm: &mut Vm, proto: ObjRef) {
+    define_fields(vm, proto, C::ToggleEvent, &[]);
 }
 
 /// Fire the submit event at `form` (HTML §4.10.21.3 "submit" step 6.3): a trusted,

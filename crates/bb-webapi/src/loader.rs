@@ -35,6 +35,7 @@ fn pump(vm: &mut Vm, h: &Host, end: Option<usize>) -> Option<NodeId> {
         (r, before)
     };
     parsed_records(vm, h, before);
+    crate::details::parsed(vm, h, 0, before);
     parsed_frames(vm, h, before);
     crate::ce::parsed(vm, h, before);
     r

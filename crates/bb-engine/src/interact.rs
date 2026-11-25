@@ -426,7 +426,11 @@ impl Page {
     /// The details element of a summary toggles `open`.
     fn toggle_details(&mut self, summary: NodeId) {
         if let Some(details) = self.details_for_summary(summary) {
-            if self.doc.attr(details, "open").is_some() {
+            let open = self.doc.attr(details, "open").is_some();
+            if self.script.is_some() {
+                // Through the DOM, so scripts get the toggle event and mutation records.
+                self.with_window(|w| w.set_attribute(details, "open", if open { None } else { Some("") }));
+            } else if open {
                 self.doc.remove_attr(details, "open");
             } else {
                 self.doc.set_attr(details, "open", "");

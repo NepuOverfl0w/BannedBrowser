@@ -276,6 +276,8 @@ fn insert_steps(
     }
     // Steps 7.4–7.5 and 7.6: slots of the trees that changed are reassigned.
     crate::shadow::tree_changed(vm, h, parent);
+    // HTML §4.11.1 details insertion steps.
+    crate::details::inserted(vm, h, &inserted)?;
     // Step 8.
     if !suppress {
         crate::mutation::tree_record(

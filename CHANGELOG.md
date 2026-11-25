@@ -34,6 +34,7 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   reachable through a cross-origin wrapper (`postMessage`, `location` assignment, a few
   properties; anything else throws a SecurityError). `document.open`/`close` and
   `document.write` after loading replace the document, as in other browsers. Form events:
+  the `<details>` `toggle` event and exclusive `name` groups,
   `input`/`change` from checkboxes, radios, selects and edited text fields, cancelable `reset`
   and `submit` (SubmitEvent with `submitter`), `form.submit()` and `requestSubmit()`, and
   activation behavior for clicks scripts dispatch (`checkbox.click()` toggles it, `link.click()`
@@ -54,7 +55,7 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
   `dom/`, `domparsing/`, `FileAPI/`, `xhr/formdata/`, `url/`, `encoding/` and `fetch/api/headers/` tests
   and `workers/`, `webmessaging/`, structured clone, `custom-elements/`, `streams/` and
-  `shadow-dom/` (103423/124959 subtests so far).
+  `shadow-dom/` (103458/125010 subtests so far).
 - **JavaScript engine (milestone D):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262, and an interpreter: bytecode compiler, stack VM, garbage

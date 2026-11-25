@@ -92,6 +92,7 @@ pub fn setup_dom_parser(vm: &mut Vm, proto: ObjRef) {
             parse_xml_document(&h, &text, &ty, &url)
         };
         mark_scripts_started(&h, idx);
+        crate::details::parsed(vm, &h, idx, 0);
         wrap(vm, &h, NodeRef { doc: idx, id: Document::ROOT })
     });
 }

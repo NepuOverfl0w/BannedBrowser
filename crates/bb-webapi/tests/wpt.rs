@@ -41,6 +41,7 @@ const DIRS: &[&str] = &[
     "custom-elements",
     "streams",
     "shadow-dom",
+    "html/semantics/interactive-elements/the-details-element",
 ];
 
 fn root() -> PathBuf {

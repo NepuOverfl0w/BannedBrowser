@@ -174,6 +174,7 @@ interfaces! {
     FormData: None;
     FormDataEvent: Event;
     SubmitEvent: Event;
+    ToggleEvent: Event;
     CustomElementRegistry: None;
     Crypto: None;
     MessageEvent: Event;
@@ -381,6 +382,7 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::FormData => (crate::blob::form_data_ctor, 0),
         C::FormDataEvent => (crate::events::event_ctor, 2),
         C::SubmitEvent => (crate::events::event_ctor, 1),
+        C::ToggleEvent => (crate::events::event_ctor, 1),
         C::MessageEvent => (crate::events::event_ctor, 1),
         C::Worker => (crate::worker::worker_ctor, 1),
         C::MessageChannel => (crate::port::message_channel_ctor, 0),
@@ -547,6 +549,7 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef, worker: bool) {
         C::CustomEvent => crate::events::setup_custom_event(vm, proto),
         C::UIEvent => crate::events::setup_ui_event(vm, proto),
         C::SubmitEvent => crate::events::setup_submit_event(vm, proto),
+        C::ToggleEvent => crate::events::setup_toggle_event(vm, proto),
         C::CustomElementRegistry => crate::ce::setup_registry(vm, proto),
         C::MouseEvent => crate::events::setup_mouse_event(vm, proto),
         C::FocusEvent => crate::events::setup_focus_event(vm, proto),
