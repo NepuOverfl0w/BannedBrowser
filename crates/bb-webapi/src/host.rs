@@ -297,6 +297,9 @@ pub struct Host {
     pub started_scripts: RefCell<HashSet<u64>>,
     /// `defer` scripts waiting for the end of parsing.
     pub deferred: RefCell<Vec<NodeRef>>,
+    /// Module scripts whose graphs were fetched when they were prepared, by packed
+    /// `NodeRef`: the module, or whether it failed to fetch (else to parse or load).
+    pub prepared_modules: RefCell<HashMap<u64, Result<usize, bool>>>,
     /// document.currentScript.
     pub current_script: RefCell<Value>,
     pub url: RefCell<Url>,
@@ -367,6 +370,8 @@ pub struct Host {
     pub internals: RefCell<crate::internals::State>,
     /// A focus change scripts made in document 0, for the embedder (Some(None): blurred).
     pub focus_request: Cell<Option<Option<NodeId>>>,
+    /// The window's import map and resolved module set (HTML §8.1.5).
+    pub import_map: RefCell<crate::importmap::State>,
 }
 
 impl Host {
@@ -392,6 +397,7 @@ impl Host {
             write_ends: RefCell::default(),
             started_scripts: RefCell::default(),
             deferred: RefCell::default(),
+            prepared_modules: RefCell::default(),
             current_script: RefCell::new(Value::Null),
             url: RefCell::new(url),
             ready_state: Cell::new(ReadyState::Loading),
@@ -430,6 +436,7 @@ impl Host {
             toggles: RefCell::default(),
             internals: RefCell::default(),
             focus_request: Cell::new(None),
+            import_map: RefCell::default(),
         }
     }
 

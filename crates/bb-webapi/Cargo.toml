@@ -24,3 +24,7 @@ bb-style.workspace = true
 bb-url.workspace = true
 log.workspace = true
 encoding_rs.workspace = true
+
+[dev-dependencies]
+# The WPT harness decodes data: URLs the way the engine's network layer does.
+bb-net.workspace = true

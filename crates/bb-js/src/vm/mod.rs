@@ -154,8 +154,13 @@ pub struct Vm {
     pub(crate) module_map: HashMap<String, usize>,
     /// Host hook (HostLoadImportedModule): (specifier, referrer key) → (module key, source).
     #[allow(clippy::type_complexity)]
-    /// HostLoadImportedModule: (specifier, referrer key) → (module key, source bytes).
-    pub loader: Option<Box<dyn FnMut(&str, Option<&str>) -> Result<(String, Vec<u8>), String>>>,
+    /// HostLoadImportedModule: (vm, specifier, referrer URL) → (module key, source bytes). The
+    /// hook is taken out while it runs.
+    pub loader: Option<Box<dyn FnMut(&mut Vm, &str, Option<&str>) -> Result<(String, Vec<u8>), String>>>,
+    #[allow(clippy::type_complexity)]
+    /// The host's module specifier resolution (vm, specifier, referrer URL) → URL, for
+    /// `import()` and `import.meta.resolve`. Without one, `import.meta` has no `resolve`.
+    pub resolver: Option<Box<dyn FnMut(&mut Vm, &str, Option<&str>) -> Result<String, String>>>,
     /// Pending module evaluations waiting on async modules.
     /// [[ModuleAsyncEvaluationCount]] (§16.2.1.6.3 IncrementModuleAsyncEvaluationCount).
     pub(crate) module_async_count: u64,
@@ -194,6 +199,9 @@ pub struct Vm {
     /// Recreates a transferred platform object here.
     #[allow(clippy::type_complexity)]
     pub host_receive: Option<fn(&mut Vm, Box<dyn std::any::Any + Send>) -> JsResult<Value>>,
+    /// Queue a task that calls a function (no arguments): what a host does when a fetch
+    /// finishes. Dynamic `import()` loads its module in one; without the hook, in a job.
+    pub host_enqueue_task: Option<fn(&mut Vm, Value)>,
     /// The transferred platform objects of the deserialization in progress.
     host_revived: Vec<Value>,
     /// Pending Atomics.waitAsync promises of this agent.
@@ -253,6 +261,7 @@ impl Vm {
             host_transferable: None,
             host_transfer: None,
             host_receive: None,
+            host_enqueue_task: None,
             host_revived: Vec::new(),
             async_waits: Vec::new(),
             can_block: true,
@@ -266,6 +275,7 @@ impl Vm {
             modules: Vec::new(),
             module_map: HashMap::default(),
             loader: None,
+            resolver: None,
             module_async_count: 0,
             stack_pool: Vec::new(),
             time_zone: tz::system_zone().to_string(),
@@ -561,7 +571,10 @@ impl Vm {
             match (fname, f.callee) {
                 (Some(n), _) => s.push_str(&n),
                 (None, Some(_)) => s.push_str("<anonymous>"),
-                (None, None) => s.push_str(f.code.referrer.as_deref().unwrap_or("<script>")),
+                // (An inline module's key is its base URL, a NUL, and a number.)
+                (None, None) => s.push_str(
+                    f.code.referrer.as_deref().map_or("<script>", |r| r.split('\0').next().unwrap_or(r)),
+                ),
             }
         }
         if let Kind::Error(st) = &mut self.heap.obj_mut(o).kind {

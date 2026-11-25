@@ -28,6 +28,7 @@ pub mod geometry;
 pub mod host;
 pub mod html;
 pub mod idl;
+pub mod importmap;
 pub mod internals;
 pub mod loader;
 pub mod mutation;
@@ -108,11 +109,23 @@ impl Window {
         vm.host_transferable = Some(port::transferable);
         vm.host_transfer = Some(port::transfer);
         vm.host_receive = Some(port::receive);
+        vm.host_enqueue_task = Some(|vm, f| {
+            if let Ok(h) = host::host(vm) {
+                h.tasks.borrow_mut().push_back(host::Task::Call(f, Value::Undefined, Vec::new()));
+            }
+        });
         // HostLoadImportedModule: modules load through the embedder like classic scripts.
-        let loader_emb = host.embedder.clone();
-        let loader_base = host.url.borrow().clone();
-        vm.loader = Some(Box::new(move |spec, referrer| {
-            loader::fetch_module(&*loader_emb, &loader_base, spec, referrer)
+        // Specifiers resolve through the current window's import map (HTML §8.1.5.1); its
+        // embedder fetches.
+        vm.loader = Some(Box::new(|vm, spec, referrer| {
+            let h = host::host(vm).map_err(|_| "no Web API host".to_string())?;
+            let url = loader::resolve_module(&h, spec, referrer)?;
+            let src = h.embedder.fetch_script(&url)?;
+            Ok((url.href(), src.into_bytes()))
+        }));
+        vm.resolver = Some(Box::new(|vm, spec, referrer| {
+            let h = host::host(vm).map_err(|_| "no Web API host".to_string())?;
+            loader::resolve_module(&h, spec, referrer).map(|u| u.href())
         }));
         host.window.set(Some(vm.realm.global));
         class::install_scope(&mut vm, &host, worker.is_some());
@@ -133,7 +146,7 @@ impl Window {
 
     /// Run a module script whose URL (its module map key) is `key`.
     pub fn run_module_script(&mut self, src: &str, key: &str) {
-        loader::run_source(&mut self.vm, src, key, true);
+        loader::run_source(&mut self.vm, src, key, loader::RunKind::Module);
         let h = self.host.clone();
         loader::register_handlers(&mut self.vm, &h);
     }
@@ -141,7 +154,7 @@ impl Window {
     /// Run a classic script in the window (e.g. from a `javascript:` URL or a test).
     pub fn run_script(&mut self, src: &str) {
         let key = self.host.url.borrow().href();
-        loader::run_source(&mut self.vm, src, &key, false);
+        loader::run_source(&mut self.vm, src, &key, loader::RunKind::Classic);
         let h = self.host.clone();
         loader::register_handlers(&mut self.vm, &h);
     }

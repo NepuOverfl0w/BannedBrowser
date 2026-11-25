@@ -41,7 +41,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   and `submit` (SubmitEvent with `submitter`), `form.submit()` and `requestSubmit()`, and
   activation behavior for clicks scripts dispatch (`checkbox.click()` toggles it, `link.click()`
   navigates, labels and summaries work). Module scripts import other modules (static and
-  dynamic `import`, URL specifiers), and module workers (`type: 'module'`) run. Custom
+  dynamic `import`), with import maps (`<script type=importmap>`, several merged, scopes,
+  `import.meta.resolve()`), and module workers (`type: 'module'`) run. Custom
   elements: `customElements.define`, autonomous and customized built-in elements, upgrades,
   and connected/disconnected/adopted/attributeChanged callbacks, `:defined`, ElementInternals
   (form-associated custom elements with form values, validity and form callbacks; custom
@@ -58,8 +59,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   runs scripts as it goes, with `document.write`; script changes restyle and relayout the
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
   `dom/`, `domparsing/`, `FileAPI/`, `xhr/formdata/`, `url/`, `encoding/` and `fetch/api/headers/` tests
-  and `workers/`, `webmessaging/`, structured clone, `custom-elements/`, `streams/` and
-  `shadow-dom/` (104777/126158 subtests so far).
+  and `workers/`, `webmessaging/`, structured clone, `custom-elements/`, `streams/`,
+  `shadow-dom/` and `import-maps/` (105117/126527 subtests so far).
 - **JavaScript engine (milestone D):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262, and an interpreter: bytecode compiler, stack VM, garbage
@@ -175,6 +176,11 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   frameset-ok flag (current spec).
 - `<form>` inside template contents, including `template` fragments: the form element pointer
   follows the spec's "parsing template contents" (template on the stack, or a template context).
+- A page's second inline module script ran: every inline module was keyed by the document URL
+  in the module map, so later ones got the first one's record. Inline modules now resolve
+  against, and report as `import.meta.url`, the document's base URL (`<base href>` included).
+- `<script type=" module">` is no longer a module script: only JavaScript MIME types may have
+  whitespace around them (HTML §4.12.1.1).
 
 ### Changed
 - `about:bannedbrowser` matches the README: tagline, what we wrote ourselves, the name's origin
@@ -184,6 +190,10 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 - Version is `0.2.0-dev` on `main`.
 
 ### Development
+- The WPT runner runs each `<meta name="variant">` / `// META: variant=` variant, applies
+  wptserve's `sub` pipe (`.sub.` files and `?pipe=sub`: `{{GET[…]}}`, `{{host}}`), serves
+  `data:` module URLs, and `scripts/fetch-spec-tests.sh` widens an existing checkout whenever
+  its path list grows.
 - GUI tests run on Windows and macOS too, with real OS input (`SendInput`, `CGEvent`), in CI on
   every push. They now also assert window resizing and maximizing.
 - Snapshot regressions render with bundled, openly licensed fonts (`tests/fonts/`: Liberation,

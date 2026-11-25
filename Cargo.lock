@@ -362,6 +362,7 @@ dependencies = [
  "bb-html",
  "bb-image",
  "bb-js",
+ "bb-net",
  "bb-paint",
  "bb-style",
  "bb-url",

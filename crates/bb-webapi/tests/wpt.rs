@@ -43,6 +43,7 @@ const DIRS: &[&str] = &[
     "shadow-dom",
     "html/semantics/interactive-elements/the-details-element",
     "html/semantics/forms/constraints",
+    "import-maps",
 ];
 
 fn root() -> PathBuf {
@@ -77,8 +78,13 @@ impl Embedder for TestEmbedder {
         } else {
             path
         };
+        if url.scheme() == "data" {
+            let (_, body) = bb_net::data_url::process(url).ok_or("bad data: URL")?;
+            return Ok(String::from_utf8_lossy(&body).into_owned());
+        }
         let file = root().join(path.trim_start_matches('/'));
-        std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))
+        let src = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        Ok(if wants_sub(url) { substitute(&src, url) } else { src })
     }
     fn fetch_sync(&self, req: bb_webapi::net::HttpRequest) -> Result<bb_webapi::net::HttpResponse, String> {
         Ok(serve(req))
@@ -135,6 +141,11 @@ fn serve(req: bb_webapi::net::HttpRequest) -> bb_webapi::net::HttpResponse {
             Err(_) => (404, "Not Found", b"not found".to_vec()),
         },
     };
+    let body = if status == 200 && wants_sub(&req.url) {
+        substitute(&String::from_utf8_lossy(&body), &req.url).into_bytes()
+    } else {
+        body
+    };
     let ct = match file.extension().and_then(|e| e.to_str()) {
         Some("json") => "application/json",
         Some("js") => "text/javascript",
@@ -152,6 +163,76 @@ fn serve(req: bb_webapi::net::HttpRequest) -> bb_webapi::net::HttpResponse {
         headers: vec![("content-type".into(), ct.into())],
         body,
     }
+}
+
+/// The query's (name, value) pairs, form-decoded.
+fn query_pairs(url: &Url) -> Vec<(String, String)> {
+    let decode = |s: &str| {
+        let s = s.replace('+', " ");
+        let b = s.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            let hex = |c: u8| (c as char).to_digit(16);
+            match (b[i], b.get(i + 1).and_then(|&c| hex(c)), b.get(i + 2).and_then(|&c| hex(c))) {
+                (b'%', Some(h), Some(l)) => {
+                    out.push((h * 16 + l) as u8);
+                    i += 3;
+                }
+                (c, _, _) => {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    };
+    url.query()
+        .unwrap_or("")
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let (k, v) = p.split_once('=').unwrap_or((p, ""));
+            (decode(k), decode(v))
+        })
+        .collect()
+}
+
+/// Whether wptserve's "sub" pipe applies: a `.sub.` file, or `?pipe=sub` (also in a `|`
+/// list of pipes).
+fn wants_sub(url: &Url) -> bool {
+    url.pathname().rsplit('/').next().is_some_and(|f| f.contains(".sub."))
+        || query_pairs(url).iter().any(|(k, v)| k == "pipe" && v.split('|').any(|p| p.trim() == "sub"))
+}
+
+/// wptserve's "sub" pipe, for the substitutions these tests use: `{{GET[name]}}` (a query
+/// parameter) and `{{host}}`. Others are left as they are.
+fn substitute(src: &str, url: &Url) -> String {
+    let pairs = query_pairs(url);
+    let mut out = String::new();
+    let mut rest = src;
+    while let Some(i) = rest.find("{{") {
+        out.push_str(&rest[..i]);
+        let Some(j) = rest[i..].find("}}") else {
+            out.push_str(&rest[i..]);
+            return out;
+        };
+        let expr = &rest[i + 2..i + j];
+        let value = if let Some(name) = expr.strip_prefix("GET[").and_then(|e| e.strip_suffix(']')) {
+            Some(pairs.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()).unwrap_or_default())
+        } else if expr == "host" {
+            Some(url.hostname())
+        } else {
+            None
+        };
+        match value {
+            Some(v) => out.push_str(&v),
+            None => out.push_str(&rest[i..i + j + 2]),
+        }
+        rest = &rest[i + j + 2..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The `.any.worker.js` wptserve makes for `.any.js` test `rel` (URL path): testharness,
@@ -206,7 +287,7 @@ fn any_in_window(src: &str) -> bool {
 
 /// The page for a test file: HTML as is; `.window.js` / `.any.js` wrapped as WPT serves them;
 /// `.worker.js` and an `.any.js`'s worker variant (`#worker`) run in a dedicated worker.
-fn page_for(rel: &str, src: &str) -> String {
+fn page_for(rel: &str, variant: &str, src: &str) -> String {
     if rel.ends_with(".html") || rel.ends_with(".htm") {
         return src.to_string();
     }
@@ -218,6 +299,9 @@ fn page_for(rel: &str, src: &str) -> String {
         None
     };
     if let Some(w) = worker_script {
+        // The worker gets the variant's query (its fragment is the page's).
+        let query = variant.split('#').next().unwrap_or("");
+        let w = format!("{w}{query}");
         return format!(
             "<!doctype html>\n<meta charset=utf-8>\n<script src=\"/resources/testharness.js\"></script>\n\
              <script src=\"/resources/testharnessreport.js\"></script>\n<div id=log></div>\n\
@@ -250,20 +334,25 @@ fn page_for(rel: &str, src: &str) -> String {
 
 /// Run one test file: (subtests passed, subtests, harness error).
 fn run_file(rel: &str) -> (usize, usize, Vec<String>) {
-    let file_rel = rel.strip_suffix("#worker").unwrap_or(rel);
+    let worker = rel.ends_with(".any.js#worker") || (rel.contains(".any.js") && rel.ends_with("#worker"));
+    let base_rel = if worker { rel.strip_suffix("#worker").unwrap_or(rel) } else { rel };
+    // The variant: a query and/or fragment after the file name.
+    let split = base_rel.find(['?', '#']).unwrap_or(base_rel.len());
+    let (file_rel, variant) = base_rel.split_at(split);
     let file = root().join(file_rel);
     let Ok(src) = std::fs::read_to_string(&file) else { return (0, 1, vec![format!("{rel}: unreadable")]) };
     let page_rel = match file_rel.strip_suffix(".any.js") {
-        Some(b) if rel.ends_with("#worker") => format!("{b}.any.worker.html"),
+        Some(b) if worker => format!("{b}.any.worker.html"),
         _ => {
             file_rel.strip_suffix(".js").map(|r| format!("{r}.html")).unwrap_or_else(|| file_rel.to_string())
         }
     };
-    let url = Url::parse(&format!("http://web-platform.test/{page_rel}")).expect("test URL");
+    let url = Url::parse(&format!("http://web-platform.test/{page_rel}{variant}")).expect("test URL");
     let clock = Rc::new(Cell::new(0.0));
     let emb = Rc::new(TestEmbedder { clock: clock.clone(), start: std::time::Instant::now() });
     let mut w = Window::new(url, emb.clone());
-    w.load_html(&page_for(rel, &src));
+    let page_rel = if worker { format!("{file_rel}#worker") } else { file_rel.to_string() };
+    w.load_html(&page_for(&page_rel, variant, &src));
     w.fire_load();
     let mut results = None;
     let real_start = std::time::Instant::now();
@@ -407,21 +496,53 @@ fn collect(dir: &Path, rel: &str, out: &mut Vec<String>) {
             && !name.contains("-ref.")
             && !name.contains("-expected.")
         {
+            let src = std::fs::read_to_string(&p).unwrap_or_default();
             if name.ends_with(".any.js") {
-                let src = std::fs::read_to_string(&p).unwrap_or_default();
-                if any_in_window(&src) {
-                    out.push(r.clone());
-                }
-                if any_in_worker(&src) {
-                    out.push(format!("{r}#worker"));
+                for v in variants(&r, &src) {
+                    if any_in_window(&src) {
+                        out.push(format!("{r}{v}"));
+                    }
+                    if any_in_worker(&src) {
+                        out.push(format!("{r}{v}#worker"));
+                    }
                 }
             } else if name.ends_with(".html") && is_reftest(&p) {
                 // Reftests compare renderings; this runner only runs testharness tests.
             } else {
-                out.push(r);
+                out.extend(variants(&r, &src).into_iter().map(|v| format!("{r}{v}")));
             }
         }
     }
+}
+
+/// A test's variants (each a query and/or fragment it runs with): an HTML test's
+/// `<meta name="variant" content="…">`, a `.js` test's `// META: variant=…`; one plain run
+/// without any.
+fn variants(rel: &str, src: &str) -> Vec<String> {
+    let mut out = if rel.ends_with(".js") {
+        meta(src, "variant=")
+    } else {
+        let mut v = Vec::new();
+        let mut rest = src;
+        while let Some(i) = rest.find("<meta name=\"variant\"") {
+            rest = &rest[i..];
+            let end = rest.find('>').unwrap_or(rest.len());
+            let tag = &rest[..end];
+            if let Some(c) = tag.find("content=\"") {
+                let c = &tag[c + 9..];
+                if let Some(q) = c.find('"') {
+                    v.push(c[..q].to_string());
+                }
+            }
+            rest = &rest[end..];
+        }
+        v
+    };
+    out.retain(|v| v.is_empty() || v.starts_with('?') || v.starts_with('#'));
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
 #[test]
@@ -461,7 +582,8 @@ fn wpt() {
                     }
                     let r = std::panic::catch_unwind(|| run_file(rel));
                     let mut t = totals.lock().unwrap();
-                    let dir = rel.rsplit_once('/').map_or("", |x| x.0).to_string();
+                    let path = rel.split(['?', '#']).next().unwrap_or(rel);
+                    let dir = path.rsplit_once('/').map_or("", |x| x.0).to_string();
                     match r {
                         Ok((p, n, fails)) => {
                             t.0 += p;

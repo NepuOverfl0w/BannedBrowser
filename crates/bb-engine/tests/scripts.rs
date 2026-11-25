@@ -446,11 +446,31 @@ fn module_scripts_import() {
     assert_eq!(text(&p, "m"), "static 42");
     wait_for_change(&mut p, "d", "-");
     assert_eq!(text(&p, "d"), "dynamic 7");
-    // Bare specifiers need import maps, which aren't supported.
+    // A bare specifier no import map maps doesn't resolve.
     assert_eq!(text(&p, "b"), "TypeError");
     // Setting src on a connected script that never ran runs it.
     wait_for_change(&mut p, "s", "-");
     assert_eq!(text(&p, "s"), "src set");
+}
+
+#[test]
+fn import_maps() {
+    let mut p = page(
+        "<!doctype html><p id=a>-</p><p id=b>-</p><p id=c>-</p><p id=r>-</p>\
+         <script type=importmap>{\"imports\": {\"lib\": \"data:text/javascript,export default 'mapped'\",\
+           \"pkg/\": \"https://cdn.example/pkg/\"}}</script>\
+         <script type=module>import v from 'lib'; document.getElementById('a').textContent = v;\
+         document.getElementById('r').textContent = import.meta.resolve('pkg/x.js');</script>\
+         <script type=module>document.getElementById('b').textContent = 'second inline module';</script>\
+         <script>import('unmapped').catch(function (e) { document.getElementById('c').textContent = e.name; });\
+         </script>",
+    );
+    assert_eq!(text(&p, "a"), "mapped");
+    assert_eq!(text(&p, "r"), "https://cdn.example/pkg/x.js");
+    // Each inline module script is its own module.
+    assert_eq!(text(&p, "b"), "second inline module");
+    wait_for_change(&mut p, "c", "-");
+    assert_eq!(text(&p, "c"), "TypeError");
 }
 
 #[test]

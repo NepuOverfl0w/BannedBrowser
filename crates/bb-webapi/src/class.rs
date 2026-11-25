@@ -522,6 +522,14 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef, worker: bool) {
             crate::dom::setup_document(vm, proto);
             crate::xml::setup_document_statics(vm, ctor);
         }
+        // HTML §4.12.1 `HTMLScriptElement.supports(type)`: the script types this engine runs.
+        C::HTMLScriptElement => {
+            crate::idl::op(vm, ctor, "supports", 1, |vm, c| {
+                let ty = crate::host::rstr(vm, &c.arg(0))?;
+                Ok(Value::Bool(matches!(ty.as_str(), "classic" | "module" | "importmap")))
+            });
+            crate::html::setup_element_interface(vm, c, proto);
+        }
         C::DocumentType => crate::dom::setup_doctype(vm, proto),
         C::DocumentFragment => crate::dom::setup_fragment(vm, proto),
         C::CharacterData => crate::dom::setup_chardata(vm, proto),

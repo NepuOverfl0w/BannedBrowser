@@ -23,7 +23,7 @@ if [ ! -d html5lib-tests/.git ]; then
 fi
 
 WPT_COMMIT="9986bb32c9e97707eff870ab284ebc5cc7ae8d21" # 2026-11-21
-WPT_PATHS="html/syntax/parsing/resources/ resources/ dom/ url/ encoding/ fetch/api/ common/ domparsing/ FileAPI/ xhr/formdata/ workers/ html/webappapis/structured-clone/ webmessaging/ html/canvas/element/ html/canvas/resources/ images/ css/geometry/ interfaces/ custom-elements/ streams/ shadow-dom/ html/semantics/interactive-elements/the-details-element/ html/semantics/forms/constraints/"
+WPT_PATHS="html/syntax/parsing/resources/ resources/ dom/ url/ encoding/ fetch/api/ common/ domparsing/ FileAPI/ xhr/formdata/ workers/ html/webappapis/structured-clone/ webmessaging/ html/canvas/element/ html/canvas/resources/ images/ css/geometry/ interfaces/ custom-elements/ streams/ shadow-dom/ html/semantics/interactive-elements/the-details-element/ html/semantics/forms/constraints/ import-maps/"
 if [ "$(git -C wpt rev-parse HEAD 2>/dev/null || true)" != "$WPT_COMMIT" ]; then
   rm -rf wpt
   git init -q wpt
@@ -35,9 +35,9 @@ if [ "$(git -C wpt rev-parse HEAD 2>/dev/null || true)" != "$WPT_COMMIT" ]; then
    git fetch -q --depth 1 --filter=blob:none origin "$WPT_COMMIT"
    git -c advice.detachedHead=false checkout -q FETCH_HEAD)
 fi
-# A checkout from before the DOM tests were added: widen it.
-[ -f wpt/dom/nodes/Node-appendChild.html ] && [ -f wpt/url/url-constructor.any.js ] \
-  && [ -f wpt/domparsing/DOMParser-parseFromString-xml.html ] || (cd wpt && git sparse-checkout set --no-cone $WPT_PATHS)
+# A checkout from before WPT_PATHS last grew: widen it.
+[ "$(git -C wpt sparse-checkout list | tr '\n' ' ')" = "$WPT_PATHS " ] \
+  || (cd wpt && git sparse-checkout set --no-cone $WPT_PATHS)
 [ -f wpt/resources/testharness.js ] || { echo "WPT resources missing after fetch" >&2; exit 1; }
 [ -d wpt/html/syntax/parsing/resources ] || { echo "WPT parsing tests missing after fetch" >&2; exit 1; }
 

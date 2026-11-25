@@ -34,7 +34,11 @@ pub enum AsyncOrder {
 }
 
 pub struct ModuleRecord {
+    /// The module map key (an inline module's is unique to it).
     pub key: String,
+    /// Its URL: `import.meta.url`, and the referrer its specifiers resolve against (an
+    /// inline module's is the document's base URL).
+    pub base: String,
     pub code: Rc<Code>,
     pub status: Status,
     pub error: Option<Value>,
@@ -118,6 +122,7 @@ impl Vm {
         let id = self.modules.len();
         self.modules.push(ModuleRecord {
             key: key.to_string(),
+            base: key.to_string(),
             code,
             status: Status::New,
             error: None,
@@ -179,6 +184,7 @@ impl Vm {
         let id = self.modules.len();
         self.modules.push(ModuleRecord {
             key: key.to_string(),
+            base: key.to_string(),
             code: Rc::new(code),
             status: Status::New,
             error: None,
@@ -229,7 +235,7 @@ impl Vm {
         let Some(mut loader) = self.loader.take() else {
             return self.type_error(&format!("Cannot load module '{specifier}': no module loader"));
         };
-        let r = loader(specifier, referrer);
+        let r = loader(self, specifier, referrer);
         self.loader = Some(loader);
         match r {
             Ok((key, bytes)) if ty.is_empty() => {
@@ -248,7 +254,7 @@ impl Vm {
         let mut seen = vec![id];
         while let Some(m) = stack.pop() {
             let requests = self.module_info(m).requests.clone();
-            let key = self.modules[m].key.clone();
+            let key = self.modules[m].base.clone();
             for r in requests {
                 if self.modules[m].loaded.iter().any(|(s, _)| *s == r) {
                     let child =
@@ -742,10 +748,50 @@ impl Vm {
 
     /// Load, link and evaluate a module; the result is its evaluation promise.
     pub fn run_module(&mut self, key: &str, src: &str) -> JsResult<Value> {
+        let id = self.prepare_module(key, src)?;
+        self.run_prepared_module(id)
+    }
+
+    /// Run an inline module script (HTML: one that isn't in the module map) whose base URL is
+    /// `base`.
+    pub fn run_inline_module(&mut self, base: &str, src: &str) -> JsResult<Value> {
+        let id = self.prepare_inline_module(base, src)?;
+        self.run_prepared_module(id)
+    }
+
+    /// Parse the module at `key` and load its graph (fetching and resolving through the
+    /// host's loader), without linking or evaluating it: its id, for
+    /// [`Vm::run_prepared_module`].
+    pub fn prepare_module(&mut self, key: &str, src: &str) -> JsResult<usize> {
         let id = self.load_module_source(key, src)?;
         self.load_graph(id)?;
+        Ok(id)
+    }
+
+    /// [`Vm::prepare_module`] for an inline module script whose base URL is `base`.
+    pub fn prepare_inline_module(&mut self, base: &str, src: &str) -> JsResult<usize> {
+        let key = format!("{base}\0inline {}", self.modules.len());
+        let id = self.load_module_source(&key, src)?;
+        self.modules[id].base = base.to_string();
+        self.load_graph(id)?;
+        Ok(id)
+    }
+
+    /// Link and evaluate a prepared module: the promise of its evaluation.
+    pub fn run_prepared_module(&mut self, id: usize) -> JsResult<Value> {
+        if id >= self.modules.len() {
+            return self.type_error("no such module");
+        }
         self.link(id)?;
         self.evaluate(id)
+    }
+
+    /// The URL a referrer key stands for: a module's base URL, or the script's own URL.
+    fn referrer_url(&self, key: &str) -> String {
+        match self.module_map.get(key) {
+            Some(&id) => self.modules[id].base.clone(),
+            None => key.to_string(),
+        }
     }
 
     /// The state of a promise, for hosts: Some(Ok) fulfilled, Some(Err) rejected.
@@ -1051,12 +1097,21 @@ impl Vm {
                 }
             }
             Ok(request) => {
-                // HostLoadImportedModule finishes in a later job, as in browsers: a module
-                // that is already in a graph being evaluated is not evaluated in the middle
-                // of it.
-                let referrer = self.current_referrer().map(|r| Value::str(&r)).unwrap_or_default();
-                let start = self.new_promise(None);
-                let (go, _) = self.create_resolving_functions(start);
+                let referrer_key = self.current_referrer().map(|k| self.referrer_url(&k));
+                // HTML's HostLoadImportedModule resolves the specifier now (so that import
+                // maps added later don't change it) and fetches afterwards.
+                if let Some(mut resolver) = self.resolver.take() {
+                    let specifier = request.split_once('\0').map_or(request.as_str(), |x| x.1);
+                    let r = resolver(self, specifier, referrer_key.as_deref());
+                    self.resolver = Some(resolver);
+                    if let Err(msg) = r {
+                        let msg = format!("Cannot load module '{specifier}': {msg}");
+                        let e = self.error(ErrorKind::Type, &msg);
+                        let _ = self.call(&reject, Value::Undefined, vec![e]);
+                        return Value::Object(p);
+                    }
+                }
+                let referrer = referrer_key.map(|r| Value::str(&r)).unwrap_or_default();
                 let cont = native_with(
                     self,
                     "",
@@ -1065,8 +1120,17 @@ impl Vm {
                     false,
                     vec![Value::str(&request), referrer, resolve, reject, Value::Bool(deferred)],
                 );
-                self.perform_then(start, Value::Object(cont), Value::Undefined, None);
-                let _ = self.call(&go, Value::Undefined, vec![Value::Undefined]);
+                // The load finishes in a later task (the host's) or job, as in browsers: a
+                // module that is already in a graph being evaluated is not evaluated in the
+                // middle of it.
+                if let Some(enqueue) = self.host_enqueue_task {
+                    enqueue(self, Value::Object(cont));
+                } else {
+                    let start = self.new_promise(None);
+                    let (go, _) = self.create_resolving_functions(start);
+                    self.perform_then(start, Value::Object(cont), Value::Undefined, None);
+                    let _ = self.call(&go, Value::Undefined, vec![Value::Undefined]);
+                }
             }
         }
         Value::Object(p)
@@ -1140,13 +1204,41 @@ impl Vm {
             return Value::Object(m);
         }
         let m = self.new_object_with_proto(None);
-        let url = js_str(&self.modules[id].key);
+        let url = js_str(&self.modules[id].base);
         self.heap
             .obj_mut(m)
             .props
-            .insert(PropKey::lit("url"), Prop::data(Value::String(url), true, true, true));
+            .insert(PropKey::lit("url"), Prop::data(Value::String(url.clone()), true, true, true));
+        // HTML's HostGetImportMetaProperties (§8.1.6.7.1): the host's `resolve(specifier)`.
+        if self.resolver.is_some() {
+            let f = native_with(self, "resolve", 1, import_meta_resolve, false, vec![Value::String(url)]);
+            self.heap
+                .obj_mut(m)
+                .props
+                .insert(PropKey::lit("resolve"), Prop::data(Value::Object(f), true, true, true));
+        }
         self.modules[id].meta = Some(m);
         Value::Object(m)
+    }
+}
+
+/// `import.meta.resolve(specifier)` (HTML §8.1.6.7.1 HostGetImportMetaProperties): the specifier resolved for this
+/// module, serialized; a TypeError if it doesn't resolve.
+fn import_meta_resolve(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
+    let key = match &slots(vm, c.callee)[0] {
+        Value::String(s) => to_rust(s),
+        _ => String::new(),
+    };
+    let specifier = vm.to_string(&c.arg(0))?;
+    let specifier = to_rust(&specifier);
+    let Some(mut resolver) = vm.resolver.take() else {
+        return vm.type_error(&format!("Cannot resolve '{specifier}'"));
+    };
+    let r = resolver(vm, &specifier, Some(&key));
+    vm.resolver = Some(resolver);
+    match r {
+        Ok(url) => Ok(Value::String(js_str(&url))),
+        Err(msg) => vm.type_error(&format!("Cannot resolve '{specifier}': {msg}")),
     }
 }
 

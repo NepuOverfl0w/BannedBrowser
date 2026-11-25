@@ -181,6 +181,7 @@ pub fn register_handlers(vm: &mut Vm, h: &Host) {
 enum ScriptType {
     Classic,
     Module,
+    ImportMap,
     None,
 }
 
@@ -188,7 +189,7 @@ fn script_type(d: &Document, id: NodeId) -> ScriptType {
     let ty = d.attr(id, "type");
     let lang = d.attr(id, "language");
     let ty = match (ty, lang) {
-        (Some(t), _) if !t.is_empty() => t.trim().to_ascii_lowercase(),
+        (Some(t), _) if !t.is_empty() => t.to_ascii_lowercase(),
         (None, Some(l)) if !l.is_empty() => format!("text/{}", l.to_ascii_lowercase()),
         _ => return ScriptType::Classic,
     };
@@ -210,10 +211,14 @@ fn script_type(d: &Document, id: NodeId) -> ScriptType {
         "text/x-ecmascript",
         "text/x-javascript",
     ];
-    if JS.contains(&ty.as_str()) {
+    // A JavaScript MIME type may have whitespace around it; "module" and "importmap" may not.
+    let trimmed = ty.trim_matches(|c: char| c.is_ascii_whitespace() || c == '\x0C');
+    if JS.contains(&ty.as_str()) || JS.contains(&trimmed) {
         ScriptType::Classic
     } else if ty == "module" {
         ScriptType::Module
+    } else if ty == "importmap" {
+        ScriptType::ImportMap
     } else {
         ScriptType::None
     }
@@ -249,10 +254,21 @@ pub fn prepare_script(vm: &mut Vm, h: &Host, s: NodeRef, parser_inserted: bool) 
         return;
     }
     h.started_scripts.borrow_mut().insert(s.pack());
+    // "prepare the script element": an external import map isn't supported; an error
+    // event is queued.
+    if ty == ScriptType::ImportMap && src.is_some() {
+        h.tasks.borrow_mut().push_back(Task::Script(s));
+        return;
+    }
     if (ty == ScriptType::Module || (defer && src.is_some() && !is_async))
         && parser_inserted
         && h.parser.borrow().is_some()
     {
+        // A module script's graph is fetched now, and so its specifiers resolve before the
+        // import maps that follow it; it is evaluated when parsing ends.
+        if ty == ScriptType::Module {
+            prefetch_module(vm, h, s, src.as_deref(), &text);
+        }
         h.deferred.borrow_mut().push(s);
         return;
     }
@@ -262,6 +278,26 @@ pub fn prepare_script(vm: &mut Vm, h: &Host, s: NodeRef, parser_inserted: bool) 
         return;
     }
     execute_element(vm, h, s);
+}
+
+/// Fetch a parser-inserted module script's graph (HTML §4.12.1.1 "prepare the script
+/// element": "fetch an external module script graph" / "fetch an inline module script
+/// graph").
+fn prefetch_module(vm: &mut Vm, h: &Host, s: NodeRef, src: Option<&str>, text: &str) {
+    let base = base_url(h, s.doc);
+    let r = match src {
+        Some(src) => {
+            let fetched = bb_url::Url::parse_with_base(src.trim(), Some(&base))
+                .ok()
+                .and_then(|u| h.embedder.fetch_script(&u).ok().map(|t| (u, t)));
+            match fetched {
+                Some((u, t)) => vm.prepare_module(&u.href(), &t).map_err(|_| false),
+                None => Err(true),
+            }
+        }
+        None => vm.prepare_inline_module(&base.href(), text).map_err(|_| false),
+    };
+    h.prepared_modules.borrow_mut().insert(s.pack(), r);
 }
 
 /// Run a queued script element (Task::Script).
@@ -280,7 +316,25 @@ fn execute_element(vm: &mut Vm, h: &Host, s: NodeRef) {
         )
     });
     let Ok((ty, src, text)) = info else { return };
+    if ty == ScriptType::ImportMap {
+        if src.is_some() {
+            fire_at(vm, h, s, "error");
+        } else {
+            register_import_map(vm, h, s, &text);
+        }
+        return;
+    }
+    let prepared = h.prepared_modules.borrow_mut().remove(&s.pack());
+    if prepared == Some(Err(true)) {
+        fire_at(vm, h, s, "error");
+        return;
+    }
     let (source, url) = match src {
+        // Fetched when it was prepared.
+        Some(src) if matches!(prepared, Some(Ok(_))) => {
+            let base = base_url(h, s.doc);
+            (String::new(), bb_url::Url::parse_with_base(src.trim(), Some(&base)).ok())
+        }
         Some(src) => {
             let base = base_url(h, s.doc);
             let Ok(u) = bb_url::Url::parse_with_base(src.trim(), Some(&base)) else {
@@ -305,13 +359,20 @@ fn execute_element(vm: &mut Vm, h: &Host, s: NodeRef) {
         &mut *h.current_script.borrow_mut(),
         if ty == ScriptType::Module || in_shadow { Value::Null } else { el },
     );
-    let key = url.as_ref().map(|u| u.href()).unwrap_or_else(|| h.url.borrow().href());
+    // An inline script's base URL is the document's (HTML §4.12.1.1).
+    let key = url.as_ref().map(|u| u.href()).unwrap_or_else(|| base_url(h, s.doc).href());
     // HTML §4.12.1.2 step 4: an external script can't replace the document by writing.
     let external = url.is_some();
     if external {
         h.frames.borrow_mut().ignore_destructive += 1;
     }
-    run_source(vm, &source, &key, ty == ScriptType::Module);
+    let kind = match (ty, prepared) {
+        (ScriptType::Module, Some(Ok(id))) => RunKind::Prepared(id),
+        (ScriptType::Module, _) if external => RunKind::Module,
+        (ScriptType::Module, _) => RunKind::InlineModule,
+        _ => RunKind::Classic,
+    };
+    run_source(vm, &source, &key, kind);
     if external {
         let mut f = h.frames.borrow_mut();
         f.ignore_destructive = f.ignore_destructive.saturating_sub(1);
@@ -323,12 +384,40 @@ fn execute_element(vm: &mut Vm, h: &Host, s: NodeRef) {
     }
 }
 
+/// An inline import map (HTML §8.1.4.8 "create an import map parse result" and "register an
+/// import map"): parse errors are reported, a parsed map is merged into the
+/// window's.
+fn register_import_map(vm: &mut Vm, h: &Host, s: NodeRef, text: &str) {
+    let base = base_url(h, s.doc);
+    match crate::importmap::parse(vm, text, &base) {
+        Ok(map) => h.import_map.borrow_mut().merge(map),
+        Err(e) => crate::events::report_exception(vm, e),
+    }
+}
+
+/// How [`run_source`] runs its source.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RunKind {
+    Classic,
+    /// A module script at `key` (its URL, its module map key).
+    Module,
+    /// An inline module script whose base URL is `key`.
+    InlineModule,
+    /// A module whose graph is loaded already (the source is unused).
+    Prepared(usize),
+}
+
 /// Run script text, reporting what it throws; then a microtask checkpoint if no other
 /// script is running (HTML §8.1.4.4 "clean up after running script").
-pub fn run_source(vm: &mut Vm, source: &str, key: &str, module: bool) {
+pub fn run_source(vm: &mut Vm, source: &str, key: &str, kind: RunKind) {
     vm.terminated = false;
     vm.fuel = Some(crate::SCRIPT_FUEL);
-    let r = if module { vm.run_module(key, source) } else { vm.run_script_at(source, Some(key)) };
+    let r = match kind {
+        RunKind::InlineModule => vm.run_inline_module(key, source),
+        RunKind::Module => vm.run_module(key, source),
+        RunKind::Prepared(id) => vm.run_prepared_module(id),
+        RunKind::Classic => vm.run_script_at(source, Some(key)),
+    };
     if let Err(e) = r {
         if vm.terminated {
             log::warn!("script at {key} ran too long and was stopped");
@@ -468,25 +557,9 @@ pub fn document_close(vm: &mut Vm, h: &Host, doc: u32) -> JsResult<()> {
     Ok(())
 }
 
-/// HTML §8.1.5.5 "resolve a module specifier" (without import maps: only URLs and `/`, `./`,
-/// `../` paths), then fetch the module script: (its URL, as the module map key; its source).
-pub fn fetch_module(
-    emb: &dyn Embedder,
-    base: &bb_url::Url,
-    specifier: &str,
-    referrer: Option<&str>,
-) -> Result<(String, Vec<u8>), String> {
-    let referrer = referrer.and_then(|r| bb_url::Url::parse(r).ok());
-    let base = referrer.as_ref().unwrap_or(base);
-    let relative = specifier.starts_with('/') || specifier.starts_with("./") || specifier.starts_with("../");
-    let url = if relative {
-        bb_url::Url::parse_with_base(specifier, Some(base)).ok()
-    } else {
-        bb_url::Url::parse(specifier).ok()
-    };
-    let Some(url) = url else {
-        return Err(format!("'{specifier}' is a bare specifier (import maps aren't supported)"));
-    };
-    let src = emb.fetch_script(&url)?;
-    Ok((url.href(), src.into_bytes()))
+/// HTML §8.1.5.1 "resolve a module specifier" in `h`'s window for a script (`referrer`: the
+/// referring script's base URL) or, without one, against the document's base URL.
+pub fn resolve_module(h: &Host, specifier: &str, referrer: Option<&str>) -> Result<bb_url::Url, String> {
+    let base = referrer.and_then(|r| bb_url::Url::parse(r).ok()).unwrap_or_else(|| base_url(h, 0));
+    h.import_map.borrow_mut().resolve(specifier, &base)
 }

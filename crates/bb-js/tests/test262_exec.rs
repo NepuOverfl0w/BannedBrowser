@@ -339,7 +339,7 @@ fn run_variant(
     }
     // `<module source>`: a module with a module source (source-phase-imports tests).
     let _ = vm.register_module_source("<module source>", "ModuleSource");
-    vm.loader = Some(Box::new(|spec: &str, referrer: Option<&str>| {
+    vm.loader = Some(Box::new(|_vm: &mut bb_js::Vm, spec: &str, referrer: Option<&str>| {
         if spec == "<module source>" {
             return Ok((spec.to_string(), Vec::new()));
         }
