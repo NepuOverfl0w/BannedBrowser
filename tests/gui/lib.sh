@@ -54,6 +54,14 @@ if [ "$GUI_OS" = x11 ] && ! command -v vshot >/dev/null 2>&1; then
 fi
 
 cleanup() { [ -n "$BB_PID" ] && kill "$BB_PID" 2>/dev/null || true; }
+
+# X11: make sure $WID is still a live window (a window found by title right at startup can
+# be replaced; using a destroyed id makes xdotool fail with BadWindow), finding it again if not.
+live_wid() {
+  if ! xdotool getwindowname "$WID" >/dev/null 2>&1; then
+    WID=$(vwait-window BannedBrowser 10) || fail "the browser window went away"
+  fi
+}
 trap cleanup EXIT
 
 fail() {
@@ -239,7 +247,7 @@ type_text() {
 # mouse_move <x> <y>: content-relative logical pixels (a drag while mouse_down is held).
 mouse_move() {
   case "$GUI_OS" in
-    x11) xdotool mousemove --window "$WID" "$1" "$2" ;;
+    x11) live_wid; xdotool mousemove --window "$WID" "$1" "$2" ;;
     *)
       local xy
       xy=$(screen_xy "$1" "$2") || fail "no window position in the state file"
@@ -280,7 +288,7 @@ wheel_down() { wheel_at 640 400 "$1"; }
 # Resize / maximize through the window manager (the OS), not the app.
 resize_window() {
   case "$GUI_OS" in
-    x11) xdotool windowsize "$WID" "$1" "$2" ;;
+    x11) live_wid; xdotool windowsize "$WID" "$1" "$2" ;;
     *) drv resize "$BB_OS_PID" "$1" "$2" ;;
   esac
   sleep 1
@@ -288,7 +296,7 @@ resize_window() {
 
 maximize_window() {
   case "$GUI_OS" in
-    x11) wmctrl -i -r "$WID" -b add,maximized_vert,maximized_horz ;;
+    x11) live_wid; wmctrl -i -r "$WID" -b add,maximized_vert,maximized_horz ;;
     *) drv maximize "$BB_OS_PID" ;;
   esac
   sleep 1
