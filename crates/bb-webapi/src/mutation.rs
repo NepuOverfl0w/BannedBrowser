@@ -576,6 +576,27 @@ fn handle_change(
     local: &str,
     old: Option<String>,
 ) -> JsResult<()> {
+    crate::ce::enter(h);
+    // HTML §4.13.6: attributeChangedCallback for a custom element.
+    let new = with_doc(vm, h, n.doc, |d| {
+        d.element(n.id)
+            .and_then(|e| e.attrs.iter().find(|a| a.ns == ns && a.name == local).map(|a| a.value.clone()))
+    })
+    .unwrap_or(None);
+    crate::ce::attribute_changed(h, n, ns, local, old.as_deref(), new.as_deref());
+    let r = handle_change_steps(vm, h, n, ns, local, old);
+    crate::ce::leave(vm, h);
+    r
+}
+
+fn handle_change_steps(
+    vm: &mut Vm,
+    h: &Host,
+    n: NodeRef,
+    ns: Namespace,
+    local: &str,
+    old: Option<String>,
+) -> JsResult<()> {
     queue_record(
         vm,
         h,

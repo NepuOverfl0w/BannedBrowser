@@ -35,6 +35,7 @@ const DIRS: &[&str] = &[
     "encoding",
     "fetch/api/headers",
     "css/geometry",
+    "custom-elements",
 ];
 
 fn root() -> PathBuf {

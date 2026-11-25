@@ -451,3 +451,31 @@ fn module_scripts_import() {
     wait_for_change(&mut p, "s", "-");
     assert_eq!(text(&p, "s"), "src set");
 }
+
+#[test]
+fn custom_elements() {
+    let p = page(
+        "<!doctype html><x-early id=e></x-early><p id=log></p><script>\
+         var log = [];\
+         class XEl extends HTMLElement {\
+           static observedAttributes = ['v'];\
+           constructor() { super(); log.push('ctor:' + (this.id || 'new')); }\
+           connectedCallback() { log.push('connected:' + this.id); }\
+           attributeChangedCallback(n, o, v) { log.push('attr:' + n + '=' + v); }\
+         }\
+         customElements.define('x-early', XEl);\
+         log.push(document.getElementById('e') instanceof XEl);\
+         var made = document.createElement('x-early');\
+         made.id = 'm'; made.setAttribute('v', '1');\
+         document.body.appendChild(made);\
+         customElements.whenDefined('x-early').then(function (c) { log.push('defined:' + (c === XEl)); });\
+         log.push(customElements.get('x-early') === XEl, customElements.getName(XEl));\
+         try { customElements.define('nodash', class extends HTMLElement {}); } catch (e) { log.push(e.name); }\
+         </script><x-early id=late v=2></x-early><script>\
+         document.getElementById('log').textContent = log.join(' ');</script>",
+    );
+    assert_eq!(
+        text(&p, "log"),
+        "ctor:e connected:e true ctor:new attr:v=1 connected:m true x-early SyntaxError defined:true ctor:late attr:v=2 connected:late"
+    );
+}

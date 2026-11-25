@@ -173,6 +173,7 @@ interfaces! {
     FormData: None;
     FormDataEvent: Event;
     SubmitEvent: Event;
+    CustomElementRegistry: None;
     Crypto: None;
     MessageEvent: Event;
     Worker: EventTarget;
@@ -386,6 +387,8 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::Path2D => (crate::canvas::path2d_ctor, 0),
         C::XMLSerializer => (crate::xml::xml_serializer_ctor, 0),
         C::StaticRange => (crate::range::static_range_ctor, 1),
+        // HTML element interfaces have [HTMLConstructor] (custom elements).
+        c if c != C::HTMLUnknownElement && implements(c as u32, C::HTMLElement) => (crate::ce::html_ctor, 0),
         _ => return None,
     })
 }
@@ -531,6 +534,7 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef, worker: bool) {
         C::CustomEvent => crate::events::setup_custom_event(vm, proto),
         C::UIEvent => crate::events::setup_ui_event(vm, proto),
         C::SubmitEvent => crate::events::setup_submit_event(vm, proto),
+        C::CustomElementRegistry => crate::ce::setup_registry(vm, proto),
         C::MouseEvent => crate::events::setup_mouse_event(vm, proto),
         C::KeyboardEvent => crate::events::setup_keyboard_event(vm, proto),
         C::ErrorEvent => crate::events::setup_error_event(vm, proto),

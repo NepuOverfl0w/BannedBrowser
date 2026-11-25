@@ -38,7 +38,9 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   and `submit` (SubmitEvent with `submitter`), `form.submit()` and `requestSubmit()`, and
   activation behavior for clicks scripts dispatch (`checkbox.click()` toggles it, `link.click()`
   navigates, labels and summaries work). Module scripts import other modules (static and
-  dynamic `import`, URL specifiers), and module workers (`type: 'module'`) run. The
+  dynamic `import`, URL specifiers), and module workers (`type: 'module'`) run. Custom
+  elements: `customElements.define`, autonomous and customized built-in elements, upgrades,
+  and connected/disconnected/adopted/attributeChanged callbacks. The
   Geometry Interfaces: DOMPoint, DOMQuad, DOMMatrix (with CSS transform strings) and
   `WebKitCSSMatrix`, structured-cloneable, and canvas transforms as DOMMatrix. The parser
   runs scripts as it goes, with `document.write`; script changes restyle and relayout the

@@ -335,6 +335,8 @@ pub struct Host {
     pub canvas: RefCell<crate::canvas::CanvasState>,
     /// The window's place among the page's windows (frames).
     pub frames: RefCell<crate::frames::FrameState>,
+    /// Custom element definitions and element states (HTML §4.13).
+    pub ce: RefCell<crate::ce::Registry>,
 }
 
 impl Host {
@@ -392,6 +394,7 @@ impl Host {
             broadcasts: RefCell::default(),
             canvas: RefCell::default(),
             frames: RefCell::default(),
+            ce: RefCell::default(),
         }
     }
 
@@ -454,6 +457,7 @@ impl Host {
         crate::port::trace_broadcasts(self, out);
         self.canvas.borrow().trace(out);
         self.frames.borrow().trace(out);
+        self.ce.borrow().trace(out);
         for v in self.blob_urls.borrow().values() {
             push(v, out);
         }

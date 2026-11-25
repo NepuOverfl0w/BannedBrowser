@@ -636,6 +636,14 @@ pub fn clone_node(vm: &mut Vm, h: &Host, n: NodeRef, deep: bool) -> JsResult<Nod
         }
     };
     h.started_scripts.borrow_mut().extend(started);
+    // DOM §4.5 "clone a node" step 2.2: copies are created with their `is` values, and those
+    // with a definition get an upgrade reaction.
+    crate::ce::enter(h);
+    let pairs: Vec<(NodeRef, NodeRef)> = with_doc(vm, h, n.doc, |d| {
+        d.descendants(n.id).zip(d.descendants(id)).map(|(a, b)| (n.with(a), n.with(b))).collect()
+    })?;
+    crate::ce::cloned(vm, h, &pairs);
+    crate::ce::leave(vm, h);
     Ok(n.with(id))
 }
 
@@ -1229,22 +1237,16 @@ pub fn setup_document(vm: &mut Vm, proto: ObjRef) {
         let name = if html { name.to_ascii_lowercase() } else { name };
         let ty = h.doc_types.borrow().get(n.doc as usize).cloned().unwrap_or_default();
         let ns = if html || ty == "application/xhtml+xml" { Namespace::Html } else { Namespace::None };
-        let id = with_doc_mut(vm, &h, n.doc, |d| d.create_element(ns, &name, Vec::new()))?;
-        wrap(vm, &h, n.with(id))
+        let is = element_is_option(vm, &c.arg(1))?;
+        create_element_with_definitions(vm, &h, n.doc, ns, &name, None, is.as_deref())
     });
     op(vm, proto, "createElementNS", 2, |vm, c| {
         let ns = rstr_opt(vm, &c.arg(0), false)?;
         let q = rstr(vm, &c.arg(1))?;
         let (h, n) = doc_this(vm, &c)?;
         let (ns, prefix, local) = validate_and_extract(vm, ns, &q, true)?;
-        let id = with_doc_mut(vm, &h, n.doc, |d| {
-            let id = d.create_element(ns, &local, Vec::new());
-            if let Some(e) = d.element_mut(id) {
-                e.prefix = prefix;
-            }
-            id
-        })?;
-        wrap(vm, &h, n.with(id))
+        let is = element_is_option(vm, &c.arg(2))?;
+        create_element_with_definitions(vm, &h, n.doc, ns, &local, prefix, is.as_deref())
     });
     op(vm, proto, "createDocumentFragment", 0, |vm, c| {
         let (h, n) = doc_this(vm, &c)?;
@@ -2033,4 +2035,57 @@ pub fn insert_adjacent(
         }
         _ => throw(vm, "SyntaxError", "the position must be beforebegin, afterbegin, beforeend or afterend"),
     }
+}
+
+/// createElement's options: a string or `{ is }` (DOM §4.5).
+fn element_is_option(vm: &mut Vm, v: &Value) -> JsResult<Option<String>> {
+    match v {
+        Value::Undefined | Value::Null => Ok(None),
+        Value::Object(_) => match crate::host::dict_get(vm, v, "is")? {
+            Value::Undefined => Ok(None),
+            x => rstr(vm, &x).map(Some),
+        },
+        x => rstr(vm, x).map(Some),
+    }
+}
+
+/// DOM §4.9 "create an element" with the synchronous custom elements flag set: a defined
+/// custom element is constructed (or upgraded), others are made plain.
+fn create_element_with_definitions(
+    vm: &mut Vm,
+    h: &Host,
+    doc: u32,
+    ns: Namespace,
+    local: &str,
+    prefix: Option<String>,
+    is: Option<&str>,
+) -> R {
+    if ns == Namespace::Html {
+        crate::ce::enter(h);
+        let r = crate::ce::create(vm, h, doc, local, is);
+        crate::ce::leave(vm, h);
+        if let Some(v) = r? {
+            // Step 6.2.9: the element gets the prefix it was asked for.
+            if let (Some(p), Some(n)) = (prefix, node_of(vm, &v)) {
+                with_doc_mut(vm, h, n.doc, |d| {
+                    if let Some(e) = d.element_mut(n.id) {
+                        e.prefix = Some(p);
+                    }
+                })?;
+            }
+            return Ok(v);
+        }
+    }
+    let id = with_doc_mut(vm, h, doc, |d| {
+        let id = d.create_element(ns, local, Vec::new());
+        if let Some(e) = d.element_mut(id) {
+            e.prefix = prefix;
+        }
+        id
+    })?;
+    let n = NodeRef { doc, id };
+    if ns == Namespace::Html {
+        crate::ce::created(h, n, local, is);
+    }
+    wrap(vm, h, n)
 }

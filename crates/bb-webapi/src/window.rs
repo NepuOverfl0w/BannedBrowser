@@ -31,6 +31,7 @@ pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
     attr(vm, g, "frameElement", crate::frames::frame_element_getter, None);
     attr(vm, g, "closed", crate::frames::closed_getter, None);
     attr(vm, g, "length", crate::frames::length_getter, None);
+    attr(vm, g, "customElements", crate::ce::registry_getter, None);
     attr(
         vm,
         g,

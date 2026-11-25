@@ -13,6 +13,7 @@ pub mod activation;
 pub mod attr;
 pub mod blob;
 pub mod canvas;
+pub mod ce;
 pub mod class;
 pub mod collections;
 pub mod css;
@@ -371,6 +372,7 @@ fn end_task(vm: &mut Vm, h: &Rc<Host>, r: Result<(), Value>) {
     vm.terminated = false;
     vm.run_jobs();
     vm.terminated = false;
+    ce::flush(vm, h);
     loader::register_handlers(vm, h);
     // A frame's own navigation (location.href = …) is its parent's to do.
     if frames::parent_of(h).is_some() {

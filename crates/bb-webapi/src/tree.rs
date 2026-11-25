@@ -222,6 +222,25 @@ pub fn insert(
     child: Option<NodeId>,
     suppress: bool,
 ) -> JsResult<Vec<NodeRef>> {
+    crate::ce::enter(h);
+    let r = insert_steps(vm, h, node, parent, child, suppress);
+    if let Ok(nodes) = &r {
+        if parent.doc == 0 {
+            crate::ce::inserted(vm, h, nodes);
+        }
+    }
+    crate::ce::leave(vm, h);
+    r
+}
+
+fn insert_steps(
+    vm: &mut Vm,
+    h: &Host,
+    node: NodeRef,
+    parent: NodeRef,
+    child: Option<NodeId>,
+    suppress: bool,
+) -> JsResult<Vec<NodeRef>> {
     // Steps 1–3.
     let is_frag = with_doc(vm, h, node.doc, |d| matches!(d.node(node.id).data, NodeData::DocumentFragment))?;
     let nodes: Vec<NodeRef> = if is_frag {
@@ -368,6 +387,15 @@ pub fn pre_remove(vm: &mut Vm, h: &Host, child: NodeRef, parent: NodeRef) -> JsR
 
 /// DOM §4.2.3 "remove" `node` from its parent (if it has one).
 pub fn remove(vm: &mut Vm, h: &Host, node: NodeRef, suppress: bool) -> JsResult<()> {
+    crate::ce::enter(h);
+    // Step 15 (before the node leaves): its custom elements are disconnected.
+    crate::ce::removing(vm, h, node);
+    let r = remove_steps(vm, h, node, suppress);
+    crate::ce::leave(vm, h);
+    r
+}
+
+fn remove_steps(vm: &mut Vm, h: &Host, node: NodeRef, suppress: bool) -> JsResult<()> {
     let info = with_doc(vm, h, node.doc, |d| {
         let p = d.parent(node.id)?;
         let i = crate::range::index(d, node.id);
@@ -401,6 +429,13 @@ pub fn remove(vm: &mut Vm, h: &Host, node: NodeRef, suppress: bool) -> JsResult<
 
 /// Replace all children of `parent` with `node` (DOM §4.2.3 "replace all").
 pub fn replace_all(vm: &mut Vm, h: &Host, node: Option<NodeRef>, parent: NodeRef) -> JsResult<()> {
+    crate::ce::enter(h);
+    let r = replace_all_steps(vm, h, node, parent);
+    crate::ce::leave(vm, h);
+    r
+}
+
+fn replace_all_steps(vm: &mut Vm, h: &Host, node: Option<NodeRef>, parent: NodeRef) -> JsResult<()> {
     let kids = with_doc(vm, h, parent.doc, |d| d.children(parent.id).collect::<Vec<_>>())?;
     let removed: Vec<NodeRef> = kids.into_iter().map(|k| parent.with(k)).collect();
     for k in &removed {
@@ -418,6 +453,13 @@ pub fn replace_all(vm: &mut Vm, h: &Host, node: Option<NodeRef>, parent: NodeRef
 /// (and those of its descendants, and what observes them) now point at the copies. Returns
 /// where the node is now.
 pub fn adopt(vm: &mut Vm, h: &Host, node: NodeRef, doc: u32) -> JsResult<NodeRef> {
+    crate::ce::enter(h);
+    let r = adopt_steps(vm, h, node, doc);
+    crate::ce::leave(vm, h);
+    r
+}
+
+fn adopt_steps(vm: &mut Vm, h: &Host, node: NodeRef, doc: u32) -> JsResult<NodeRef> {
     remove(vm, h, node, false)?;
     if node.doc == doc {
         return Ok(node);
@@ -461,6 +503,7 @@ pub fn adopt(vm: &mut Vm, h: &Host, node: NodeRef, doc: u32) -> JsResult<NodeRef
     }
     crate::range::remap(h, &packed);
     crate::traversal::remap(h, &packed);
+    crate::ce::adopted(vm, h, &packed, node.doc, doc);
     // Static node lists (mutation records' addedNodes, …) follow too.
     let map: std::collections::HashMap<u64, u64> = packed.iter().copied().collect();
     for c in h.collections.borrow_mut().iter_mut() {
