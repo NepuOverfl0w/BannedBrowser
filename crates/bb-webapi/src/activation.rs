@@ -157,7 +157,7 @@ pub fn activate(vm: &mut Vm, h: &Host, t: NodeRef, saved: &Saved) -> JsResult<()
         }
         What::Reset(form) => {
             if fire(vm, h, t.with(form), "reset", true)? {
-                with_doc_mut(vm, h, t.doc, |d| d.reset_form(form))?;
+                crate::forms::reset(vm, h, t.with(form))?;
             }
         }
         What::Link(href, target) => {

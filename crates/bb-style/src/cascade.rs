@@ -400,11 +400,12 @@ impl<'a> Element for DomElement<'a> {
     fn match_state(&self, pc: &PseudoClass) -> bool {
         let flags = self.doc.node(self.id).flags;
         let e = self.data();
-        let form_control = e.ns == Namespace::Html
+        let form_control = (e.ns == Namespace::Html
             && matches!(
                 e.name.as_str(),
                 "input" | "button" | "select" | "textarea" | "option" | "optgroup" | "fieldset"
-            );
+            ))
+            || self.doc.is_form_associated_custom(self.id);
         match pc {
             PseudoClass::Link => self.is_link() && !flags.contains(NodeFlags::VISITED),
             PseudoClass::Visited => self.is_link() && flags.contains(NodeFlags::VISITED),
@@ -423,8 +424,9 @@ impl<'a> Element for DomElement<'a> {
                 (e.is_html("input") && e.has_attr("checked"))
                     || (e.is_html("option") && e.has_attr("selected"))
             }
-            PseudoClass::Disabled => form_control && e.has_attr("disabled"),
-            PseudoClass::Enabled => form_control && !e.has_attr("disabled"),
+            // §4.16.3: "actually disabled" (a disabled fieldset's descendants too).
+            PseudoClass::Disabled => form_control && self.doc.is_disabled(self.id),
+            PseudoClass::Enabled => form_control && !self.doc.is_disabled(self.id),
             PseudoClass::Required => form_control && e.has_attr("required"),
             PseudoClass::Optional => form_control && !e.has_attr("required"),
             PseudoClass::ReadOnly => !(e.is_html("input") || e.is_html("textarea")) || e.has_attr("readonly"),
@@ -437,6 +439,7 @@ impl<'a> Element for DomElement<'a> {
                     && e.attr("value").is_none_or(|v| v.is_empty())
             }
             PseudoClass::Defined => self.doc.is_defined(self.id),
+            PseudoClass::State(s) => self.doc.has_custom_state(self.id, s),
             PseudoClass::Scope => self.is_root(),
             PseudoClass::Default => e.has_attr("checked") || e.has_attr("selected"),
             PseudoClass::Target | PseudoClass::Indeterminate => false,

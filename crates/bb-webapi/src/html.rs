@@ -808,10 +808,14 @@ pub fn setup_element_interface(vm: &mut Vm, c: C, proto: ObjRef) {
             reflect(vm, proto, "noValidate", "novalidate", Bool);
             crate::forms::setup_form(vm, proto);
         }
-        C::HTMLLabelElement => reflect(vm, proto, "htmlFor", "for", Str),
+        C::HTMLLabelElement => {
+            reflect(vm, proto, "htmlFor", "for", Str);
+            crate::forms::setup_label(vm, proto);
+        }
         C::HTMLFieldSetElement => {
             reflect(vm, proto, "disabled", "disabled", Bool);
             reflect(vm, proto, "name", "name", Str);
+            crate::forms::setup_fieldset(vm, proto);
         }
         C::HTMLIFrameElement | C::HTMLFrameElement => {
             attr(vm, proto, "contentWindow", crate::frames::content_window, None);

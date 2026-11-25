@@ -182,6 +182,22 @@ pub enum Task {
 }
 
 /// What a live (or static) collection object lists.
+/// The descendant filters of the HTML collections `document.forms` &c. (HTML §3.1.5) and
+/// `fieldset.elements` (§4.10.15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DescFilter {
+    Forms,
+    Images,
+    Embeds,
+    Links,
+    Anchors,
+    Scripts,
+    /// `document.applets`: always empty.
+    Nothing,
+    /// A fieldset's listed elements.
+    FieldsetElements,
+}
+
 #[derive(Clone, Debug)]
 pub enum CollKind {
     /// Node.childNodes.
@@ -210,6 +226,8 @@ pub enum CollKind {
     Options(NodeRef),
     /// HTMLFormElement.elements (its listed controls).
     FormElements(NodeRef),
+    /// A filtered list of the descendants of a document or element (see [`DescFilter`]).
+    Filtered(NodeRef, DescFilter),
     /// The Window's named objects with this name (HTML §7.2.2.3).
     WindowNamed(String),
 }
@@ -345,6 +363,8 @@ pub struct Host {
     pub slots: RefCell<crate::shadow::SlotState>,
     /// Queued details toggle event tasks (HTML §4.11.1).
     pub toggles: RefCell<crate::details::Toggles>,
+    /// ElementInternals by target element (HTML §4.13.7).
+    pub internals: RefCell<crate::internals::State>,
 }
 
 impl Host {
@@ -406,6 +426,7 @@ impl Host {
             current_event: Cell::new(None),
             slots: RefCell::default(),
             toggles: RefCell::default(),
+            internals: RefCell::default(),
         }
     }
 
@@ -470,6 +491,7 @@ impl Host {
         self.frames.borrow().trace(out);
         self.ce.borrow().trace(out);
         out.extend(self.current_event.get());
+        self.internals.borrow().trace(out);
         for v in self.blob_urls.borrow().values() {
             push(v, out);
         }

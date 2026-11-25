@@ -616,3 +616,41 @@ fn details_toggle_events_and_exclusive_groups() {
     wait_for_change(&mut p, "log", "-");
     assert_eq!(text(&p, "log"), "a:closed>open a:open>closed b:closed>open false");
 }
+
+#[test]
+fn element_internals_and_form_associated_custom_elements() {
+    let p = page(
+        "<!doctype html><style>x-check:state(on) { color: rgb(0, 128, 0) }</style>\
+         <form id=f><label for=c id=l>label</label><x-check id=c name=agree></x-check>\
+         <fieldset id=fs disabled><x-check id=d name=off></x-check></fieldset></form><p id=log></p><script>\
+         var log = [];\
+         class XCheck extends HTMLElement {\
+           static formAssociated = true;\
+           constructor() { super(); this.i = this.attachInternals(); }\
+           formAssociatedCallback(form) { log.push('assoc:' + this.id + ':' + (form && form.id)); }\
+           formDisabledCallback(d) { log.push('disabled:' + this.id + ':' + d); }\
+           formResetCallback() { log.push('reset:' + this.id); }\
+         }\
+         customElements.define('x-check', XCheck);\
+         var c = document.getElementById('c');\
+         c.i.setFormValue('yes'); c.i.states.add('on');\
+         document.getElementById('d').i.setFormValue('no');\
+         var fd = new FormData(document.getElementById('f'));\
+         log.push(Array.from(fd.entries()).join(';'));\
+         log.push(c.i.form.id, document.getElementById('l').control.id, c.i.labels.length);\
+         log.push(document.getElementById('fs').elements.length, document.forms.length);\
+         c.i.setValidity({ valueMissing: true }, 'Check it');\
+         var invalid = 0; c.addEventListener('invalid', function () { invalid++; });\
+         log.push(c.i.checkValidity(), invalid, c.i.validity.valueMissing, c.i.validationMessage);\
+         document.getElementById('f').reset();\
+         try { document.createElement('x-check').attachInternals(); } catch (e) { log.push(e.name); }\
+         try { c.attachInternals(); } catch (e) { log.push(e.name); }\
+         document.getElementById('log').textContent = log.join(' ');</script>",
+    );
+    assert_eq!(
+        text(&p, "log"),
+        "assoc:c:f assoc:d:f disabled:d:true agree,yes f c 1 1 1 false 1 true Check it reset:c reset:d NotSupportedError NotSupportedError"
+    );
+    let c = p.doc.get_element_by_id("c").unwrap();
+    assert_eq!(p.styles.get(c).unwrap().color, bb_css::Rgba { r: 0, g: 128, b: 0, a: 255 });
+}

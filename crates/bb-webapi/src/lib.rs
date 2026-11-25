@@ -27,6 +27,7 @@ pub mod geometry;
 pub mod host;
 pub mod html;
 pub mod idl;
+pub mod internals;
 pub mod loader;
 pub mod mutation;
 pub mod net;
@@ -309,6 +310,15 @@ impl Window {
         let h = self.host.clone();
         self.begin_task();
         let r = crate::mutation::set_or_remove(&mut self.vm, &h, NodeRef { doc: 0, id: n }, name, value);
+        self.end_task(r);
+    }
+
+    /// Reset form `form` of the window's document (a reset button the user clicked, after
+    /// its reset event): with its form-associated custom elements' callbacks.
+    pub fn reset_form(&mut self, form: bb_dom::NodeId) {
+        let h = self.host.clone();
+        self.begin_task();
+        let r = crate::forms::reset(&mut self.vm, &h, NodeRef { doc: 0, id: form });
         self.end_task(r);
     }
 

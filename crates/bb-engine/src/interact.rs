@@ -451,7 +451,11 @@ impl Page {
             if !self.script_event("reset", form, true) {
                 return None;
             }
-            self.doc.reset_form(form);
+            if self.script.is_some() {
+                self.with_window(|w| w.reset_form(form));
+            } else {
+                self.doc.reset_form(form);
+            }
             if let Some(ed) = self.focus.editor.as_mut() {
                 if let Some(n) = self.focus.node {
                     ed.set_text(&self.doc.control_value(n));

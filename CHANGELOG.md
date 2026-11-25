@@ -41,7 +41,9 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   navigates, labels and summaries work). Module scripts import other modules (static and
   dynamic `import`, URL specifiers), and module workers (`type: 'module'`) run. Custom
   elements: `customElements.define`, autonomous and customized built-in elements, upgrades,
-  and connected/disconnected/adopted/attributeChanged callbacks, and `:defined`. Streams: ReadableStream,
+  and connected/disconnected/adopted/attributeChanged callbacks, `:defined`, ElementInternals
+  (form-associated custom elements with form values, validity and form callbacks; custom
+  states and `:state()`). Streams: ReadableStream,
   WritableStream, TransformStream, the queuing strategies, TextEncoderStream/TextDecoderStream,
   `Response.body` and `Blob.stream()`, readable byte streams with BYOB readers, and stream
   request bodies (`duplex: 'half'`). The
@@ -55,7 +57,7 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
   `dom/`, `domparsing/`, `FileAPI/`, `xhr/formdata/`, `url/`, `encoding/` and `fetch/api/headers/` tests
   and `workers/`, `webmessaging/`, structured clone, `custom-elements/`, `streams/` and
-  `shadow-dom/` (103458/125010 subtests so far).
+  `shadow-dom/` (103793/125284 subtests so far).
 - **JavaScript engine (milestone D):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262, and an interpreter: bytecode compiler, stack VM, garbage

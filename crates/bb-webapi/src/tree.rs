@@ -228,6 +228,9 @@ pub fn insert(
         if parent.doc == 0 {
             crate::ce::inserted(vm, h, nodes);
         }
+        // §4.10.17.3 form owners of form-associated custom elements (after connectedCallback
+        // is queued).
+        crate::internals::forms_changed(vm, h, parent.doc);
     }
     crate::ce::leave(vm, h);
     r
@@ -412,6 +415,7 @@ fn remove_steps(vm: &mut Vm, h: &Host, node: NodeRef, suppress: bool) -> JsResul
     with_doc_mut(vm, h, node.doc, |d| d.detach(node.id))?;
     // Steps 12–13: slot reassignment and fallback content changes.
     crate::shadow::tree_changed(vm, h, parent);
+    crate::internals::forms_changed(vm, h, node.doc);
     // HTML §4.8.5 iframe "removing steps": frames whose containers left go away.
     if node.doc == 0 {
         crate::frames::nodes_removed(vm, h);
@@ -510,6 +514,7 @@ fn adopt_steps(vm: &mut Vm, h: &Host, node: NodeRef, doc: u32) -> JsResult<NodeR
     crate::traversal::remap(h, &packed);
     crate::ce::adopted(vm, h, &packed, node.doc, doc);
     crate::shadow::adopted(vm, h, &packed, node.doc, doc);
+    h.internals.borrow_mut().remap(vm, &packed);
     // Static node lists (mutation records' addedNodes, …) follow too.
     let map: std::collections::HashMap<u64, u64> = packed.iter().copied().collect();
     for c in h.collections.borrow_mut().iter_mut() {

@@ -8,8 +8,8 @@
 //! API call. Elements the HTML parser creates are upgraded right after each pump of the
 //! parser (between scripts) rather than constructed as each start tag is read.
 //!
-//! Not done yet: ElementInternals and form-associated custom elements, and scoped
-//! registries.
+//! ElementInternals and form-associated custom elements are in `internals.rs`. Not done yet:
+//! scoped registries.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -38,6 +38,13 @@ pub struct Def {
     pub attribute_changed: Value,
     /// `disabledFeatures` has "shadow": attachShadow() throws (§4.13.4 "disable shadow").
     pub disable_shadow: bool,
+    /// `disabledFeatures` has "internals": attachInternals() throws.
+    pub disable_internals: bool,
+    /// `static formAssociated = true` (§4.13.7).
+    pub form_associated: bool,
+    /// formAssociatedCallback, formResetCallback, formDisabledCallback,
+    /// formStateRestoreCallback.
+    pub form_callbacks: [Value; 4],
     /// The construction stack: elements being upgraded; None is the "already constructed"
     /// marker.
     pub construction: Vec<Option<ObjRef>>,
@@ -80,6 +87,9 @@ pub struct Registry {
     pub when: HashMap<String, (Value, Value)>,
     /// "Defined" changes waiting for the document to be free (see `mark_defined`).
     pub pending_defined: Vec<(u64, bool)>,
+    /// Elements whose upgrade constructor is running: state "precustomized" (§4.13.5 step
+    /// 8.2).
+    pub upgrading: Vec<u64>,
 }
 
 impl Registry {
@@ -92,7 +102,10 @@ impl Registry {
         for d in &self.defs {
             out.push(d.ctor);
             out.push(d.proto);
-            for v in [&d.connected, &d.disconnected, &d.adopted, &d.attribute_changed] {
+            for v in [&d.connected, &d.disconnected, &d.adopted, &d.attribute_changed]
+                .into_iter()
+                .chain(d.form_callbacks.iter())
+            {
                 push(v, out);
             }
             out.extend(d.construction.iter().flatten());
@@ -178,10 +191,9 @@ pub fn is_value(h: &Host, n: NodeRef) -> Option<String> {
 }
 
 /// Whether `n`'s custom element state is "precustomized": its constructor is running for an
-/// upgrade (it is on a definition's construction stack).
+/// upgrade.
 pub fn is_precustomized(h: &Host, n: NodeRef) -> bool {
-    let Some(w) = h.wrappers.borrow().get(&n.pack()).copied() else { return false };
-    h.ce.borrow().defs.iter().any(|d| d.construction.contains(&Some(w)))
+    h.ce.borrow().upgrading.contains(&n.pack())
 }
 
 pub fn state(h: &Host, n: NodeRef) -> Option<State> {
@@ -219,6 +231,10 @@ fn enqueue_callback(h: &Host, n: NodeRef, which: &str, args: Vec<Value>) {
             "connectedCallback" => d.connected.clone(),
             "disconnectedCallback" => d.disconnected.clone(),
             "adoptedCallback" => d.adopted.clone(),
+            "formAssociatedCallback" => d.form_callbacks[0].clone(),
+            "formResetCallback" => d.form_callbacks[1].clone(),
+            "formDisabledCallback" => d.form_callbacks[2].clone(),
+            "formStateRestoreCallback" => d.form_callbacks[3].clone(),
             _ => {
                 let name = match args.first() {
                     Some(Value::String(s)) => bb_js::vm::to_rust(s),
@@ -349,12 +365,18 @@ fn upgrade(vm: &mut Vm, h: &Host, n: NodeRef, def: usize) -> JsResult<()> {
     let result = if has_shadow && h.ce.borrow().defs[def].disable_shadow {
         throw(vm, "NotSupportedError", "this custom element disables shadow roots")
     } else {
-        vm.construct(ctor, Vec::new(), None)
+        h.ce.borrow_mut().upgrading.push(n.pack());
+        let r = vm.construct(ctor, Vec::new(), None);
+        h.ce.borrow_mut().upgrading.retain(|&k| k != n.pack());
+        r
     };
     h.ce.borrow_mut().defs[def].construction.pop();
     match result {
         Ok(Value::Object(o)) if o == eo => {
             set_state(h, n, State::Custom);
+            mark_form_associated(h, n);
+            // Step 11: a form-associated element's form owner is reset (its callback).
+            crate::internals::forms_changed(vm, h, n.doc);
             Ok(())
         }
         Ok(_) => {
@@ -373,6 +395,36 @@ fn set_state(h: &Host, n: NodeRef, s: State) {
         e.state = s;
     }
     mark_defined(h, n, matches!(s, State::Custom | State::Uncustomized));
+}
+
+/// An upgrade finished: a custom element whose definition is form-associated is now a
+/// form-associated custom element (§4.13.7; not while its constructor runs).
+fn mark_form_associated(h: &Host, n: NodeRef) {
+    let fa = {
+        let r = h.ce.borrow();
+        r.elems.get(&n.pack()).and_then(|e| e.def).is_some_and(|d| r.defs[d].form_associated)
+    };
+    if fa {
+        if let Ok(mut docs) = h.docs.try_borrow_mut() {
+            if let Some(d) = docs.get_mut(n.doc as usize) {
+                d.set_form_associated_custom(n.id, true);
+            }
+        }
+    }
+}
+
+/// Whether `n`'s definition is form-associated and it is custom or being upgraded (its
+/// internals' form methods work then, also in an upgrade constructor).
+pub fn form_associated_def(h: &Host, n: NodeRef) -> bool {
+    let r = h.ce.borrow();
+    r.elems.get(&n.pack()).and_then(|e| e.def).is_some_and(|d| r.defs[d].form_associated)
+        && (matches!(r.elems.get(&n.pack()).map(|e| e.state), Some(State::Custom))
+            || r.upgrading.contains(&n.pack()))
+}
+
+/// Enqueue a form-associated custom element callback reaction (§4.13.7).
+pub fn enqueue_form_callback(h: &Host, n: NodeRef, which: &str, args: Vec<Value>) {
+    enqueue_callback(h, n, which, args);
 }
 
 /// Tell the document whether `n` is defined (for `:defined`); while the document is
@@ -670,6 +722,9 @@ pub fn html_ctor(vm: &mut Vm, c: NativeCall) -> R {
             },
         );
         mark_defined(&h, n, true);
+        if h.ce.borrow().defs[def].form_associated {
+            with_doc_mut(vm, &h, 0, |d| d.set_form_associated_custom(id, true))?;
+        }
         let w = wrap(vm, &h, n)?;
         if let Value::Object(o) = w {
             vm.heap.obj_mut(o).proto = Some(proto);
@@ -735,7 +790,7 @@ fn define(vm: &mut Vm, c: NativeCall) -> R {
         return throw(vm, "NotSupportedError", "a custom element is already being defined");
     }
     h.ce.borrow_mut().defining = true;
-    let r = (|| -> JsResult<(ObjRef, [Value; 4], Vec<String>, bool)> {
+    let r = (|| -> JsResult<(ObjRef, [Value; 4], Vec<String>, [bool; 3], [Value; 4])> {
         // Step 14.1–14.2.
         let Value::Object(proto) = vm.get(ctor_o, &PropKey::lit("prototype"))? else {
             return vm.type_error("the constructor's prototype must be an object");
@@ -755,22 +810,45 @@ fn define(vm: &mut Vm, c: NativeCall) -> R {
                 }
             }
         }
-        // Steps 14.6–14.9: disabledFeatures (formAssociated is read for its side effects).
-        let mut disable_shadow = false;
-        for k in ["disabledFeatures", "formAssociated"] {
-            let v = vm.get(ctor_o, &PropKey::named(k))?;
-            if k == "disabledFeatures" && !v.is_undefined() {
-                for x in vm.iterate_to_vec(&v)? {
-                    if rstr(vm, &x)? == "shadow" {
-                        disable_shadow = true;
-                    }
+        // Steps 14.5–14.7: disabledFeatures.
+        let (mut disable_shadow, mut disable_internals) = (false, false);
+        let v = vm.get(ctor_o, &PropKey::lit("disabledFeatures"))?;
+        if !v.is_undefined() {
+            for x in vm.iterate_to_vec(&v)? {
+                match rstr(vm, &x)?.as_str() {
+                    "shadow" => disable_shadow = true,
+                    "internals" => disable_internals = true,
+                    _ => {}
                 }
             }
         }
-        Ok((proto, cbs, observed, disable_shadow))
+        // Steps 14.8–14.9: formAssociated, and then the form callbacks.
+        let v = vm.get(ctor_o, &PropKey::lit("formAssociated"))?;
+        let form_associated = vm.to_boolean(&v);
+        let mut form_cbs = [Value::Undefined, Value::Undefined, Value::Undefined, Value::Undefined];
+        if form_associated {
+            for (i, name) in [
+                "formAssociatedCallback",
+                "formResetCallback",
+                "formDisabledCallback",
+                "formStateRestoreCallback",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                form_cbs[i] = callback(vm, proto, name)?;
+            }
+        }
+        Ok((proto, cbs, observed, [disable_shadow, disable_internals, form_associated], form_cbs))
     })();
     h.ce.borrow_mut().defining = false;
-    let (proto, [connected, disconnected, adopted, attribute_changed], observed, disable_shadow) = r?;
+    let (
+        proto,
+        [connected, disconnected, adopted, attribute_changed],
+        observed,
+        [disable_shadow, disable_internals, form_associated],
+        form_callbacks,
+    ) = r?;
     // Steps 15–16.
     let def = {
         let mut r = h.ce.borrow_mut();
@@ -785,6 +863,9 @@ fn define(vm: &mut Vm, c: NativeCall) -> R {
             adopted,
             attribute_changed,
             disable_shadow,
+            disable_internals,
+            form_associated,
+            form_callbacks,
             construction: Vec::new(),
         });
         r.defs.len() - 1

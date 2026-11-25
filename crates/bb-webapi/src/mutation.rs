@@ -622,6 +622,9 @@ fn handle_change_steps(
     if ns == Namespace::None {
         crate::shadow::attribute_changed(vm, h, n, local);
         crate::details::attribute_changed(vm, h, n, local, old_value.as_deref())?;
+        if matches!(local, "form" | "id" | "disabled") {
+            crate::internals::forms_changed(vm, h, n.doc);
+        }
         crate::events::attribute_changed(vm, h, n, local)?;
         // HTML §4.12.5: a canvas's width or height attribute set resets its bitmap.
         if matches!(local, "width" | "height") && with_doc(vm, h, n.doc, |d| d.is_html(n.id, "canvas"))? {

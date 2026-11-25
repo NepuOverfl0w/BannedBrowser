@@ -18,6 +18,20 @@ pub(crate) struct FormState {
     checked: HashMap<NodeId, bool>,
     /// Form owners set by the parser's form element pointer (§13.2.6.1).
     parser_owner: HashMap<NodeId, NodeId>,
+    /// Form-associated custom elements (§4.13.7) and their submission values.
+    face: HashMap<NodeId, FaceSubmission>,
+}
+
+/// A form-associated custom element's submission value (HTML §4.13.7.4 setFormValue).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum FaceSubmission {
+    /// null: nothing is submitted.
+    #[default]
+    None,
+    /// A string or a File, submitted under the element's `name`.
+    Value(crate::form_data::EntryValue),
+    /// A FormData's entries, submitted as they are.
+    Entries(Vec<(String, crate::form_data::EntryValue)>),
 }
 
 /// An `<input>`'s `type` state (§4.10.5.1), keyword lowercased; unknown and missing values are
@@ -132,8 +146,8 @@ impl InputType {
     }
 }
 
-/// §4.10.2: elements that can be form-associated ("form-associated elements"); custom elements
-/// aren't supported.
+/// §4.10.2: elements that can be form-associated ("form-associated elements"), besides
+/// form-associated custom elements ([`Document::is_form_associated_custom`]).
 pub const FORM_ASSOCIATED: &[&str] =
     &["button", "fieldset", "input", "object", "output", "select", "textarea", "img"];
 
@@ -329,15 +343,49 @@ impl Document {
         self.form_state.parser_owner.insert(el, form);
     }
 
+    /// Make `el` a form-associated custom element (or not): the host does when such a
+    /// custom element is defined (HTML §4.13.7).
+    pub fn set_form_associated_custom(&mut self, el: NodeId, on: bool) {
+        if on {
+            self.form_state.face.entry(el).or_default();
+        } else {
+            self.form_state.face.remove(&el);
+        }
+        self.generation += 1;
+    }
+
+    pub fn is_form_associated_custom(&self, el: NodeId) -> bool {
+        self.form_state.face.contains_key(&el)
+    }
+
+    /// The form-associated custom elements.
+    pub fn form_associated_customs(&self) -> Vec<NodeId> {
+        let mut v: Vec<NodeId> = self.form_state.face.keys().copied().collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// Set a form-associated custom element's submission value.
+    pub fn set_face_submission(&mut self, el: NodeId, value: FaceSubmission) {
+        if let Some(s) = self.form_state.face.get_mut(&el) {
+            *s = value;
+        }
+    }
+
+    pub fn face_submission(&self, el: NodeId) -> Option<&FaceSubmission> {
+        self.form_state.face.get(&el)
+    }
+
     /// §4.10.17.3 the element's form owner: the element its `form` attribute names (listed
     /// elements), else the form the parser associated it with while both are in the same tree,
     /// else the nearest ancestor `form`.
     pub fn form_owner(&self, el: NodeId) -> Option<NodeId> {
+        let face = self.is_form_associated_custom(el);
         let name = self.element(el)?.name.as_str();
-        if !FORM_ASSOCIATED.contains(&name) {
+        if !face && !FORM_ASSOCIATED.contains(&name) {
             return None;
         }
-        if LISTED.contains(&name) {
+        if face || LISTED.contains(&name) {
             if let Some(id) = self.attr(el, "form") {
                 if !self.is_connected(el) {
                     return None;
@@ -359,7 +407,8 @@ impl Document {
         let root = self.tree_root(form);
         self.descendants(root)
             .filter(|&n| {
-                self.element(n).is_some_and(|e| LISTED.contains(&e.name.as_str()))
+                self.element(n)
+                    .is_some_and(|e| LISTED.contains(&e.name.as_str()) || self.is_form_associated_custom(n))
                     && self.form_owner(n) == Some(form)
             })
             .collect()
@@ -376,7 +425,9 @@ impl Document {
         if matches!(name.as_str(), "optgroup") {
             return self.attr(el, "disabled").is_some();
         }
-        if !matches!(name.as_str(), "button" | "input" | "select" | "textarea" | "fieldset") {
+        if !matches!(name.as_str(), "button" | "input" | "select" | "textarea" | "fieldset")
+            && !self.is_form_associated_custom(el)
+        {
             return false;
         }
         if self.attr(el, "disabled").is_some() {
@@ -406,6 +457,7 @@ impl Document {
                         e.name.as_str(),
                         "button" | "meter" | "output" | "progress" | "select" | "textarea"
                     ) || (e.name == "input" && self.input_type(n) != InputType::Hidden))
+                    || self.is_form_associated_custom(n)
             })
         };
         if let Some(id) = self.attr(label, "for") {

@@ -63,6 +63,22 @@ pub fn entry_list(
 ) -> Vec<(String, EntryValue)> {
     let mut out = Vec::new();
     for el in doc.form_controls(form) {
+        // §4.13.7.4 a form-associated custom element's entry construction.
+        if let Some(sub) = doc.face_submission(el) {
+            if doc.is_disabled(el) || doc.ancestors(el).any(|a| doc.is_html(a, "datalist")) {
+                continue;
+            }
+            match sub {
+                crate::forms::FaceSubmission::None => {}
+                crate::forms::FaceSubmission::Value(v) => {
+                    if let Some(name) = doc.attr(el, "name").filter(|n| !n.is_empty()) {
+                        out.push((name.to_string(), v.clone()));
+                    }
+                }
+                crate::forms::FaceSubmission::Entries(list) => out.extend(list.iter().cloned()),
+            }
+            continue;
+        }
         let submittable = doc.is_html(el, "button")
             || doc.is_html(el, "input")
             || doc.is_html(el, "select")

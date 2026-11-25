@@ -61,6 +61,8 @@ pub enum PseudoClass {
     Host(Option<SelectorList>),
     /// `:host-context(<compound>)`: the host, if it or a shadow-including ancestor matches.
     HostContext(SelectorList),
+    /// CSS Selectors 4 / HTML §4.13.7.7 `:state(<ident>)`: a custom element's custom state.
+    State(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -444,6 +446,17 @@ fn parse_functional(name: &str, args: &[Cv]) -> Option<PseudoClass> {
         }
         "host" => P::Host(Some(compound_selector(args)?)),
         "host-context" => P::HostContext(compound_selector(args)?),
+        "state" => {
+            let mut toks = args.iter().filter(|c| !c.is_ws());
+            let name = match toks.next() {
+                Some(Cv::Token(Token::Ident(s))) => s.clone(),
+                _ => return None,
+            };
+            if toks.next().is_some() {
+                return None;
+            }
+            P::State(name)
+        }
         "lang" => {
             let v = args.iter().find_map(|c| match c {
                 Cv::Token(Token::Ident(s)) | Cv::Token(Token::String(s)) => Some(s.to_ascii_lowercase()),

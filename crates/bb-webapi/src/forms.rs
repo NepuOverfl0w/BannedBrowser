@@ -307,6 +307,57 @@ pub fn setup_option(vm: &mut Vm, proto: ObjRef) {
     attr(vm, proto, "form", form_attr, None);
 }
 
+/// HTMLFieldSetElement (§4.10.15): `elements`, `form`, `type`.
+pub fn setup_fieldset(vm: &mut Vm, proto: ObjRef) {
+    attr(
+        vm,
+        proto,
+        "elements",
+        |vm, c| {
+            let (h, n) = el(vm, &c, C::HTMLFieldSetElement)?;
+            collection(vm, &h, CollKind::Filtered(n, DescFilter::FieldsetElements), Some((30, n.pack())))
+        },
+        None,
+    );
+    attr(vm, proto, "form", form_attr, None);
+    attr(
+        vm,
+        proto,
+        "type",
+        |vm, c| {
+            el(vm, &c, C::HTMLFieldSetElement)?;
+            Ok(js("fieldset"))
+        },
+        None,
+    );
+}
+
+/// HTMLLabelElement (§4.10.4): `control` and `form`.
+pub fn setup_label(vm: &mut Vm, proto: ObjRef) {
+    attr(
+        vm,
+        proto,
+        "control",
+        |vm, c| {
+            let (h, n) = el(vm, &c, C::HTMLLabelElement)?;
+            let t = with_doc(vm, &h, n.doc, |d| d.labeled_control(n.id))?;
+            wrap_opt(vm, &h, t.map(|t| n.with(t)))
+        },
+        None,
+    );
+    attr(
+        vm,
+        proto,
+        "form",
+        |vm, c| {
+            let (h, n) = el(vm, &c, C::HTMLLabelElement)?;
+            let f = with_doc(vm, &h, n.doc, |d| d.labeled_control(n.id).and_then(|t| d.form_owner(t)))?;
+            wrap_opt(vm, &h, f.map(|f| n.with(f)))
+        },
+        None,
+    );
+}
+
 pub fn setup_form(vm: &mut Vm, proto: ObjRef) {
     attr(
         vm,
@@ -371,7 +422,11 @@ pub fn setup_form(vm: &mut Vm, proto: ObjRef) {
     }
     op(vm, proto, "reset", 0, |vm, c| {
         let (h, n) = el(vm, &c, C::HTMLFormElement)?;
-        with_doc_mut(vm, &h, n.doc, |d| d.reset_form(n.id))?;
+        // [CEReactions]: formResetCallback runs before reset() returns.
+        crate::ce::enter(&h);
+        let r = reset(vm, &h, n);
+        crate::ce::leave(vm, &h);
+        r?;
         Ok(Value::Undefined)
     });
     // submit() submits without a submit event; requestSubmit(submitter) fires one first and
@@ -413,6 +468,17 @@ pub fn setup_form(vm: &mut Vm, proto: ObjRef) {
             Ok(Value::Bool(true))
         });
     }
+}
+
+/// HTML §4.10.21.5 "reset" form `form` (after its reset event): the controls' reset
+/// algorithms, then its form-associated custom elements' formResetCallback.
+/// (Called from `form.reset()` its callbacks run at the end of that [CEReactions] scope;
+/// from a reset button, in the backup element queue.)
+pub fn reset(vm: &mut Vm, h: &Host, form: NodeRef) -> JsResult<()> {
+    let r = with_doc_mut(vm, h, form.doc, |d| d.reset_form(form.id));
+    crate::internals::form_reset(vm, h, form);
+    h.mark_dirty();
+    r
 }
 
 /// Whether `el` is a submit button (HTML §4.10.2): a `<button>` in the Submit Button state

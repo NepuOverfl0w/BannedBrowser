@@ -1214,6 +1214,49 @@ pub fn setup_document(vm: &mut Vm, proto: ObjRef) {
         },
         None,
     );
+    // HTML §3.1.5 the document's HTMLCollections.
+    for (i, (name, f)) in [
+        ("forms", DescFilter::Forms),
+        ("images", DescFilter::Images),
+        ("embeds", DescFilter::Embeds),
+        ("plugins", DescFilter::Embeds),
+        ("links", DescFilter::Links),
+        ("anchors", DescFilter::Anchors),
+        ("scripts", DescFilter::Scripts),
+        ("applets", DescFilter::Nothing),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        crate::idl::attr_with(
+            vm,
+            proto,
+            name,
+            |vm, c| {
+                let (h, n) = doc_this(vm, &c)?;
+                let i = match crate::idl::callee_slots(vm, c.callee).first() {
+                    Some(Value::Number(i)) => *i as usize,
+                    _ => 0,
+                };
+                let f = [
+                    DescFilter::Forms,
+                    DescFilter::Images,
+                    DescFilter::Embeds,
+                    DescFilter::Embeds,
+                    DescFilter::Links,
+                    DescFilter::Anchors,
+                    DescFilter::Scripts,
+                    DescFilter::Nothing,
+                ][i.min(7)];
+                // plugins is the same object as embeds.
+                let key = if i == 3 { 2 } else { i };
+                collection(vm, &h, CollKind::Filtered(n, f), Some((20 + key as u8, n.pack())))
+            },
+            None,
+            vec![Value::Number(i as f64)],
+        );
+        let _ = f;
+    }
     attr(
         vm,
         proto,

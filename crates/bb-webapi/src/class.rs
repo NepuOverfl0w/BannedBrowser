@@ -176,6 +176,9 @@ interfaces! {
     SubmitEvent: Event;
     ToggleEvent: Event;
     CustomElementRegistry: None;
+    ElementInternals: None;
+    ValidityState: None;
+    CustomStateSet: None;
     Crypto: None;
     MessageEvent: Event;
     Worker: EventTarget;
@@ -534,7 +537,10 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef, worker: bool) {
             crate::dom::setup_element(vm, proto);
             crate::shadow::setup_element(vm, proto);
         }
-        C::HTMLElement => crate::html::setup_html_element(vm, proto),
+        C::HTMLElement => {
+            crate::html::setup_html_element(vm, proto);
+            crate::internals::setup_html_element(vm, proto);
+        }
         C::SVGElement | C::MathMLElement => {
             crate::css::setup_inline_style(vm, proto);
             crate::events::setup_event_handlers(vm, proto);
@@ -551,6 +557,9 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef, worker: bool) {
         C::SubmitEvent => crate::events::setup_submit_event(vm, proto),
         C::ToggleEvent => crate::events::setup_toggle_event(vm, proto),
         C::CustomElementRegistry => crate::ce::setup_registry(vm, proto),
+        C::ElementInternals => crate::internals::setup_internals(vm, proto),
+        C::ValidityState => crate::internals::setup_validity_state(vm, proto),
+        C::CustomStateSet => crate::internals::setup_custom_state_set(vm, proto),
         C::MouseEvent => crate::events::setup_mouse_event(vm, proto),
         C::FocusEvent => crate::events::setup_focus_event(vm, proto),
         C::KeyboardEvent => crate::events::setup_keyboard_event(vm, proto),

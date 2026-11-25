@@ -122,6 +122,27 @@ pub fn items(h: &Host, kind: &CollKind) -> Vec<NodeRef> {
         CollKind::FormElements(n) => doc_of(n)
             .map(|d| d.form_controls(n.id).into_iter().map(|k| n.with(k)).collect())
             .unwrap_or_default(),
+        CollKind::Filtered(n, f) => {
+            let Some(d) = doc_of(n) else { return Vec::new() };
+            let html = |x: NodeId, name: &str| d.is_html(x, name);
+            descendant_elements(d, n.id)
+                .filter(|&x| match f {
+                    DescFilter::Forms => html(x, "form"),
+                    DescFilter::Images => html(x, "img"),
+                    DescFilter::Embeds => html(x, "embed"),
+                    DescFilter::Links => (html(x, "a") || html(x, "area")) && d.attr(x, "href").is_some(),
+                    DescFilter::Anchors => html(x, "a") && d.attr(x, "name").is_some(),
+                    DescFilter::Scripts => html(x, "script"),
+                    DescFilter::Nothing => false,
+                    DescFilter::FieldsetElements => {
+                        d.element(x).is_some_and(|e| {
+                            e.ns == Namespace::Html && bb_dom::LISTED.contains(&e.name.as_str())
+                        }) || d.is_form_associated_custom(x)
+                    }
+                })
+                .map(|x| n.with(x))
+                .collect()
+        }
         CollKind::Attributes(_)
         | CollKind::ClassList(_)
         | CollKind::Dataset(_)

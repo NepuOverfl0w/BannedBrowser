@@ -15,7 +15,7 @@ mod shadow;
 pub use dump::{
     dump_html5lib, is_void, serialize_children_html, serialize_html, serialize_shadow_template, Shadows,
 };
-pub use forms::{sanitize_value, InputType, FORM_ASSOCIATED, LISTED};
+pub use forms::{sanitize_value, FaceSubmission, InputType, FORM_ASSOCIATED, LISTED};
 pub use shadow::{ShadowRootInfo, SlotAssignment};
 
 /// CR LF and lone CR become LF (HTML's newline normalization).
@@ -260,6 +260,8 @@ pub struct Document {
     shadow: shadow::ShadowState,
     /// Custom element "defined"-ness the host recorded (see [`Document::is_defined`]).
     custom_defined: std::collections::HashMap<NodeId, bool>,
+    /// Custom elements' states (ElementInternals.states, CSS `:state()`).
+    custom_states: std::collections::HashMap<NodeId, Vec<String>>,
 }
 
 impl Default for Document {
@@ -282,6 +284,7 @@ impl Document {
             form_state: Default::default(),
             shadow: Default::default(),
             custom_defined: Default::default(),
+            custom_states: Default::default(),
         }
     }
 
@@ -577,8 +580,16 @@ impl Document {
         }
         pairs.push((id, copy));
         if !cloning {
+            // Adoption: the host's per-element state goes along.
             if let Some(&d) = src.custom_defined.get(&id) {
                 self.custom_defined.insert(copy, d);
+            }
+            if let Some(s) = src.custom_states.get(&id) {
+                self.custom_states.insert(copy, s.clone());
+            }
+            if let Some(sub) = src.face_submission(id) {
+                self.set_form_associated_custom(copy, true);
+                self.set_face_submission(copy, sub.clone());
             }
         }
         if deep {
@@ -649,6 +660,21 @@ impl Document {
         if self.custom_defined.insert(id, defined) != Some(defined) {
             self.mark_style_dirty(id);
         }
+    }
+
+    /// Set element `id`'s custom states (HTML §4.13.7.7 CustomStateSet).
+    pub fn set_custom_states(&mut self, id: NodeId, states: Vec<String>) {
+        if states.is_empty() {
+            self.custom_states.remove(&id);
+        } else {
+            self.custom_states.insert(id, states);
+        }
+        self.mark_style_dirty(id);
+    }
+
+    /// Whether element `id` has custom state `state` (CSS `:state()`).
+    pub fn has_custom_state(&self, id: NodeId, state: &str) -> bool {
+        self.custom_states.get(&id).is_some_and(|s| s.iter().any(|x| x == state))
     }
 
     /// A `<template>`'s contents fragment.
