@@ -40,7 +40,7 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   navigates, labels and summaries work). Module scripts import other modules (static and
   dynamic `import`, URL specifiers), and module workers (`type: 'module'`) run. Custom
   elements: `customElements.define`, autonomous and customized built-in elements, upgrades,
-  and connected/disconnected/adopted/attributeChanged callbacks. Streams: ReadableStream,
+  and connected/disconnected/adopted/attributeChanged callbacks, and `:defined`. Streams: ReadableStream,
   WritableStream, TransformStream, the queuing strategies, TextEncoderStream/TextDecoderStream,
   `Response.body` and `Blob.stream()` (byte streams and BYOB readers aren't done yet). The
   Geometry Interfaces: DOMPoint, DOMQuad, DOMMatrix (with CSS transform strings) and
@@ -53,7 +53,7 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
   `dom/`, `domparsing/`, `FileAPI/`, `xhr/formdata/`, `url/`, `encoding/` and `fetch/api/headers/` tests
   and `workers/`, `webmessaging/`, structured clone, `custom-elements/`, `streams/` and
-  `shadow-dom/` (101842/123460 subtests so far).
+  `shadow-dom/` (101848/123461 subtests so far).
 - **JavaScript engine (milestone D):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262, and an interpreter: bytecode compiler, stack VM, garbage

@@ -436,7 +436,7 @@ impl<'a> Element for DomElement<'a> {
                     && e.has_attr("placeholder")
                     && e.attr("value").is_none_or(|v| v.is_empty())
             }
-            PseudoClass::Defined => true,
+            PseudoClass::Defined => self.doc.is_defined(self.id),
             PseudoClass::Scope => self.is_root(),
             PseudoClass::Default => e.has_attr("checked") || e.has_attr("selected"),
             PseudoClass::Target | PseudoClass::Indeterminate => false,

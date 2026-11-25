@@ -8,8 +8,8 @@
 //! API call. Elements the HTML parser creates are upgraded right after each pump of the
 //! parser (between scripts) rather than constructed as each start tag is read.
 //!
-//! Not done yet: ElementInternals and form-associated custom elements, scoped registries,
-//! and `:defined`.
+//! Not done yet: ElementInternals and form-associated custom elements, and scoped
+//! registries.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -78,6 +78,8 @@ pub struct Registry {
     pub defining: bool,
     /// whenDefined promises by name: (promise, resolve function).
     pub when: HashMap<String, (Value, Value)>,
+    /// "Defined" changes waiting for the document to be free (see `mark_defined`).
+    pub pending_defined: Vec<(u64, bool)>,
 }
 
 impl Registry {
@@ -250,6 +252,10 @@ pub fn leave(vm: &mut Vm, h: &Host) {
 pub fn flush(vm: &mut Vm, h: &Host) {
     let q = std::mem::take(&mut h.ce.borrow_mut().backup);
     invoke(vm, h, q);
+    let pending = std::mem::take(&mut h.ce.borrow_mut().pending_defined);
+    for (k, d) in pending {
+        mark_defined(h, NodeRef::unpack(k), d);
+    }
 }
 
 /// §4.13.6 "invoke custom element reactions" in an element queue.
@@ -366,6 +372,20 @@ fn set_state(h: &Host, n: NodeRef, s: State) {
     if let Some(e) = h.ce.borrow_mut().elems.get_mut(&n.pack()) {
         e.state = s;
     }
+    mark_defined(h, n, matches!(s, State::Custom | State::Uncustomized));
+}
+
+/// Tell the document whether `n` is defined (for `:defined`); while the document is
+/// borrowed, the change waits for the next [`flush`].
+fn mark_defined(h: &Host, n: NodeRef, defined: bool) {
+    match h.docs.try_borrow_mut() {
+        Ok(mut docs) => {
+            if let Some(d) = docs.get_mut(n.doc as usize) {
+                d.set_defined(n.id, defined);
+            }
+        }
+        Err(_) => h.ce.borrow_mut().pending_defined.push((n.pack(), defined)),
+    }
 }
 
 /// An upgrade threw: no definition, no reactions (§4.13.5 step 8.1).
@@ -375,6 +395,7 @@ fn fail(h: &Host, n: NodeRef) {
         e.def = None;
         e.queue.clear();
     }
+    mark_defined(h, n, false);
 }
 
 // ---- hooks from the DOM's algorithms ----
@@ -545,6 +566,7 @@ pub fn create(vm: &mut Vm, h: &Host, doc: u32, local: &str, is: Option<&str>) ->
                     n.pack(),
                     Elem { state: State::Failed, def: None, is: None, queue: VecDeque::new() },
                 );
+                mark_defined(h, n, false);
                 let w = wrap(vm, h, n)?;
                 if let Value::Object(o) = w {
                     vm.heap.obj_mut(o).proto = Some(h.proto(C::HTMLUnknownElement));
@@ -600,6 +622,9 @@ pub fn created(h: &Host, n: NodeRef, local: &str, is: Option<&str>) {
             queue: VecDeque::new(),
         },
     );
+    if is.is_some() {
+        mark_defined(h, n, false);
+    }
 }
 
 // ---- [HTMLConstructor] (HTML §3.2.3) ----
@@ -644,6 +669,7 @@ pub fn html_ctor(vm: &mut Vm, c: NativeCall) -> R {
                 queue: VecDeque::new(),
             },
         );
+        mark_defined(&h, n, true);
         let w = wrap(vm, &h, n)?;
         if let Value::Object(o) = w {
             vm.heap.obj_mut(o).proto = Some(proto);

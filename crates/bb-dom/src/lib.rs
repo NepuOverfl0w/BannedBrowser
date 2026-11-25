@@ -258,6 +258,8 @@ pub struct Document {
     form_state: forms::FormState,
     /// Shadow roots and manual slot assignments (see `shadow.rs`).
     shadow: shadow::ShadowState,
+    /// Custom element "defined"-ness the host recorded (see [`Document::is_defined`]).
+    custom_defined: std::collections::HashMap<NodeId, bool>,
 }
 
 impl Default for Document {
@@ -279,6 +281,7 @@ impl Document {
             select_state: Default::default(),
             form_state: Default::default(),
             shadow: Default::default(),
+            custom_defined: Default::default(),
         }
     }
 
@@ -573,6 +576,11 @@ impl Document {
             self.nodes[copy.index()].flags |= NodeFlags::CDATA;
         }
         pairs.push((id, copy));
+        if !cloning {
+            if let Some(&d) = src.custom_defined.get(&id) {
+                self.custom_defined.insert(copy, d);
+            }
+        }
         if deep {
             if let Some(sr) = src.shadow_root(id) {
                 if !cloning || src.shadow_info(sr).is_some_and(|i| i.clonable) {
@@ -616,6 +624,30 @@ impl Document {
             }
             NodeData::Document => self.alloc(NodeData::DocumentFragment),
             d => self.alloc(d),
+        }
+    }
+
+    /// DOM §4.9 "defined" (CSS `:defined`): the element's custom element state is
+    /// "uncustomized" or "custom". The host records the states it sets; an element it hasn't
+    /// recorded is undefined if it could be a custom element (an HTML element with a valid
+    /// custom element name or an `is` attribute), else uncustomized.
+    pub fn is_defined(&self, id: NodeId) -> bool {
+        if let Some(&d) = self.custom_defined.get(&id) {
+            return d;
+        }
+        let Some(e) = self.element(id) else { return true };
+        if e.ns != Namespace::Html {
+            return true;
+        }
+        let n = e.name.as_str();
+        let custom = n.starts_with(|c: char| c.is_ascii_lowercase()) && n.contains('-');
+        !(custom || e.has_attr("is"))
+    }
+
+    /// Record whether element `id` is defined (its custom element state changed).
+    pub fn set_defined(&mut self, id: NodeId, defined: bool) {
+        if self.custom_defined.insert(id, defined) != Some(defined) {
+            self.mark_style_dirty(id);
         }
     }
 

@@ -551,3 +551,20 @@ fn shadow_trees_render_and_scope_styles() {
     assert_eq!(p.find("fallback", 0.0).0, 1);
     assert_eq!(p.find("in shadow", 0.0).0, 1);
 }
+
+#[test]
+fn defined_pseudo_class() {
+    let p = page(
+        "<!doctype html><style>:not(:defined) { color: rgb(255, 0, 0) } :defined { color: rgb(0, 128, 0) }</style>\
+         <x-later id=later></x-later><x-never id=never></x-never><p id=plain>p</p><p id=log></p><script>\
+         var log = [document.querySelectorAll(':not(:defined)').length];\
+         customElements.define('x-later', class extends HTMLElement {});\
+         log.push(document.getElementById('later').matches(':defined'), document.getElementById('never').matches(':defined'));\
+         document.getElementById('log').textContent = log.join(' ');</script>",
+    );
+    assert_eq!(text(&p, "log"), "2 true false");
+    let color = |id: &str| p.styles.get(p.doc.get_element_by_id(id).unwrap()).unwrap().color;
+    assert_eq!(color("later"), bb_css::Rgba { r: 0, g: 128, b: 0, a: 255 });
+    assert_eq!(color("never"), bb_css::Rgba { r: 255, g: 0, b: 0, a: 255 });
+    assert_eq!(color("plain"), bb_css::Rgba { r: 0, g: 128, b: 0, a: 255 });
+}
