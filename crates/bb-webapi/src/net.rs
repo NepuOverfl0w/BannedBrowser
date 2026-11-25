@@ -722,11 +722,14 @@ fn setup_body(vm: &mut Vm, proto: ObjRef, iface: C, body_slot: usize, used_slot:
                 return Ok(body);
             }
             let Value::Object(buf) = body else { return Ok(Value::Null) };
-            let bytes = if matches!(slot(vm, o, u), Value::Bool(true)) {
-                Vec::new()
-            } else {
-                vm.buffer_bytes(buf).cloned().unwrap_or_default()
-            };
+            if matches!(slot(vm, o, u), Value::Bool(true)) {
+                // Consumed: its stream was read to the end, and stays locked.
+                let f = crate::streams::helper(vm, "consumedStream")?;
+                let stream = vm.call(&f, Value::Undefined, Vec::new())?;
+                set_slot(vm, o, b, stream.clone());
+                return Ok(stream);
+            }
+            let bytes = vm.buffer_bytes(buf).cloned().unwrap_or_default();
             let stream =
                 crate::streams::from_chunks(vm, if bytes.is_empty() { Vec::new() } else { vec![bytes] })?;
             set_slot(vm, o, b, stream.clone());
@@ -786,7 +789,15 @@ pub fn setup_response(vm: &mut Vm, proto: ObjRef, ctor: ObjRef) {
             let g = guard_of(vm, hd)?;
             slots[R_HEADERS] = Value::Object(new_headers(vm, &h, &l, &g));
         }
-        if let Value::Object(b) = slots[R_BODY].clone() {
+        let body = slots[R_BODY].clone();
+        if crate::streams::is_stream(vm, &body)? {
+            if crate::streams::unusable(vm, &body)? {
+                return vm.type_error("the body stream is locked or disturbed");
+            }
+            let (mine, theirs) = crate::streams::tee_body(vm, &body)?;
+            set_slot(vm, o, R_BODY, mine);
+            slots[R_BODY] = theirs;
+        } else if let Value::Object(b) = body {
             let bytes = vm.buffer_bytes(b).cloned().unwrap_or_default();
             slots[R_BODY] = Value::Object(vm.new_array_buffer(bytes));
         }
@@ -941,7 +952,32 @@ pub fn request_ctor(vm: &mut Vm, c: NativeCall) -> R {
     }
     let mut body = body0;
     let bi = dict_get(vm, &init, "body")?;
-    if !bi.is_undefined() {
+    // Fetch §5.4 Request constructor steps 36–37: a ReadableStream body stays a stream, and
+    // needs `duplex: "half"`.
+    let duplex = dict_get(vm, &init, "duplex")?;
+    let duplex = if duplex.is_undefined() {
+        None
+    } else {
+        match rstr(vm, &duplex)?.as_str() {
+            "half" => Some(()),
+            d => return vm.type_error(&format!("'{d}' is not a valid RequestDuplex")),
+        }
+    };
+    if crate::streams::is_stream(vm, &body)? && bi.is_undefined() && crate::streams::unusable(vm, &body)? {
+        return vm.type_error("the request's body stream is locked or disturbed");
+    }
+    if crate::streams::is_stream(vm, &bi)? {
+        if crate::streams::unusable(vm, &bi)? {
+            return vm.type_error("the body stream is locked or disturbed");
+        }
+        if matches!(method.as_str(), "GET" | "HEAD") {
+            return vm.type_error("a GET or HEAD request can't have a body");
+        }
+        if duplex.is_none() {
+            return vm.type_error("a request with a stream body needs duplex: 'half'");
+        }
+        body = bi.clone();
+    } else if !bi.is_undefined() {
         if let Some((b, ct)) = extract_body(vm, &bi)? {
             if matches!(method.as_str(), "GET" | "HEAD") {
                 return vm.type_error("a GET or HEAD request can't have a body");
@@ -1015,6 +1051,7 @@ pub fn setup_request(vm: &mut Vm, proto: ObjRef) {
         ("referrerPolicy", ""),
         ("integrity", ""),
         ("destination", ""),
+        ("duplex", "half"),
     ] {
         attr_with(
             vm,
@@ -1031,10 +1068,22 @@ pub fn setup_request(vm: &mut Vm, proto: ObjRef) {
     op(vm, proto, "clone", 0, |vm, c| {
         let o = obj_of(vm, &c.this, C::Request)?;
         let h = host(vm)?;
+        if matches!(slot(vm, o, Q_USED), Value::Bool(true)) {
+            return vm.type_error("the body has already been read");
+        }
         let mut slots: Vec<Value> = (0..6).map(|i| slot(vm, o, i)).collect();
         if let Value::Object(hd) = slots[Q_HEADERS].clone() {
             let l = header_list(vm, hd)?;
             slots[Q_HEADERS] = Value::Object(new_headers(vm, &h, &l, "request"));
+        }
+        let body = slots[Q_BODY].clone();
+        if crate::streams::is_stream(vm, &body)? {
+            if crate::streams::unusable(vm, &body)? {
+                return vm.type_error("the body stream is locked or disturbed");
+            }
+            let (mine, theirs) = crate::streams::tee_body(vm, &body)?;
+            set_slot(vm, o, Q_BODY, mine);
+            slots[Q_BODY] = theirs;
         }
         Ok(Value::Object(new_obj(vm, &h, C::Request, None, slots)))
     });
@@ -1087,12 +1136,57 @@ pub fn fetch(vm: &mut Vm, c: NativeCall) -> R {
         Value::Object(ho) => header_list(vm, ho)?,
         _ => Vec::new(),
     };
-    let body = match slot(vm, r, Q_BODY) {
+    let body_v = slot(vm, r, Q_BODY);
+    if crate::streams::is_stream(vm, &body_v)? {
+        // A stream body is read to its end, then the request is sent with those bytes (it
+        // isn't uploaded while it is being read).
+        if crate::streams::unusable(vm, &body_v)? {
+            let e = vm.error(bb_js::vm::ErrorKind::Type, "the request's body stream is locked or disturbed");
+            vm.call(&reject, Value::Undefined, vec![e])?;
+            return Ok(Value::Object(p));
+        }
+        let all = crate::streams::read_all(vm, &body_v)?;
+        let headers_v = slot(vm, r, Q_HEADERS);
+        let state = vec![js(&method), js(&url_s), headers_v, resolve.clone(), reject.clone(), signal];
+        let on_ok = realm::native_with(vm, "", 1, stream_body_read, false, state);
+        let on_err = reject;
+        if let Value::Object(all) = all {
+            let then = vm.get(all, &PropKey::lit("then"))?;
+            vm.call(&then, Value::Object(all), vec![Value::Object(on_ok), on_err])?;
+        }
+        return Ok(Value::Object(p));
+    }
+    let body = match body_v {
         Value::Object(b) => vm.buffer_bytes(b).cloned(),
         _ => None,
     };
     start(vm, &h, HttpRequest { method, url, headers, body }, Pending::Fetch { resolve, reject, signal });
     Ok(Value::Object(p))
+}
+
+/// A fetch's stream body was read: send the request (its slots hold method, URL, headers,
+/// the promise's resolving functions and the signal).
+fn stream_body_read(vm: &mut Vm, c: NativeCall) -> R {
+    let st = callee_slots(vm, c.callee);
+    let get = |i: usize| st.get(i).cloned().unwrap_or_default();
+    let h = host(vm)?;
+    let (resolve, reject, signal) = (get(3), get(4), get(5));
+    if let Value::Object(s) = signal {
+        if signal_aborted(vm, s) {
+            let reason = slot(vm, s, 1);
+            vm.call(&reject, Value::Undefined, vec![reason])?;
+            return Ok(Value::Undefined);
+        }
+    }
+    let method = rstr(vm, &get(0))?;
+    let Ok(url) = Url::parse(&rstr(vm, &get(1))?) else { return Ok(Value::Undefined) };
+    let headers = match get(2) {
+        Value::Object(ho) => header_list(vm, ho)?,
+        _ => Vec::new(),
+    };
+    let body = Some(typed_bytes(vm, &c.arg(0)));
+    start(vm, &h, HttpRequest { method, url, headers, body }, Pending::Fetch { resolve, reject, signal });
+    Ok(Value::Undefined)
 }
 
 /// A request finished (as a task): settle its promise or advance its XMLHttpRequest.

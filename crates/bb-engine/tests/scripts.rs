@@ -568,3 +568,30 @@ fn defined_pseudo_class() {
     assert_eq!(color("never"), bb_css::Rgba { r: 255, g: 0, b: 0, a: 255 });
     assert_eq!(color("plain"), bb_css::Rgba { r: 0, g: 128, b: 0, a: 255 });
 }
+
+#[test]
+fn byte_streams_and_stream_bodies() {
+    let mut p = page(
+        "<!doctype html><p id=log>-</p><script>\
+         (async function () {\
+           var log = [];\
+           var reader = new Response('hello bytes').body.getReader({ mode: 'byob' });\
+           var r = await reader.read(new Uint8Array(5));\
+           log.push(r.value.length, String.fromCharCode.apply(null, r.value));\
+           var pulls = 0;\
+           var rs = new ReadableStream({ type: 'bytes', autoAllocateChunkSize: 16, pull(c) {\
+             var v = c.byobRequest.view; v[0] = 65 + pulls; c.byobRequest.respond(1);\
+             if (++pulls == 3) c.close(); } });\
+           var all = await new Response(rs).text();\
+           log.push(all);\
+           var body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('streamed')); c.close(); } });\
+           try { new Request('/x', { method: 'POST', body: body }); } catch (e) { log.push(e.name); }\
+           var req = new Request('/x', { method: 'POST', body: body, duplex: 'half' });\
+           var copy = req.clone();\
+           log.push(await req.text(), await copy.text());\
+           document.getElementById('log').textContent = log.join(' ');\
+         })().catch(function (e) { document.getElementById('log').textContent = 'error ' + e; });</script>",
+    );
+    wait_for_change(&mut p, "log", "-");
+    assert_eq!(text(&p, "log"), "5 hello ABC TypeError streamed streamed");
+}

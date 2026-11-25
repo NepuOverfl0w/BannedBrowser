@@ -17,10 +17,13 @@ type R = JsResult<Value>;
 const SOURCE: &str = include_str!("streams.js");
 
 /// The global names the script defines, in its `classes` object.
-pub const NAMES: [&str; 12] = [
+pub const NAMES: [&str; 15] = [
     "ReadableStream",
     "ReadableStreamDefaultReader",
     "ReadableStreamDefaultController",
+    "ReadableStreamBYOBReader",
+    "ReadableByteStreamController",
+    "ReadableStreamBYOBRequest",
     "WritableStream",
     "WritableStreamDefaultWriter",
     "WritableStreamDefaultController",
@@ -101,7 +104,8 @@ pub fn install(vm: &mut Vm) -> JsResult<ObjRef> {
     Ok(exports)
 }
 
-fn helper(vm: &mut Vm, name: &'static str) -> R {
+/// One of the script's exported helpers.
+pub fn helper(vm: &mut Vm, name: &'static str) -> R {
     let exports = install(vm)?;
     vm.get(exports, &PropKey::lit(name))
 }
@@ -149,6 +153,14 @@ pub fn disturbed(vm: &mut Vm, stream: &Value) -> JsResult<bool> {
     let f = helper(vm, "disturbed")?;
     let r = vm.call(&f, Value::Undefined, vec![stream.clone()])?;
     Ok(vm.to_boolean(&r))
+}
+
+/// Fetch §5.1 "clone a body": the stream teed, as (this body's new stream, the clone's).
+pub fn tee_body(vm: &mut Vm, stream: &Value) -> JsResult<(Value, Value)> {
+    let f = helper(vm, "teeBody")?;
+    let pair = vm.call(&f, Value::Undefined, vec![stream.clone()])?;
+    let Value::Object(pair) = pair else { return vm.type_error("tee failed") };
+    Ok((vm.get(pair, &PropKey::Index(0))?, vm.get(pair, &PropKey::Index(1))?))
 }
 
 /// A promise of the whole stream as one Uint8Array.
