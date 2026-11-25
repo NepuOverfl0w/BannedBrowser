@@ -57,6 +57,11 @@ pub enum PseudoClass {
     Indeterminate,
     Defined,
     Scope,
+    /// §4.16.3 constraint validation states.
+    Valid,
+    Invalid,
+    InRange,
+    OutOfRange,
     /// CSS Scoping §3.2.1 `:host` / `:host(<compound>)`: the shadow host, from its shadow tree.
     Host(Option<SelectorList>),
     /// `:host-context(<compound>)`: the host, if it or a shadow-including ancestor matches.
@@ -422,6 +427,10 @@ fn parse_pseudo_class(n: &str) -> Option<PseudoClass> {
         "indeterminate" => P::Indeterminate,
         "defined" => P::Defined,
         "scope" => P::Scope,
+        "valid" => P::Valid,
+        "invalid" => P::Invalid,
+        "in-range" => P::InRange,
+        "out-of-range" => P::OutOfRange,
         "host" => P::Host(None),
         _ => return None,
     })

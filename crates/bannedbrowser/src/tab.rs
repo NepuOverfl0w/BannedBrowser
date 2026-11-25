@@ -141,6 +141,12 @@ pub enum TabEvent {
     },
     /// Show a `<select>` drop-down.
     Popup(SelectPopup),
+    /// A submission was blocked: show `message` at the invalid control (`rect`, page
+    /// coordinates).
+    Validation {
+        rect: bb_paint::Rect,
+        message: String,
+    },
     /// Put this text on the clipboard (copy/cut in a text control).
     Copy(String),
     /// Tab moved focus out of the page (past its last or first element).
@@ -382,6 +388,9 @@ fn apply_outcome(
     let focus_now = p.focused();
     if focus_now != focus_before {
         notify(id, TabEvent::Focus { kind: focus_now.map(|f| f.0), rect: focus_now.map(|f| f.1) });
+    }
+    if let Some((rect, message)) = p.validation_report.take() {
+        notify(id, TabEvent::Validation { rect, message });
     }
     if out.repaint {
         rerender(id, notify, p, last_render, render);

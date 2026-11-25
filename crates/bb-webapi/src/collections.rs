@@ -42,6 +42,21 @@ pub fn collection(vm: &mut Vm, h: &Host, kind: CollKind, cache: Option<(u8, u64)
     Ok(Value::Object(o))
 }
 
+/// An object made once per key (cached like the collections), e.g. a control's ValidityState.
+pub fn cached_object(
+    vm: &mut Vm,
+    h: &Host,
+    key: (u8, u64),
+    make: impl FnOnce(&mut Vm, &Host) -> ObjRef,
+) -> JsResult<Value> {
+    if let Some(o) = h.coll_cache.borrow().get(&key) {
+        return Ok(Value::Object(*o));
+    }
+    let o = make(vm, h);
+    h.coll_cache.borrow_mut().insert(key, o);
+    Ok(Value::Object(o))
+}
+
 fn kind_of(h: &Host, id: u64) -> Option<CollKind> {
     h.collections.borrow().get(id as usize).cloned()
 }

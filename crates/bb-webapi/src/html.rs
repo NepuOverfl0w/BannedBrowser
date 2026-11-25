@@ -844,6 +844,7 @@ pub fn setup_element_interface(vm: &mut Vm, c: C, proto: ObjRef) {
         C::HTMLObjectElement => {
             reflect(vm, proto, "data", "data", Url);
             s(vm, &["type", "name", "useMap", "width", "height"]);
+            crate::forms::setup_validation(vm, proto);
         }
         C::HTMLMediaElement => {
             reflect(vm, proto, "src", "src", Url);
@@ -933,6 +934,7 @@ pub fn setup_element_interface(vm: &mut Vm, c: C, proto: ObjRef) {
         C::HTMLProgressElement | C::HTMLMeterElement => {}
         C::HTMLOutputElement => {
             reflect(vm, proto, "name", "name", Str);
+            crate::forms::setup_validation(vm, proto);
         }
         C::HTMLCanvasElement => {
             reflect(vm, proto, "width", "width", ULong(300));

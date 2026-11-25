@@ -57,7 +57,7 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
   `dom/`, `domparsing/`, `FileAPI/`, `xhr/formdata/`, `url/`, `encoding/` and `fetch/api/headers/` tests
   and `workers/`, `webmessaging/`, structured clone, `custom-elements/`, `streams/` and
-  `shadow-dom/` (103793/125284 subtests so far).
+  `shadow-dom/` (104715/126207 subtests so far).
 - **JavaScript engine (milestone D):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262, and an interpreter: bytecode compiler, stack VM, garbage
@@ -105,7 +105,10 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   `fieldset disabled`. Forms submit with GET or POST (`application/x-www-form-urlencoded`,
   `multipart/form-data`, `text/plain`) in the page's encoding, with `formaction`/`formmethod`/
   `formtarget`, image buttons, `_charset_`, `dirname`, Enter in a text field (implicit
-  submission), reset buttons, and the `required` check (the empty field gets focus). The parser
+  submission), reset buttons, and the `required` check (the empty field gets focus); later, full
+  constraint validation (email/url types, `pattern`, lengths, ranges and steps, custom errors)
+  with a message bubble on a blocked submission, `:valid`/`:invalid`, and the constraint
+  validation API for scripts. The parser
   associates controls with their form across tables, as old sites need. Submissions follow
   `target` into frames and new tabs; Back/Forward/Reload re-send a POST.
 - **Keyboard focus in pages:** Tab/Shift+Tab move through links, controls and `<summary>`

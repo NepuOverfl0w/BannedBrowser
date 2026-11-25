@@ -32,7 +32,11 @@ fn value_get(vm: &mut Vm, c: NativeCall) -> R {
 fn value_set(vm: &mut Vm, c: NativeCall) -> R {
     let v = rstr_null_empty(vm, &c.arg(0))?;
     let (h, n) = el(vm, &c, C::HTMLElement)?;
-    with_doc_mut(vm, &h, n.doc, |d| d.set_control_value(n.id, &v))?;
+    with_doc_mut(vm, &h, n.doc, |d| {
+        d.set_control_value(n.id, &v);
+        // Not a user edit: maxlength/minlength don't apply to it (§4.10.5.3.3).
+        d.mark_user_edited(n.id, false);
+    })?;
     Ok(Value::Undefined)
 }
 
@@ -83,15 +87,16 @@ pub fn setup_input(vm: &mut Vm, proto: ObjRef) {
             Ok(Value::Undefined)
         }),
     );
-    for name in ["select", "checkValidity", "reportValidity"] {
-        op(vm, proto, name, 0, |vm, c| {
-            el(vm, &c, C::HTMLInputElement)?;
-            Ok(Value::Bool(true))
-        });
-    }
+    // select(): the text selection is the browser's (nothing to select from scripts yet).
+    op(vm, proto, "select", 0, |vm, c| {
+        el(vm, &c, C::HTMLInputElement)?;
+        Ok(Value::Undefined)
+    });
+    setup_validation(vm, proto);
 }
 
 pub fn setup_button(vm: &mut Vm, proto: ObjRef) {
+    setup_validation(vm, proto);
     attr(vm, proto, "form", form_attr, None);
     attr(
         vm,
@@ -112,6 +117,7 @@ pub fn setup_button(vm: &mut Vm, proto: ObjRef) {
 }
 
 pub fn setup_textarea(vm: &mut Vm, proto: ObjRef) {
+    setup_validation(vm, proto);
     attr(vm, proto, "value", value_get, Some(value_set));
     attr(vm, proto, "form", form_attr, None);
     attr(vm, proto, "defaultValue", crate::dom::text_content_get, Some(crate::dom::text_content_set));
@@ -139,6 +145,78 @@ pub fn setup_textarea(vm: &mut Vm, proto: ObjRef) {
 }
 
 pub fn setup_select(vm: &mut Vm, proto: ObjRef) {
+    setup_validation(vm, proto);
+    // §4.10.7 add(element, before): an option or optgroup goes in before `before` (an
+    // element, or the index of an option), or at the end.
+    op(vm, proto, "add", 1, |vm, c| {
+        let (h, n) = el(vm, &c, C::HTMLSelectElement)?;
+        let elm = match vm.host_data(&c.arg(0)) {
+            Some((k, _)) if k == C::HTMLOptionElement as u32 || k == C::HTMLOptGroupElement as u32 => {
+                node_of(vm, &c.arg(0)).ok_or(())
+            }
+            _ => Err(()),
+        };
+        let Ok(elm) = elm else { return vm.type_error("add() takes an option or optgroup") };
+        let before = match c.arg(1) {
+            Value::Undefined | Value::Null => None,
+            v if node_of(vm, &v).is_some() => node_of(vm, &v),
+            v => {
+                let i = vm.to_int32(&v)?;
+                let opts = with_doc(vm, &h, n.doc, |d| d.list_of_options(n.id))?;
+                usize::try_from(i).ok().and_then(|i| opts.get(i).copied()).map(|o| n.with(o))
+            }
+        };
+        let (cycle, foreign) = with_doc(vm, &h, n.doc, |d| {
+            let cycle = elm.doc == n.doc && crate::tree::is_inclusive_ancestor(d, elm.id, n.id);
+            let foreign = before.is_some_and(|b| b.doc != n.doc || !d.ancestors(b.id).any(|a| a == n.id));
+            (cycle, foreign)
+        })?;
+        if cycle {
+            return crate::exception::throw(vm, "HierarchyRequestError", "the element contains the select");
+        }
+        if foreign {
+            return crate::exception::throw(vm, "NotFoundError", "the reference element isn't in the select");
+        }
+        if before == Some(elm) {
+            return Ok(Value::Undefined);
+        }
+        let parent = match before {
+            Some(b) => with_doc(vm, &h, n.doc, |d| d.parent(b.id))?.map_or(n, |p| n.with(p)),
+            None => n,
+        };
+        crate::tree::pre_insert(vm, &h, elm, parent, before)?;
+        Ok(Value::Undefined)
+    });
+    // remove(index) removes an option; remove() is ChildNode's.
+    op(vm, proto, "remove", 0, |vm, c| {
+        let (h, n) = el(vm, &c, C::HTMLSelectElement)?;
+        if c.args.is_empty() {
+            crate::tree::remove(vm, &h, n, false)?;
+            return Ok(Value::Undefined);
+        }
+        let i = vm.to_int32(&c.arg(0))?;
+        let opts = with_doc(vm, &h, n.doc, |d| d.list_of_options(n.id))?;
+        if let Some(&o) = usize::try_from(i).ok().and_then(|i| opts.get(i)) {
+            crate::tree::remove(vm, &h, n.with(o), false)?;
+        }
+        Ok(Value::Undefined)
+    });
+    op(vm, proto, "item", 1, |vm, c| {
+        let (h, n) = el(vm, &c, C::HTMLSelectElement)?;
+        let i = vm.to_uint32(&c.arg(0))? as usize;
+        let o = with_doc(vm, &h, n.doc, |d| d.list_of_options(n.id).get(i).copied())?;
+        wrap_opt(vm, &h, o.map(|o| n.with(o)))
+    });
+    op(vm, proto, "namedItem", 1, |vm, c| {
+        let name = rstr(vm, &c.arg(0))?;
+        let (h, n) = el(vm, &c, C::HTMLSelectElement)?;
+        let o = with_doc(vm, &h, n.doc, |d| {
+            d.list_of_options(n.id)
+                .into_iter()
+                .find(|&o| d.attr(o, "id") == Some(name.as_str()) || d.attr(o, "name") == Some(name.as_str()))
+        })?;
+        wrap_opt(vm, &h, o.map(|o| n.with(o)))
+    });
     attr(vm, proto, "form", form_attr, None);
     attr(
         vm,
@@ -320,6 +398,7 @@ pub fn setup_fieldset(vm: &mut Vm, proto: ObjRef) {
         None,
     );
     attr(vm, proto, "form", form_attr, None);
+    setup_validation(vm, proto);
     attr(
         vm,
         proto,
@@ -464,8 +543,8 @@ pub fn setup_form(vm: &mut Vm, proto: ObjRef) {
     });
     for name in ["checkValidity", "reportValidity"] {
         op(vm, proto, name, 0, |vm, c| {
-            el(vm, &c, C::HTMLFormElement)?;
-            Ok(Value::Bool(true))
+            let (h, n) = el(vm, &c, C::HTMLFormElement)?;
+            Ok(Value::Bool(check_form(vm, &h, n)?))
         });
     }
 }
@@ -479,6 +558,115 @@ pub fn reset(vm: &mut Vm, h: &Host, form: NodeRef) -> JsResult<()> {
     crate::internals::form_reset(vm, h, form);
     h.mark_dirty();
     r
+}
+
+// ---- constraint validation (HTML §4.10.21) ----
+
+/// HTML §4.10.5.3.6: whether `value` matches `pattern` compiled as `^(?:pattern)$` with the
+/// `v` flag (None if the pattern isn't a valid regular expression with that flag).
+fn pattern_matches(pattern: &str, value: &str) -> Option<bool> {
+    bb_js::regexp::validate(pattern, true, true).ok()?;
+    let body = format!("^(?:{pattern})$");
+    bb_js::regexp::validate(&body, true, true).ok()?;
+    let flags = bb_js::vm::regex::Flags { unicode: true, sets: true, ..Default::default() };
+    let re = bb_js::vm::regex::Regex::new(&body.encode_utf16().collect::<Vec<u16>>(), flags);
+    let text: Vec<u16> = value.encode_utf16().collect();
+    let mut budget = 10_000_000u64;
+    match re.match_at(&text, 0, &mut budget) {
+        Ok(m) => Some(m.is_some()),
+        // A pattern that backtracks past the budget doesn't constrain.
+        Err(_) => None,
+    }
+}
+
+/// Give bb-dom the checks it can't do itself (patterns, absolute URLs).
+pub fn install_validity_hooks() {
+    bb_dom::validity::set_hooks(bb_dom::validity::Hooks {
+        pattern_matches,
+        valid_absolute_url: |s| bb_url::Url::parse(s).is_ok(),
+    });
+}
+
+/// §4.10.21.2 "check validity" of a built-in control or form-associated custom element: an
+/// invalid candidate fires a cancelable `invalid`; returns (valid, the event wasn't
+/// canceled).
+pub fn check_element(vm: &mut Vm, h: &Host, n: NodeRef) -> JsResult<(bool, bool)> {
+    let (candidate, face) =
+        with_doc(vm, h, n.doc, |d| (d.is_validation_candidate(n.id), d.is_form_associated_custom(n.id)))?;
+    if face {
+        return Ok((crate::internals::check_face(vm, h, n)?, true));
+    }
+    if !candidate || with_doc(vm, h, n.doc, |d| d.is_valid_control(n.id))? {
+        return Ok((true, true));
+    }
+    let t = wrap(vm, h, n)?;
+    let not_canceled = crate::events::fire(vm, h, t, "invalid", false, true)?;
+    Ok((false, not_canceled))
+}
+
+/// §4.10.21.2 "statically validate the constraints" of a form: `invalid` at each invalid
+/// candidate; returns whether all were valid.
+pub fn check_form(vm: &mut Vm, h: &Host, form: NodeRef) -> JsResult<bool> {
+    let controls = with_doc(vm, h, form.doc, |d| d.form_controls(form.id))?;
+    let mut ok = true;
+    for c in controls {
+        if !check_element(vm, h, form.with(c))?.0 {
+            ok = false;
+        }
+    }
+    Ok(ok)
+}
+
+/// The constraint validation API on a control interface (§4.10.21.3): willValidate,
+/// validity, validationMessage, checkValidity, reportValidity, setCustomValidity.
+pub fn setup_validation(vm: &mut Vm, proto: ObjRef) {
+    attr(
+        vm,
+        proto,
+        "willValidate",
+        |vm, c| {
+            let (h, n) = el(vm, &c, C::HTMLElement)?;
+            Ok(Value::Bool(with_doc(vm, &h, n.doc, |d| d.is_validation_candidate(n.id))?))
+        },
+        None,
+    );
+    attr(
+        vm,
+        proto,
+        "validity",
+        |vm, c| {
+            let (h, n) = el(vm, &c, C::HTMLElement)?;
+            crate::collections::cached_object(vm, &h, (40, n.pack()), |vm, h| {
+                vm.new_host_object(Some(h.proto(C::ValidityState)), C::ValidityState as u32, n.pack(), false)
+            })
+        },
+        None,
+    );
+    attr(
+        vm,
+        proto,
+        "validationMessage",
+        |vm, c| {
+            let (h, n) = el(vm, &c, C::HTMLElement)?;
+            Ok(js(&with_doc(vm, &h, n.doc, |d| d.validation_message(n.id))?))
+        },
+        None,
+    );
+    for name in ["checkValidity", "reportValidity"] {
+        // reportValidity would also show the problem; the browser does that only when a
+        // submission is blocked (there is no reporting from scripts yet).
+        op(vm, proto, name, 0, |vm, c| {
+            let (h, n) = el(vm, &c, C::HTMLElement)?;
+            Ok(Value::Bool(check_element(vm, &h, n)?.0))
+        });
+    }
+    op(vm, proto, "setCustomValidity", 1, |vm, c| {
+        let m = rstr(vm, &c.arg(0))?;
+        let (h, n) = el(vm, &c, C::HTMLElement)?;
+        with_doc_mut(vm, &h, n.doc, |d| d.set_custom_validity(n.id, &bb_dom::normalize_newlines(&m)))?;
+        h.mark_dirty();
+        Ok(Value::Undefined)
+    });
 }
 
 /// Whether `el` is a submit button (HTML §4.10.2): a `<button>` in the Submit Button state

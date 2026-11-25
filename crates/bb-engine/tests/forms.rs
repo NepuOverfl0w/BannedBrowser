@@ -198,6 +198,36 @@ fn required_fields_block_submission_and_take_focus() {
 }
 
 #[test]
+fn constraint_validation_blocks_submission_with_a_message() {
+    let mut p = page(
+        r#"<style>:invalid { color: rgb(255, 0, 0) } :valid { color: rgb(0, 128, 0) }</style>
+        <form action="/s"><input id=e type=email name=e value="not an address">
+        <input id=c name=c pattern="[A-Z]{3}" value="ABC" title="Three capitals">
+        <input id=n type=number name=n max=5 value=3><input type=submit id=go></form>"#,
+    );
+    let red = bb_css::Rgba { r: 255, g: 0, b: 0, a: 255 };
+    let green = bb_css::Rgba { r: 0, g: 128, b: 0, a: 255 };
+    assert_eq!(p.styles.get(by_id(&p, "e")).unwrap().color, red);
+    assert_eq!(p.styles.get(by_id(&p, "c")).unwrap().color, green);
+    let out = click(&mut p, "go");
+    assert!(out.submit.is_none());
+    assert_eq!(p.focus.node, Some(by_id(&p, "e")));
+    let (_, msg) = p.validation_report.take().expect("a validation message");
+    assert_eq!(msg, "Please enter an email address.");
+    // Fix the address; the pattern now fails.
+    p.doc.set_control_value(by_id(&p, "e"), "a@b.example");
+    p.doc.set_control_value(by_id(&p, "c"), "abc");
+    assert!(click(&mut p, "go").submit.is_none());
+    assert_eq!(p.validation_report.take().unwrap().1, "Please match the requested format: Three capitals.");
+    p.doc.set_control_value(by_id(&p, "c"), "XYZ");
+    p.doc.set_control_value(by_id(&p, "n"), "9");
+    assert!(click(&mut p, "go").submit.is_none());
+    assert_eq!(p.validation_report.take().unwrap().1, "Please select a value that is no more than 5.");
+    p.doc.set_control_value(by_id(&p, "n"), "4");
+    assert_eq!(submitted_url(&click(&mut p, "go")), "http://example.test/s?e=a%40b.example&c=XYZ&n=4");
+}
+
+#[test]
 fn implicit_submission_rules() {
     // One text field and no button: Enter submits.
     let mut p = page(r#"<form action="/one"><input id=q name=q></form>"#);

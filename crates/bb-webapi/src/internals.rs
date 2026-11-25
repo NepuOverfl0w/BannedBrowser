@@ -360,6 +360,10 @@ pub fn setup_internals(vm: &mut Vm, proto: ObjRef) {
         }
         let message =
             if any { bb_dom::normalize_newlines(&message.unwrap_or_default()) } else { String::new() };
+        // Mirrored into the document as a custom error, for `:valid`/`:invalid` and forms.
+        let mirrored = if any { message.clone() } else { String::new() };
+        with_doc_mut(vm, &h, n.doc, |d| d.set_custom_validity(n.id, &mirrored))?;
+        h.mark_dirty();
         with_internals(&h, n, |i| {
             i.flags = flags;
             i.message = message;
@@ -559,29 +563,50 @@ pub fn setup_validity_state(vm: &mut Vm, proto: ObjRef) {
             proto,
             name,
             |vm, c| {
-                let (_, id) = this_of(vm, &c.this, C::ValidityState)?;
-                let h = host(vm)?;
                 let i = match callee_slots(vm, c.callee).first() {
                     Some(Value::Number(i)) => *i as usize,
                     _ => 0,
                 };
-                Ok(Value::Bool(with_internals(&h, NodeRef::unpack(id), |s| s.flags[i]).unwrap_or(false)))
+                Ok(Value::Bool(flags_of(vm, &c)?[i]))
             },
             None,
             vec![Value::Number(i as f64)],
         );
     }
-    attr(
-        vm,
-        proto,
-        "valid",
-        |vm, c| {
-            let (_, id) = this_of(vm, &c.this, C::ValidityState)?;
-            let h = host(vm)?;
-            Ok(Value::Bool(!invalid(&h, NodeRef::unpack(id))))
-        },
-        None,
-    );
+    attr(vm, proto, "valid", |vm, c| Ok(Value::Bool(!flags_of(vm, &c)?.iter().any(|&f| f))), None);
+}
+
+/// A ValidityState's flags: its element's internals for a form-associated custom element,
+/// else the built-in control's validity states.
+fn flags_of(vm: &mut Vm, c: &NativeCall) -> JsResult<[bool; 10]> {
+    let (_, id) = this_of(vm, &c.this, C::ValidityState)?;
+    let h = host(vm)?;
+    let n = NodeRef::unpack(id);
+    if let Some(f) = with_internals(&h, n, |s| s.flags) {
+        if with_doc(vm, &h, n.doc, |d| d.is_form_associated_custom(n.id))?
+            || crate::ce::form_associated_def(&h, n)
+        {
+            return Ok(f);
+        }
+    }
+    let v = with_doc(vm, &h, n.doc, |d| d.validity(n.id))?;
+    Ok([
+        v.value_missing,
+        v.type_mismatch,
+        v.pattern_mismatch,
+        v.too_long,
+        v.too_short,
+        v.range_underflow,
+        v.range_overflow,
+        v.step_mismatch,
+        v.bad_input,
+        v.custom_error,
+    ])
+}
+
+/// checkValidity for a form-associated custom element (for forms' static validation).
+pub fn check_face(vm: &mut Vm, h: &Host, n: NodeRef) -> JsResult<bool> {
+    check_validity(vm, h, n)
 }
 
 // ---- CustomStateSet (§4.13.7.7): setlike<DOMString> ----

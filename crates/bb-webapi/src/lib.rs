@@ -68,6 +68,7 @@ fn report(vm: &mut Vm, e: Value) {
 impl Window {
     /// A new window whose document (empty, at `url`) is document 0.
     pub fn new(url: Url, embedder: Rc<dyn Embedder>) -> Window {
+        forms::install_validity_hooks();
         Self::build(url, embedder, None)
     }
 
@@ -311,6 +312,29 @@ impl Window {
         self.begin_task();
         let r = crate::mutation::set_or_remove(&mut self.vm, &h, NodeRef { doc: 0, id: n }, name, value);
         self.end_task(r);
+    }
+
+    /// HTML §4.10.21.2 "statically validate the constraints" of form `form` of the window's
+    /// document (a submission is about to happen): its invalid controls, each with whether
+    /// its `invalid` event wasn't canceled.
+    pub fn invalid_controls(&mut self, form: bb_dom::NodeId) -> Vec<(bb_dom::NodeId, bool)> {
+        let h = self.host.clone();
+        self.begin_task();
+        let mut out = Vec::new();
+        let controls = h.docs.borrow().first().map(|d| d.form_controls(form)).unwrap_or_default();
+        let mut r = Ok(());
+        for c in controls {
+            match forms::check_element(&mut self.vm, &h, NodeRef { doc: 0, id: c }) {
+                Ok((true, _)) => {}
+                Ok((false, shown)) => out.push((c, shown)),
+                Err(e) => {
+                    r = Err(e);
+                    break;
+                }
+            }
+        }
+        self.end_task(r);
+        out
     }
 
     /// Reset form `form` of the window's document (a reset button the user clicked, after

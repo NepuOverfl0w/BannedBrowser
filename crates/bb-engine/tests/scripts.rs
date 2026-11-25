@@ -654,3 +654,22 @@ fn element_internals_and_form_associated_custom_elements() {
     let c = p.doc.get_element_by_id("c").unwrap();
     assert_eq!(p.styles.get(c).unwrap().color, bb_css::Rgba { r: 0, g: 128, b: 0, a: 255 });
 }
+
+#[test]
+fn constraint_validation_from_scripts() {
+    let p = page(
+        "<!doctype html><form id=f><input id=a required><select id=s required><option value=''>Pick<option>x</select>\
+         <input id=u type=url value='nope'></form><p id=log></p><script>\
+         var log = [], fired = [];\
+         var a = document.getElementById('a'), s = document.getElementById('s'), u = document.getElementById('u');\
+         [a, s, u].forEach(function (e) { e.addEventListener('invalid', function () { fired.push(e.id); }); });\
+         log.push(a.validity.valueMissing, s.validity.valueMissing, u.validity.typeMismatch, a.willValidate);\
+         log.push(document.getElementById('f').checkValidity(), fired.join(''));\
+         a.value = 'x'; s.selectedIndex = 1; u.value = 'https://example.test/';\
+         log.push(document.getElementById('f').checkValidity());\
+         a.setCustomValidity('Taken'); log.push(a.validity.customError, a.validationMessage, a.checkValidity());\
+         a.setCustomValidity(''); log.push(a.validity.valid, a.matches(':valid'));\
+         document.getElementById('log').textContent = log.join(' ');</script>",
+    );
+    assert_eq!(text(&p, "log"), "true true true true false asu true true Taken false true true");
+}

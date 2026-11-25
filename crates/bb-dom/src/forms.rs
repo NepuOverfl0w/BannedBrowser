@@ -20,6 +20,10 @@ pub(crate) struct FormState {
     parser_owner: HashMap<NodeId, NodeId>,
     /// Form-associated custom elements (§4.13.7) and their submission values.
     face: HashMap<NodeId, FaceSubmission>,
+    /// Custom validity error messages (§4.10.21.3 setCustomValidity).
+    pub(crate) custom_validity: HashMap<NodeId, String>,
+    /// Controls whose value was last changed by a user edit.
+    pub(crate) user_edited: std::collections::HashSet<NodeId>,
 }
 
 /// A form-associated custom element's submission value (HTML §4.13.7.4 setFormValue).
@@ -165,7 +169,7 @@ fn strip_newlines(s: &str) -> String {
 
 /// §2.3.4.3 "valid floating-point number" (a simplified check: optional "-", digits with an
 /// optional fraction, optional exponent; no leading "+", no "." without digits after it).
-fn is_valid_float(s: &str) -> bool {
+pub(crate) fn is_valid_float(s: &str) -> bool {
     let b = s.as_bytes();
     let mut i = 0;
     if b.first() == Some(&b'-') {
@@ -216,6 +220,15 @@ pub fn sanitize_value(ty: InputType, v: &str) -> String {
         InputType::Email => strip_newlines(v).trim_matches(is_ascii_ws).to_string(),
         InputType::Number => {
             if is_valid_float(v) {
+                v.to_string()
+            } else {
+                String::new()
+            }
+        }
+        // §4.10.5.1.7–11: a value that isn't a valid date, month, week, time or local
+        // date-time string becomes the empty string.
+        InputType::Date | InputType::Month | InputType::Week | InputType::Time | InputType::DateTimeLocal => {
+            if crate::validity::to_number(ty, v).is_some() {
                 v.to_string()
             } else {
                 String::new()
@@ -468,6 +481,7 @@ impl Document {
 
     pub fn reset_form(&mut self, form: NodeId) {
         for el in self.form_controls(form) {
+            self.form_state.user_edited.remove(&el);
             self.form_state.values.remove(&el);
             self.form_state.checked.remove(&el);
             if self.is_html(el, "select") {

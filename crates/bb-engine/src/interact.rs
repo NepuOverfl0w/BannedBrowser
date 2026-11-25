@@ -311,6 +311,8 @@ impl Page {
         let text = ed.text.clone();
         // The control keeps its size, so only its box is refreshed (in `rebuild_display`).
         self.doc.set_control_value(n, &text);
+        // A user edit: maxlength/minlength apply now (§4.10.5.3.3).
+        self.doc.mark_user_edited(n, true);
         self.rebuild_display();
     }
 
@@ -466,8 +468,9 @@ impl Page {
         None
     }
 
-    /// §4.10.21.3 submit, with the `required` check (unless `novalidate` / `formnovalidate`):
-    /// an empty required control gets focus instead of the form being submitted.
+    /// §4.10.21.3 submit, after "interactively validate the constraints" (§4.10.21.2; unless
+    /// `novalidate` / `formnovalidate`): with an invalid control, the first one whose
+    /// `invalid` event wasn't canceled gets focus and its message is reported instead.
     fn submit_form(
         &mut self,
         form: NodeId,
@@ -477,10 +480,32 @@ impl Page {
         let novalidate = self.doc.attr(form, "novalidate").is_some()
             || submitter.is_some_and(|s| self.doc.attr(s, "formnovalidate").is_some());
         if !novalidate {
-            if let Some(bad) =
-                self.doc.form_controls(form).into_iter().find(|&c| forms::value_missing(&self.doc, c))
-            {
-                self.focus_node(Some(bad));
+            // (invalid control, its `invalid` event wasn't canceled)
+            let invalid: Vec<(NodeId, bool)> = if self.script.is_some() {
+                let mut out = Vec::new();
+                self.with_window(|w| out = w.invalid_controls(form));
+                out
+            } else {
+                self.doc
+                    .form_controls(form)
+                    .into_iter()
+                    .filter(|&c| self.doc.is_validation_candidate(c) && !self.doc.is_valid_control(c))
+                    .map(|c| (c, true))
+                    .collect()
+            };
+            if !invalid.is_empty() {
+                // If every `invalid` event was canceled nothing is reported, but the form still
+                // isn't submitted.
+                if let Some(&(bad, _)) = invalid.iter().find(|x| x.1) {
+                    self.focus_node(Some(bad));
+                    let msg = self.doc.validation_message(bad);
+                    if let Some(r) = bb_layout::node_rects(&self.layout, &self.doc, bad)
+                        .into_iter()
+                        .reduce(|a, b| a.union(&b))
+                    {
+                        self.validation_report = Some((r, msg));
+                    }
+                }
                 return None;
             }
         }

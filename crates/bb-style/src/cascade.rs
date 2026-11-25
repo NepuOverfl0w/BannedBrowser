@@ -440,6 +440,26 @@ impl<'a> Element for DomElement<'a> {
             }
             PseudoClass::Defined => self.doc.is_defined(self.id),
             PseudoClass::State(s) => self.doc.has_custom_state(self.id, s),
+            // HTML §4.16.3: candidates by their validity; a form or fieldset by its controls'.
+            PseudoClass::Valid | PseudoClass::Invalid => {
+                let d = self.doc;
+                let invalid = |x: bb_dom::NodeId| d.is_validation_candidate(x) && !d.is_valid_control(x);
+                let state = if e.is_html("form") {
+                    Some(d.form_controls(self.id).into_iter().any(invalid))
+                } else if e.is_html("fieldset") {
+                    Some(d.descendants(self.id).skip(1).any(invalid))
+                } else if d.is_validation_candidate(self.id) {
+                    Some(!d.is_valid_control(self.id))
+                } else {
+                    None
+                };
+                match state {
+                    Some(bad) => bad == matches!(pc, PseudoClass::Invalid),
+                    None => false,
+                }
+            }
+            PseudoClass::InRange => self.doc.out_of_range(self.id) == Some(false),
+            PseudoClass::OutOfRange => self.doc.out_of_range(self.id) == Some(true),
             PseudoClass::Scope => self.is_root(),
             PseudoClass::Default => e.has_attr("checked") || e.has_attr("selected"),
             PseudoClass::Target | PseudoClass::Indeterminate => false,

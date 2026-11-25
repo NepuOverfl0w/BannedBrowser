@@ -122,6 +122,9 @@ struct BrowserWindow {
     find: Option<FindBar>,
     /// The open popup menu (≡ app menu or a context menu).
     menu: Option<Menu>,
+    /// A blocked submission's validation message under its control (page rect, text); gone
+    /// at the next input.
+    validation: Option<(Rect, String)>,
     /// Tabs requested by link clicks: (url, open in foreground).
     pending_background: Vec<(NavRequest, bool)>,
     /// The `<select>` whose drop-down is open (the menu of kind "select").
@@ -487,6 +490,7 @@ impl App {
             select_popup: None,
             find: None,
             menu: None,
+            validation: None,
             last_scroll: Instant::now() - Duration::from_secs(10),
             drag_thumb: None,
         };
@@ -1324,6 +1328,26 @@ impl BrowserWindow {
             let base = bb_ui::text::centered_baseline(r.y, r.h, 12.0);
             p.text_faded(&link, r.x + 8.0, base, 12.0, tw, th.text, th.popup);
         }
+        // A validation message under its control (HTML §4.10.21.2 "report the problems").
+        if let (Some((r, msg)), Some(t)) = (&self.validation, t) {
+            let tw = bb_ui::text::measure(msg, 13.0, 400).min(w * 0.6);
+            let x = r.x.clamp(4.0, (w - tw - 28.0).max(4.0));
+            let y = r.bottom() - t.scroll_y + CHROME_H + 6.0;
+            let b = Rect::new(x, y, tw + 24.0, 30.0);
+            p.shadow(b, 6.0, 8.0, th.shadow.with_alpha(0.35));
+            p.rounded(b, 6.0, th.popup);
+            p.dl.push(Item::Border {
+                rect: b,
+                radii: bb_paint::Radii::uniform(6.0),
+                sides: [Some(bb_paint::BorderSide {
+                    width: 1.0,
+                    color: th.separator,
+                    style: bb_paint::BorderStyle::Solid,
+                }); 4],
+            });
+            let base = bb_ui::text::centered_baseline(b.y, b.h, 13.0);
+            p.text_faded(msg, b.x + 12.0, base, 13.0, tw, th.text, th.popup);
+        }
         // Popup menu on top of everything.
         if let Some(m) = &self.menu {
             m.paint(&mut p, th);
@@ -1570,6 +1594,12 @@ impl ApplicationHandler<UserEvent> for App {
                         state_changed = true;
                     }
                 }
+                TabEvent::Validation { rect, message } => {
+                    if is_active {
+                        bw.validation = Some((rect, message));
+                        state_changed = true;
+                    }
+                }
                 TabEvent::Copy(text) => {
                     if let Ok(mut cb) = arboard::Clipboard::new() {
                         let _ = cb.set_text(text);
@@ -1759,6 +1789,9 @@ impl ApplicationHandler<UserEvent> for App {
                 state_changed = true;
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                if state == ElementState::Pressed && bw.validation.take().is_some() {
+                    bw.dirty = true;
+                }
                 let (x, y) = bw.mouse;
                 let tgt = bw.target_at(x, y);
                 match (state, button) {
@@ -1854,6 +1887,9 @@ impl ApplicationHandler<UserEvent> for App {
                 state_changed = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if bw.validation.take().is_some() {
+                    bw.dirty = true;
+                }
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -y * 48.0,
                     MouseScrollDelta::PixelDelta(PhysicalPosition { y, .. }) => -(y as f32) / bw.scale(),
@@ -1888,6 +1924,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::KeyboardInput { event, is_synthetic: false, .. }
                 if event.state == ElementState::Pressed =>
             {
+                bw.validation = None;
                 state_changed |= self.key(&mut bw, el, &event.logical_key, event.text.as_deref());
                 bw.dirty = true;
             }

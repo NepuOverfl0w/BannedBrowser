@@ -104,6 +104,9 @@ pub struct Page {
     pub encoding: &'static encoding_rs::Encoding,
     /// Keyboard focus in this document (see `interact.rs`).
     pub focus: interact::FocusState,
+    /// A submission was blocked by an invalid control: its rect (page coordinates) and the
+    /// validation message, for the browser to show (HTML §4.10.21.2 "report the problems").
+    pub validation_report: Option<(bb_paint::Rect, String)>,
     /// The page's scripting global, when scripts are enabled (see `script.rs`).
     pub script: Option<bb_webapi::Window>,
     /// For a frame of a scripted page: the frame's window in the page's Window (whose
@@ -799,6 +802,7 @@ impl Page {
             find_active: None,
             encoding: encoding_rs::UTF_8,
             focus: interact::FocusState { window_focus: true, ..Default::default() },
+            validation_report: None,
             script: window,
             frame_host,
             script_submission: None,
@@ -1286,6 +1290,8 @@ pub fn new_client_with_cache(
     user_agent: Option<String>,
     cache: Option<Arc<bb_net::cache::HttpCache>>,
 ) -> Client {
+    // Forms' pattern and URL checks (constraint validation in bb-dom) need bb-js and bb-url.
+    bb_webapi::forms::install_validity_hooks();
     Client::new(bb_net::ClientConfig {
         extra_ca_files: extra_ca,
         user_agent,

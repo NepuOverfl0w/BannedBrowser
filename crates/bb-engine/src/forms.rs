@@ -2,9 +2,9 @@
 //! (`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`), and turning the
 //! form's method, action and target into a navigation request.
 //!
-//! Not implemented yet: constraint validation beyond `required` (no validation message
-//! bubble), file uploads (a file input submits an empty file), `method="dialog"`, and the
-//! `submit`/`formdata` events (no JS).
+//! Constraint validation is bb-dom's (`validity.rs`); the page checks it before submitting.
+//! Not implemented yet: file uploads (a file input submits an empty file) and
+//! `method="dialog"`.
 
 use bb_dom::{Document, InputType, NodeId};
 
@@ -78,33 +78,6 @@ pub fn form_encoding(doc: &Document, form: NodeId, doc_encoding: &'static Encodi
         .and_then(|a| a.split_ascii_whitespace().find_map(|l| Encoding::for_label(l.as_bytes())))
         .unwrap_or(doc_encoding);
     picked.output_encoding()
-}
-
-/// The element is a `required` control whose value is missing (§4.10.5.3.4, §4.10.7,
-/// §4.10.11): the only constraint we check before submitting.
-pub fn value_missing(doc: &Document, el: NodeId) -> bool {
-    if doc.attr(el, "required").is_none() || doc.is_disabled(el) || doc.attr(el, "readonly").is_some() {
-        return false;
-    }
-    if doc.is_html(el, "textarea") {
-        return doc.control_value(el).is_empty();
-    }
-    if doc.is_html(el, "select") {
-        return !doc
-            .list_of_options(el)
-            .into_iter()
-            .any(|o| doc.option_selectedness(o) && !option_value(doc, o).is_empty());
-    }
-    if !doc.is_html(el, "input") {
-        return false;
-    }
-    match doc.input_type(el) {
-        InputType::Checkbox => !doc.checkedness(el),
-        InputType::Radio => !doc.radio_group(el).into_iter().any(|r| doc.checkedness(r)),
-        InputType::File => true,
-        t if t.is_text_entry() => doc.control_value(el).is_empty(),
-        _ => false,
-    }
 }
 
 /// A multipart boundary (RFC 7578 §4.1: must not occur in the body; random, 128 bits).

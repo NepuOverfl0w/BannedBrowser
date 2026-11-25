@@ -12,11 +12,13 @@ pub mod form_data;
 mod forms;
 mod select;
 mod shadow;
+pub mod validity;
 pub use dump::{
     dump_html5lib, is_void, serialize_children_html, serialize_html, serialize_shadow_template, Shadows,
 };
 pub use forms::{sanitize_value, FaceSubmission, InputType, FORM_ASSOCIATED, LISTED};
 pub use shadow::{ShadowRootInfo, SlotAssignment};
+pub use validity::Validity;
 
 /// CR LF and lone CR become LF (HTML's newline normalization).
 pub fn normalize_newlines(s: &str) -> String {

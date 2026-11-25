@@ -194,7 +194,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | test262 execution | **48803 / 48803 (100 %)** |
 | Unicode NormalizationTest (UAX #15) | **all lines + every other code point** |
 | Public Suffix List tests | **78 / 78 (100 %)** |
-| WPT Web API tests (`dom/`, `domparsing/`, `FileAPI/`, `workers/`, `webmessaging/`, `html/canvas/element/`, …) | **103793 / 125284 subtests** (in progress) |
+| WPT Web API tests (`dom/`, `domparsing/`, `FileAPI/`, `workers/`, `webmessaging/`, `html/canvas/element/`, …) | **104715 / 126207 subtests** (in progress) |
 
 ## 🏗 Architecture
 
@@ -369,7 +369,7 @@ Details: [docs/TESTING.md](docs/TESTING.md).
 
 **Is it safe for daily browsing?** Not yet. There is no sandboxing or process isolation, and pages' scripts run in the same process as everything else. Treat it as an experiment.
 
-**Does it run JavaScript?** Yes, with our own engine (`bb-js`, passing all of test262) and Web APIs (`bb-webapi`): scripts can change the DOM, listen to clicks and keys, use timers and `document.write`. `fetch`, XMLHttpRequest, localStorage, cookies, MutationObserver, Range, DOMParser, Blob/FormData, dedicated workers, MessageChannel and Canvas 2D work too. Frames run their own scripts in their own windows, reachable from the page when same origin. Many Web APIs are still missing (SharedWorker, constraint validation of form controls, WebGL), so script-heavy sites may not work yet.
+**Does it run JavaScript?** Yes, with our own engine (`bb-js`, passing all of test262) and Web APIs (`bb-webapi`): scripts can change the DOM, listen to clicks and keys, use timers and `document.write`. `fetch`, XMLHttpRequest, localStorage, cookies, MutationObserver, Range, DOMParser, Blob/FormData, dedicated workers, MessageChannel and Canvas 2D work too. Frames run their own scripts in their own windows, reachable from the page when same origin. Many Web APIs are still missing (SharedWorker, WebGL), so script-heavy sites may not work yet.
 
 **Why Rust?** Memory safety for parsers that eat hostile input all day, great tooling, and fearless threading for the per-tab pipelines. The engine is safe Rust except for a few small, documented OS calls (each `unsafe` block carries a `// SAFETY:` comment, which clippy enforces).
 
