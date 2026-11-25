@@ -731,7 +731,7 @@ pub fn setup_element_geometry(vm: &mut Vm, el_proto: ObjRef, html_proto: ObjRef)
     for name in ["scrollTop", "scrollLeft"] {
         attr(vm, el_proto, name, |_, _| Ok(Value::Number(0.0)), Some(|_, _| Ok(Value::Undefined)));
     }
-    for name in ["scrollIntoView", "scroll", "scrollTo", "scrollBy", "focus", "blur"] {
+    for name in ["scrollIntoView", "scroll", "scrollTo", "scrollBy"] {
         op(vm, el_proto, name, 0, |vm, c| {
             el(vm, &c)?;
             Ok(Value::Undefined)

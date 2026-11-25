@@ -542,6 +542,7 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef, worker: bool) {
             crate::internals::setup_html_element(vm, proto);
         }
         C::SVGElement | C::MathMLElement => {
+            crate::focus::setup_element(vm, proto);
             crate::css::setup_inline_style(vm, proto);
             crate::events::setup_event_handlers(vm, proto);
         }

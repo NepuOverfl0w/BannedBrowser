@@ -673,3 +673,61 @@ fn constraint_validation_from_scripts() {
     );
     assert_eq!(text(&p, "log"), "true true true true false asu true true Taken false true true");
 }
+
+#[test]
+fn focus_from_scripts() {
+    let p = page(
+        "<!doctype html><style>:focus { color: rgb(255, 0, 0) } div:focus-within { color: rgb(0, 0, 255) }</style>\
+         <input id=a><div id=wrap><button id=b>b</button></div><span id=s>not focusable</span>\
+         <div id=host></div><p id=log></p><script>\
+         var log = [];\
+         var a = document.getElementById('a'), b = document.getElementById('b');\
+         ['focus', 'blur', 'focusin', 'focusout'].forEach(function (t) {\
+           document.addEventListener(t, function (e) { log.push(t + ':' + e.target.id); }, true);\
+         });\
+         a.focus(); log.push(document.activeElement.id);\
+         b.focus(); log.push(document.activeElement.id);\
+         document.getElementById('s').focus(); log.push(document.activeElement.id);\
+         var sr = document.getElementById('host').attachShadow({ mode: 'open', delegatesFocus: true });\
+         sr.innerHTML = '<span>x</span><input id=inner>';\
+         document.getElementById('host').focus();\
+         log.push(document.activeElement.id, sr.activeElement.id, document.getElementById('host').matches(':focus'));\
+         document.getElementById('host').blur(); log.push(document.activeElement.tagName);\
+         b.focus(); b.remove(); log.push(document.activeElement.tagName);\
+         a.focus();\
+         document.getElementById('log').textContent = log.join(' ');</script>",
+    );
+    assert_eq!(
+        text(&p, "log"),
+        "focus:a focusin:a a blur:a focusout:a focus:b focusin:b b b blur:b focusout:b focus:host focusin:host \
+         host inner true blur:host focusout:host BODY focus:b focusin:b BODY focus:a focusin:a"
+    );
+    // The page's focus follows: the input is focused, and :focus styles it.
+    let a = p.doc.get_element_by_id("a").unwrap();
+    assert_eq!(p.focus.node, Some(a));
+    assert_eq!(p.styles.get(a).unwrap().color, bb_css::Rgba { r: 255, g: 0, b: 0, a: 255 });
+}
+
+#[test]
+fn user_focus_reaches_scripts() {
+    let mut p = page(
+        "<!doctype html><input id=a><input id=b><p id=log>-</p><script>\
+         var log = [];\
+         ['a', 'b'].forEach(function (id) {\
+           var e = document.getElementById(id);\
+           e.addEventListener('focus', function (ev) { log.push('focus:' + id + ':' + (ev.relatedTarget && ev.relatedTarget.id)); });\
+           e.addEventListener('blur', function () { log.push('blur:' + id); });\
+         });\
+         </script>",
+    );
+    let [x, y, w, h] = rect(&p, "a");
+    p.click(x + w / 2.0, y + h / 2.0);
+    let [x, y, w, h] = rect(&p, "b");
+    p.click(x + w / 2.0, y + h / 2.0);
+    p.with_window(|w| {
+        w.run_script(
+            "document.getElementById('log').textContent = log.join(' ') + ' ' + document.activeElement.id",
+        );
+    });
+    assert_eq!(text(&p, "log"), "focus:a:null blur:a focus:b:a b");
+}

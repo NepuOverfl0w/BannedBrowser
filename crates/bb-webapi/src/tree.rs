@@ -415,6 +415,7 @@ fn remove_steps(vm: &mut Vm, h: &Host, node: NodeRef, suppress: bool) -> JsResul
     with_doc_mut(vm, h, node.doc, |d| d.detach(node.id))?;
     // Steps 12–13: slot reassignment and fallback content changes.
     crate::shadow::tree_changed(vm, h, parent);
+    crate::focus::removed(vm, h, node.doc);
     crate::internals::forms_changed(vm, h, node.doc);
     // HTML §4.8.5 iframe "removing steps": frames whose containers left go away.
     if node.doc == 0 {

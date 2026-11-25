@@ -1257,13 +1257,7 @@ pub fn setup_document(vm: &mut Vm, proto: ObjRef) {
         );
         let _ = f;
     }
-    attr(
-        vm,
-        proto,
-        "activeElement",
-        |vm, c| node_rel(vm, &c, |d, _| d.body().or_else(|| d.document_element())),
-        None,
-    );
+    crate::focus::setup_document(vm, proto);
     op(vm, proto, "hasFocus", 0, |vm, c| {
         doc_this(vm, &c)?;
         Ok(Value::Bool(true))

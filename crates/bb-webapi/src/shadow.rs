@@ -483,15 +483,14 @@ pub fn setup_shadow_root(vm: &mut Vm, proto: ObjRef) {
         },
         None,
     );
-    // DocumentOrShadowRoot.activeElement: nothing in a shadow tree is focused (focus is the
-    // browser's, on the document's elements).
+    // DocumentOrShadowRoot.activeElement.
     attr(
         vm,
         proto,
         "activeElement",
         |vm, c| {
-            root_this(vm, &c)?;
-            Ok(Value::Null)
+            let (h, n, _) = root_this(vm, &c)?;
+            crate::focus::active_element(vm, &h, n)
         },
         None,
     );

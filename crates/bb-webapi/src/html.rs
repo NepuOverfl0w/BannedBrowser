@@ -217,12 +217,7 @@ pub fn setup_html_element(vm: &mut Vm, proto: ObjRef) {
         crate::events::fire_synthetic_click(vm, &h, n)?;
         Ok(Value::Undefined)
     });
-    for name in ["focus", "blur"] {
-        op(vm, proto, name, 0, |vm, c| {
-            this_node(vm, &c.this, C::HTMLElement)?;
-            Ok(Value::Undefined)
-        });
-    }
+    crate::focus::setup_element(vm, proto);
     crate::events::setup_event_handlers(vm, proto);
     crate::css::setup_inline_style(vm, proto);
     if let Ok(h) = host(vm) {

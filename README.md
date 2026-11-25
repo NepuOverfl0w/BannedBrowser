@@ -194,7 +194,7 @@ Legend: ✅ working · 🚧 partial · 📋 planned
 | test262 execution | **48803 / 48803 (100 %)** |
 | Unicode NormalizationTest (UAX #15) | **all lines + every other code point** |
 | Public Suffix List tests | **78 / 78 (100 %)** |
-| WPT Web API tests (`dom/`, `domparsing/`, `FileAPI/`, `workers/`, `webmessaging/`, `html/canvas/element/`, …) | **104715 / 126207 subtests** (in progress) |
+| WPT Web API tests (`dom/`, `domparsing/`, `FileAPI/`, `workers/`, `webmessaging/`, `html/canvas/element/`, …) | **104777 / 126158 subtests** (in progress) |
 
 ## 🏗 Architecture
 

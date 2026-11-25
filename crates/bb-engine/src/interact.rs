@@ -245,6 +245,29 @@ impl Page {
 
     /// Focus `n` in this document (no frame).
     pub fn focus_node(&mut self, n: Option<NodeId>) {
+        let before = self.doc.focused();
+        self.set_focus_state(n);
+        // HTML §6.6.4: the DOM's focused element, with the focus events for scripts.
+        if before != n {
+            if self.script.is_some() {
+                self.with_window(|w| w.focus_changed(n));
+            } else {
+                self.doc.set_focused(n);
+                // `:focus` and `:focus-within` styles change.
+                self.restyle();
+            }
+        }
+    }
+
+    /// Focus `n` (or nothing) in the browser's own state (editor, caret) and the DOM, without
+    /// focus events: for changes scripts made.
+    pub(crate) fn focus_from_script(&mut self, n: Option<NodeId>) {
+        self.set_focus_state(n);
+        self.doc.set_focused(n);
+        self.restyle();
+    }
+
+    fn set_focus_state(&mut self, n: Option<NodeId>) {
         if let Some(i) = self.focus.frame.take() {
             if let Some(f) = self.frames.get_mut(i) {
                 f.page.blur();

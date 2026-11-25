@@ -839,7 +839,15 @@ impl Page {
         for line in w.take_console() {
             log::info!("console [{}]: {line}", self.url);
         }
+        let focus = w.take_focus_request();
         self.script = Some(w);
+        // focus()/blur() from scripts move the browser's focus too.
+        if let Some(n) = focus {
+            if self.focus.node != n {
+                self.focus_from_script(n);
+                self.script_repaint = true;
+            }
+        }
         if dirty {
             self.after_script_mutation();
             self.script_repaint = true;

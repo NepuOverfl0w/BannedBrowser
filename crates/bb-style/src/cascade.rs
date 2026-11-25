@@ -413,13 +413,11 @@ impl<'a> Element for DomElement<'a> {
             PseudoClass::Hover => flags.contains(NodeFlags::HOVER),
             PseudoClass::Active => flags.contains(NodeFlags::ACTIVE),
             PseudoClass::Focus | PseudoClass::FocusVisible => flags.contains(NodeFlags::FOCUS),
-            PseudoClass::FocusWithin => {
-                flags.contains(NodeFlags::FOCUS)
-                    || self
-                        .doc
-                        .descendants(self.id)
-                        .any(|d| self.doc.node(d).flags.contains(NodeFlags::FOCUS))
-            }
+            // The focused element is a shadow-including descendant (Selectors 4 §11.5).
+            PseudoClass::FocusWithin => self
+                .doc
+                .focused()
+                .is_some_and(|f| self.doc.is_shadow_including_inclusive_ancestor(self.id, f)),
             PseudoClass::Checked => {
                 (e.is_html("input") && e.has_attr("checked"))
                     || (e.is_html("option") && e.has_attr("selected"))

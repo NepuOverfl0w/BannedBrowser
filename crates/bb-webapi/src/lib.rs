@@ -21,6 +21,7 @@ pub mod details;
 pub mod dom;
 pub mod events;
 pub mod exception;
+pub mod focus;
 pub mod forms;
 pub mod frames;
 pub mod geometry;
@@ -335,6 +336,22 @@ impl Window {
         }
         self.end_task(r);
         out
+    }
+
+    /// A focus change scripts made (`focus()`, `blur()`, the focused element removed): the
+    /// element now focused (None: the viewport), once.
+    pub fn take_focus_request(&self) -> Option<Option<bb_dom::NodeId>> {
+        self.host.focus_request.take()
+    }
+
+    /// The user moved focus (a click, Tab): the focus update steps with their events.
+    pub fn focus_changed(&mut self, new: Option<bb_dom::NodeId>) {
+        let h = self.host.clone();
+        self.begin_task();
+        let old = h.docs.borrow().first().and_then(|d| d.focused());
+        let r = crate::focus::update(&mut self.vm, &h, 0, old, new);
+        self.end_task(r);
+        // Listeners may have moved it again; the embedder hears about that as a request.
     }
 
     /// Reset form `form` of the window's document (a reset button the user clicked, after

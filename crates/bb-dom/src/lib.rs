@@ -8,6 +8,7 @@
 //! style/layout stages can later do incremental work.
 
 mod dump;
+mod focus;
 pub mod form_data;
 mod forms;
 mod select;
@@ -264,6 +265,8 @@ pub struct Document {
     custom_defined: std::collections::HashMap<NodeId, bool>,
     /// Custom elements' states (ElementInternals.states, CSS `:state()`).
     custom_states: std::collections::HashMap<NodeId, Vec<String>>,
+    /// The focused element (see `focus.rs`).
+    focused: Option<NodeId>,
 }
 
 impl Default for Document {
@@ -287,6 +290,7 @@ impl Document {
             shadow: Default::default(),
             custom_defined: Default::default(),
             custom_states: Default::default(),
+            focused: None,
         }
     }
 

@@ -365,6 +365,8 @@ pub struct Host {
     pub toggles: RefCell<crate::details::Toggles>,
     /// ElementInternals by target element (HTML §4.13.7).
     pub internals: RefCell<crate::internals::State>,
+    /// A focus change scripts made in document 0, for the embedder (Some(None): blurred).
+    pub focus_request: Cell<Option<Option<NodeId>>>,
 }
 
 impl Host {
@@ -427,6 +429,7 @@ impl Host {
             slots: RefCell::default(),
             toggles: RefCell::default(),
             internals: RefCell::default(),
+            focus_request: Cell::new(None),
         }
     }
 
