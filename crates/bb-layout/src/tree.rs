@@ -926,7 +926,8 @@ impl<'a> Builder<'a> {
     }
 
     fn build_children(&mut self, node: NodeId, parent: BoxId, prev_space: &mut bool, word_start: &mut bool) {
-        let kids: Vec<NodeId> = self.doc.children(node).collect();
+        // The flat tree (CSS Scoping §2.2): a host's shadow tree, a slot's assigned nodes.
+        let kids: Vec<NodeId> = self.doc.flat_children(node);
         if self.doc.is_html(node, "details") {
             self.build_details(node, &kids, parent, prev_space, word_start);
             return;

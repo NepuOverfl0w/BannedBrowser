@@ -2,7 +2,7 @@
 
 use crate::computed::{ComputedStyle, Display, Float, Position};
 use crate::properties::{self, contains_var, substitute_vars, Ctx};
-use bb_css::selectors::{matches, Element, PseudoClass, PseudoElement, Selector, Simple};
+use bb_css::selectors::{matches, Combinator, Element, PseudoClass, PseudoElement, Selector, Simple};
 use bb_css::{Declaration, MediaContext, MediaQueryList, Rule, Stylesheet};
 use bb_dom::{Document, Namespace, NodeData, NodeFlags, NodeId, QuirksMode};
 use rustc_hash::FxHashMap;
@@ -22,6 +22,9 @@ pub struct Sheet {
     pub stylesheet: Rc<Stylesheet>,
     /// `<link media>` / `@import` media.
     pub media: MediaQueryList,
+    /// The shadow root whose tree the sheet is in (CSS Scoping §3: it styles that tree
+    /// only); None for the document's sheets and the UA's.
+    pub scope: Option<NodeId>,
 }
 
 struct IndexedRule {
@@ -29,6 +32,7 @@ struct IndexedRule {
     decls: Rc<Vec<Declaration>>,
     origin: Origin,
     order: u32,
+    scope: Option<NodeId>,
 }
 
 /// `@font-face` rule data for the text layer.
@@ -51,6 +55,10 @@ pub struct Stylist {
     pub media: MediaContext,
     /// Pseudo-elements that at least one rule targets.
     pseudo_rules: Vec<PseudoElement>,
+    /// Whether any rule is a `:host` or `::slotted()` rule.
+    shadow_rules: bool,
+    host_rules: Vec<usize>,
+    slotted_rules: Vec<usize>,
 }
 
 fn flatten_rules(
@@ -158,6 +166,9 @@ impl Stylist {
             font_faces: Vec::new(),
             media,
             pseudo_rules: Vec::new(),
+            shadow_rules: false,
+            host_rules: Vec::new(),
+            slotted_rules: Vec::new(),
         };
         let mut order = 1u32;
         for sheet in sheets {
@@ -175,12 +186,29 @@ impl Stylist {
                         }
                     }
                     let (kind, key) = bucket_key(&sel);
+                    let host = sel.compounds[0].iter().any(|s| {
+                        matches!(s, Simple::Pseudo(PseudoClass::Host(_) | PseudoClass::HostContext(_)))
+                    });
+                    let slotted = sel.combinators.contains(&Combinator::Slotted);
+                    if host || slotted {
+                        st.shadow_rules = true;
+                    }
+                    if host {
+                        st.host_rules.push(idx);
+                    }
+                    if slotted {
+                        st.slotted_rules.push(idx);
+                    }
                     st.rules.push(IndexedRule {
                         selector: sel,
                         decls: decls.clone(),
                         origin: sheet.origin,
                         order,
+                        scope: sheet.scope,
                     });
+                    if host || slotted {
+                        continue;
+                    }
                     let map = match kind {
                         0 => &mut st.by_id,
                         1 => &mut st.by_class,
@@ -241,11 +269,15 @@ impl Stylist {
     }
 }
 
-/// Selector-matching view of a DOM element.
+/// Selector-matching view of a DOM element, in the context of the rules of tree `scope`
+/// (None: the document's).
 #[derive(Clone, Copy)]
 pub struct DomElement<'a> {
     pub doc: &'a Document,
     pub id: NodeId,
+    pub scope: Option<NodeId>,
+    /// A shadow host as its own shadow tree's rules see it (CSS Scoping §3.1).
+    pub featureless: bool,
 }
 
 impl<'a> DomElement<'a> {
@@ -256,8 +288,13 @@ impl<'a> DomElement<'a> {
         }
     }
 
+    /// A plain element of the document tree.
+    pub fn new(doc: &'a Document, id: NodeId) -> Self {
+        DomElement { doc, id, scope: None, featureless: false }
+    }
+
     fn wrap(&self, id: Option<NodeId>) -> Option<Self> {
-        id.map(|id| DomElement { doc: self.doc, id })
+        id.map(|id| DomElement { doc: self.doc, id, scope: self.scope, featureless: false })
     }
 
     fn is_link(&self) -> bool {
@@ -268,11 +305,42 @@ impl<'a> DomElement<'a> {
 
 impl<'a> Element for DomElement<'a> {
     fn parent_element(&self) -> Option<Self> {
+        if self.featureless {
+            return None;
+        }
         let p = self.doc.parent(self.id)?;
         if self.doc.node(p).is_element() {
             self.wrap(Some(p))
+        } else if self.scope == Some(p) {
+            // The top of the shadow tree: its host, featureless (CSS Scoping §3.1).
+            let host = self.doc.shadow_host(p)?;
+            Some(DomElement { doc: self.doc, id: host, scope: self.scope, featureless: true })
         } else {
             None
+        }
+    }
+    fn is_featureless(&self) -> bool {
+        self.featureless
+    }
+    fn as_featured(&self) -> Self {
+        DomElement { featureless: false, ..*self }
+    }
+    fn shadow_including_parent(&self) -> Option<Self> {
+        let mut p = self.doc.parent_or_host(self.id)?;
+        while !self.doc.node(p).is_element() {
+            p = self.doc.parent_or_host(p)?;
+        }
+        Some(DomElement { doc: self.doc, id: p, scope: None, featureless: false })
+    }
+    fn assigned_slot(&self) -> Option<Self> {
+        // The slot in the scope's tree this element is (after flattening) assigned to.
+        let scope = self.scope?;
+        let mut s = self.doc.find_slot(self.id, false)?;
+        loop {
+            if self.doc.tree_root(s) == scope {
+                return Some(DomElement { doc: self.doc, id: s, scope: self.scope, featureless: false });
+            }
+            s = self.doc.find_slot(s, false)?;
         }
     }
     fn prev_sibling_element(&self) -> Option<Self> {
@@ -327,7 +395,7 @@ impl<'a> Element for DomElement<'a> {
         self.doc.quirks_mode == QuirksMode::Quirks
     }
     fn same(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.id == other.id && self.featureless == other.featureless
     }
     fn match_state(&self, pc: &PseudoClass) -> bool {
         let flags = self.doc.node(self.id).flags;
@@ -438,8 +506,43 @@ impl Default for StyleEnv {
 }
 
 struct Matched<'a> {
-    key: (u8, u32, u32),
+    /// (origin and importance, encapsulation context, specificity, order).
+    key: (u8, u8, u32, u32),
     decl: &'a Declaration,
+}
+
+fn push_rule<'r>(matched: &mut Vec<Matched<'r>>, r: &'r IndexedRule, depth: u8) {
+    for d in r.decls.iter() {
+        matched.push(Matched {
+            key: (
+                rank(r.origin, d.important),
+                context_key(depth, d.important),
+                r.selector.specificity,
+                r.order,
+            ),
+            decl: d,
+        });
+    }
+}
+
+/// How deep shadow tree `scope` is (0: the document tree).
+fn tree_depth(doc: &Document, mut scope: Option<NodeId>) -> u8 {
+    let mut depth = 0u8;
+    while let Some(r) = scope {
+        depth = depth.saturating_add(1);
+        scope = doc.shadow_host(r).and_then(|h| doc.containing_shadow_root(h));
+    }
+    depth
+}
+
+/// CSS Cascade 4 §6.2 context: for normal declarations the outer (shallower) tree's win,
+/// for important ones the inner tree's.
+fn context_key(depth: u8, important: bool) -> u8 {
+    if important {
+        depth
+    } else {
+        u8::MAX - depth
+    }
 }
 
 fn rank(origin: Origin, important: bool) -> u8 {
@@ -503,8 +606,9 @@ impl Stylist {
                         map.pseudo.insert((node, kind), Rc::new(ps));
                     }
                 }
-                // Children in reverse so the stack pops them in order.
-                let kids: Vec<NodeId> = doc.children(node).collect();
+                // Children (in the flat tree: CSS Scoping §2.2) in reverse so the stack pops
+                // them in order.
+                let kids: Vec<NodeId> = doc.flat_children(node);
                 for &k in kids.iter().rev() {
                     stack.push((k, style.clone(), root_fs));
                 }
@@ -537,7 +641,11 @@ impl Stylist {
         cand: &mut Vec<usize>,
         pseudo: Option<PseudoElement>,
     ) -> ComputedStyle {
-        let el = DomElement { doc, id: node };
+        // The element's tree: the document's rules style the document tree, a shadow tree's
+        // its own (CSS Scoping §3); UA rules style every tree.
+        let scope = doc.containing_shadow_root(node);
+        let depth = if scope.is_some() { tree_depth(doc, scope) } else { 0 };
+        let el = DomElement { doc, id: node, scope, featureless: false };
         self.candidates(&el, cand);
         let mut matched: Vec<Matched> = Vec::new();
         for &i in cand.iter() {
@@ -548,13 +656,39 @@ impl Stylist {
             if env.no_author_styles && r.origin == Origin::Author {
                 continue;
             }
+            if r.origin == Origin::Author && r.scope != scope {
+                continue;
+            }
             if matches(&r.selector, el) {
-                for d in r.decls.iter() {
-                    matched.push(Matched {
-                        key: (rank(r.origin, d.important), r.selector.specificity, r.order),
-                        decl: d,
-                    });
+                push_rule(&mut matched, r, depth);
+            }
+        }
+        if self.shadow_rules && !env.no_author_styles {
+            // CSS Scoping §3.2.1: a host's shadow tree's `:host` rules.
+            if let Some(sr) = doc.shadow_root(node) {
+                let host = DomElement { doc, id: node, scope: Some(sr), featureless: true };
+                for &i in &self.host_rules {
+                    let r = &self.rules[i];
+                    if r.scope == Some(sr)
+                        && r.selector.pseudo_element == pseudo
+                        && matches(&r.selector, host)
+                    {
+                        push_rule(&mut matched, r, depth.saturating_add(1));
+                    }
                 }
+            }
+            // §3.2.2: `::slotted()` rules of the trees of the slots it is assigned to.
+            let mut slot = doc.find_slot(node, false);
+            while let Some(s) = slot {
+                let tree = doc.tree_root(s);
+                let el = DomElement { doc, id: node, scope: Some(tree), featureless: false };
+                for &i in &self.slotted_rules {
+                    let r = &self.rules[i];
+                    if r.scope == Some(tree) && pseudo.is_none() && matches(&r.selector, el) {
+                        push_rule(&mut matched, r, tree_depth(doc, Some(tree)));
+                    }
+                }
+                slot = doc.find_slot(s, false);
             }
         }
         // Presentational hints and the style attribute (author origin).
@@ -563,12 +697,19 @@ impl Stylist {
         if pseudo.is_none() && !env.no_author_styles {
             hints = crate::hints::presentational_hints_in(doc, node, env.container_margins);
             for d in &hints {
-                matched.push(Matched { key: (2, 0, 0), decl: d });
+                matched.push(Matched { key: (2, context_key(depth, false), 0, 0), decl: d });
             }
             inline = doc.attr(node, "style").map(bb_css::parse_declaration_list).unwrap_or_default();
             for d in &inline {
-                matched
-                    .push(Matched { key: (rank(Origin::Author, d.important), u32::MAX, u32::MAX), decl: d });
+                matched.push(Matched {
+                    key: (
+                        rank(Origin::Author, d.important),
+                        context_key(depth, d.important),
+                        u32::MAX,
+                        u32::MAX,
+                    ),
+                    decl: d,
+                });
             }
         }
         matched.sort_by_key(|m| m.key);

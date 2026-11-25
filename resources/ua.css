@@ -8,6 +8,7 @@ area, base, basefont, datalist, head, link, meta, noembed, noframes, param, rp, 
 embed[hidden] { display: inline; height: 0; width: 0; }
 input[type=hidden i] { display: none !important; }
 dialog:not([open]) { display: none; }
+slot { display: contents; }
 /* Scripting is disabled: <noscript> content is rendered. */
 
 /* §15.3.2 The page */

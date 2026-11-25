@@ -67,9 +67,9 @@ impl Document {
         self.select_state.selected.contains(&option)
     }
 
-    /// Whether `id` is connected to the document tree.
+    /// Whether `id` is connected (DOM §4.4: its shadow-including root is the document).
     pub fn is_connected(&self, id: NodeId) -> bool {
-        id == Document::ROOT || self.ancestors(id).last() == Some(Document::ROOT)
+        self.shadow_including_root(id) == Document::ROOT
     }
 
     /// §4.10.10 "get the nearest ancestor select".
@@ -507,8 +507,21 @@ impl Document {
     }
 
     /// DOM §4.4 "clone a node" into this document (`deep` = clone the subtree too). Template
-    /// contents are cloned along with a template element (HTML §4.12.3 cloning steps).
+    /// contents are cloned along with a template element (HTML §4.12.3 cloning steps), and a
+    /// clonable shadow root along with its host (whatever `deep` is).
     pub fn clone_node(&mut self, id: NodeId, deep: bool) -> NodeId {
+        self.clone_node_pairs(id, deep).0
+    }
+
+    /// [`Document::clone_node`], also returning the (original, copy) pairs of every node
+    /// copied, in shadow-including tree order.
+    pub fn clone_node_pairs(&mut self, id: NodeId, deep: bool) -> (NodeId, Vec<(NodeId, NodeId)>) {
+        let mut pairs = Vec::new();
+        let copy = self.clone_rec(id, deep, &mut pairs);
+        (copy, pairs)
+    }
+
+    fn clone_rec(&mut self, id: NodeId, deep: bool, pairs: &mut Vec<(NodeId, NodeId)>) -> NodeId {
         let data = self.node(id).data.clone();
         let copy = match data {
             NodeData::Element(e) => {
@@ -516,13 +529,25 @@ impl Document {
                 if let Some(el) = self.element_mut(copy) {
                     el.prefix = e.prefix.clone();
                 }
+                pairs.push((id, copy));
                 if deep {
                     if let (Some(from), Some(to)) =
                         (e.template_contents, self.element(copy).and_then(|c| c.template_contents))
                     {
                         let kids: Vec<NodeId> = self.children(from).collect();
                         for k in kids {
-                            let c = self.clone_node(k, true);
+                            let c = self.clone_rec(k, true, pairs);
+                            self.append_child(to, c);
+                        }
+                    }
+                }
+                if let Some(sr) = self.shadow_root(id) {
+                    if let Some(info) = self.shadow_info(sr).filter(|i| i.clonable).cloned() {
+                        let to = self.attach_shadow(copy, info);
+                        pairs.push((sr, to));
+                        let kids: Vec<NodeId> = self.children(sr).collect();
+                        for k in kids {
+                            let c = self.clone_rec(k, true, pairs);
                             self.append_child(to, c);
                         }
                     }
@@ -535,13 +560,14 @@ impl Document {
                 if cdata {
                     self.set_cdata(c);
                 }
+                pairs.push((id, c));
                 c
             }
         };
         if deep {
             let kids: Vec<NodeId> = self.children(id).collect();
             for k in kids {
-                let c = self.clone_node(k, true);
+                let c = self.clone_rec(k, true, pairs);
                 self.append_child(copy, c);
             }
         }

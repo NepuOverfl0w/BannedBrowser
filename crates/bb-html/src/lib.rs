@@ -24,6 +24,22 @@ pub fn parse_document(input: &str) -> Document {
     TreeBuilder::new(input).run()
 }
 
+/// Parse a document loaded by navigation: declarative shadow roots are allowed.
+pub fn parse_document_with_shadow_roots(input: &str) -> Document {
+    let mut tb = TreeBuilder::new(input);
+    tb.set_allow_declarative_shadow_roots(true);
+    tb.run()
+}
+
+/// Parse an HTML fragment with declarative shadow roots allowed (`setHTMLUnsafe`).
+pub fn parse_fragment_with_shadow_roots(
+    input: &str,
+    context_ns: Namespace,
+    context_name: &str,
+) -> (Document, NodeId) {
+    TreeBuilder::parse_fragment_with(input, context_ns, context_name, true)
+}
+
 /// Parse an HTML fragment in the context of an element (HTML §13.4).
 /// Returns the document and the node whose children are the parsed nodes.
 pub fn parse_fragment(input: &str, context_ns: Namespace, context_name: &str) -> (Document, NodeId) {

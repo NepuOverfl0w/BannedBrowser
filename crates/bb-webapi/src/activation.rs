@@ -23,7 +23,7 @@ pub enum Saved {
 }
 
 /// Whether element `n` of document `doc` has activation behavior.
-fn has_activation(d: &bb_dom::Document, n: NodeId) -> bool {
+pub fn has_activation(d: &bb_dom::Document, n: NodeId) -> bool {
     if d.is_html(n, "input") {
         return matches!(
             d.input_type(n),
@@ -89,7 +89,7 @@ pub fn canceled(vm: &mut Vm, h: &Host, t: NodeRef, saved: &Saved) -> JsResult<()
 }
 
 fn connected(d: &bb_dom::Document, n: NodeId) -> bool {
-    std::iter::once(n).chain(d.ancestors(n)).last() == Some(bb_dom::Document::ROOT)
+    d.is_connected(n)
 }
 
 fn fire(vm: &mut Vm, h: &Host, t: NodeRef, ty: &str, cancelable: bool) -> JsResult<bool> {

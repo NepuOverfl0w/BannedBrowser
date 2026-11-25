@@ -9,7 +9,7 @@
 //! parser (between scripts) rather than constructed as each start tag is read.
 //!
 //! Not done yet: ElementInternals and form-associated custom elements, scoped registries,
-//! `:defined`, and the disableShadow feature (there is no Shadow DOM yet).
+//! and `:defined`.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -36,6 +36,8 @@ pub struct Def {
     pub disconnected: Value,
     pub adopted: Value,
     pub attribute_changed: Value,
+    /// `disabledFeatures` has "shadow": attachShadow() throws (§4.13.4 "disable shadow").
+    pub disable_shadow: bool,
     /// The construction stack: elements being upgraded; None is the "already constructed"
     /// marker.
     pub construction: Vec<Option<ObjRef>>,
@@ -166,6 +168,18 @@ fn ensure(h: &Host, d: &bb_dom::Document, n: NodeRef) {
         let state = if custom_name || is.is_some() { State::Undefined } else { State::Uncustomized };
         Elem { state, def: None, is, queue: VecDeque::new() }
     });
+}
+
+/// An element's `is` value.
+pub fn is_value(h: &Host, n: NodeRef) -> Option<String> {
+    h.ce.borrow().elems.get(&n.pack()).and_then(|e| e.is.clone())
+}
+
+/// Whether `n`'s custom element state is "precustomized": its constructor is running for an
+/// upgrade (it is on a definition's construction stack).
+pub fn is_precustomized(h: &Host, n: NodeRef) -> bool {
+    let Some(w) = h.wrappers.borrow().get(&n.pack()).copied() else { return false };
+    h.ce.borrow().defs.iter().any(|d| d.construction.contains(&Some(w)))
 }
 
 pub fn state(h: &Host, n: NodeRef) -> Option<State> {
@@ -304,8 +318,7 @@ fn upgrade(vm: &mut Vm, h: &Host, n: NodeRef, def: usize) -> JsResult<()> {
                     .collect()
             })
             .unwrap_or_default();
-        let connected = std::iter::once(n.id).chain(d.ancestors(n.id)).last() == Some(bb_dom::Document::ROOT);
-        (attrs, connected)
+        (attrs, d.is_connected(n.id))
     })?;
     set_state(h, n, State::Custom);
     for (name, value, ns) in attrs {
@@ -325,7 +338,13 @@ fn upgrade(vm: &mut Vm, h: &Host, n: NodeRef, def: usize) -> JsResult<()> {
         r.defs[def].construction.push(Some(eo));
         r.defs[def].ctor
     };
-    let result = vm.construct(ctor, Vec::new(), None);
+    // Step 9.1.
+    let has_shadow = with_doc(vm, h, n.doc, |d| d.shadow_root(n.id).is_some())?;
+    let result = if has_shadow && h.ce.borrow().defs[def].disable_shadow {
+        throw(vm, "NotSupportedError", "this custom element disables shadow roots")
+    } else {
+        vm.construct(ctor, Vec::new(), None)
+    };
     h.ce.borrow_mut().defs[def].construction.pop();
     match result {
         Ok(Value::Object(o)) if o == eo => {
@@ -368,12 +387,10 @@ pub fn inserted(vm: &mut Vm, h: &Host, roots: &[NodeRef]) {
     }
     let _ = with_doc(vm, h, 0, |d| {
         for r in roots {
-            if r.doc != 0
-                || std::iter::once(r.id).chain(d.ancestors(r.id)).last() != Some(bb_dom::Document::ROOT)
-            {
+            if r.doc != 0 || !d.is_connected(r.id) {
                 continue;
             }
-            for x in d.descendants(r.id) {
+            for x in d.shadow_including_descendants(r.id) {
                 if d.element(x).is_none() {
                     continue;
                 }
@@ -400,10 +417,10 @@ pub fn removing(vm: &mut Vm, h: &Host, node: NodeRef) {
         return;
     }
     let _ = with_doc(vm, h, 0, |d| {
-        if std::iter::once(node.id).chain(d.ancestors(node.id)).last() != Some(bb_dom::Document::ROOT) {
+        if !d.is_connected(node.id) {
             return;
         }
-        for x in d.descendants(node.id) {
+        for x in d.shadow_including_descendants(node.id) {
             enqueue_callback(h, node.with(x), "disconnectedCallback", Vec::new());
         }
     });
@@ -496,9 +513,7 @@ pub fn parsed(vm: &mut Vm, h: &Host, before: usize) {
     let _ = with_doc(vm, h, 0, |d| {
         for i in before..d.len() {
             let n = NodeRef { doc: 0, id: NodeId(i as u32) };
-            if d.element(n.id).is_some()
-                && std::iter::once(n.id).chain(d.ancestors(n.id)).last() == Some(bb_dom::Document::ROOT)
-            {
+            if d.element(n.id).is_some() && d.is_connected(n.id) {
                 ensure(h, d, n);
                 try_upgrade(h, d, n);
             }
@@ -694,7 +709,7 @@ fn define(vm: &mut Vm, c: NativeCall) -> R {
         return throw(vm, "NotSupportedError", "a custom element is already being defined");
     }
     h.ce.borrow_mut().defining = true;
-    let r = (|| -> JsResult<(ObjRef, [Value; 4], Vec<String>)> {
+    let r = (|| -> JsResult<(ObjRef, [Value; 4], Vec<String>, bool)> {
         // Step 14.1–14.2.
         let Value::Object(proto) = vm.get(ctor_o, &PropKey::lit("prototype"))? else {
             return vm.type_error("the constructor's prototype must be an object");
@@ -714,19 +729,22 @@ fn define(vm: &mut Vm, c: NativeCall) -> R {
                 }
             }
         }
-        // disabledFeatures and formAssociated are read (steps 14.6–14.9) for their side effects.
+        // Steps 14.6–14.9: disabledFeatures (formAssociated is read for its side effects).
+        let mut disable_shadow = false;
         for k in ["disabledFeatures", "formAssociated"] {
             let v = vm.get(ctor_o, &PropKey::named(k))?;
             if k == "disabledFeatures" && !v.is_undefined() {
                 for x in vm.iterate_to_vec(&v)? {
-                    rstr(vm, &x)?;
+                    if rstr(vm, &x)? == "shadow" {
+                        disable_shadow = true;
+                    }
                 }
             }
         }
-        Ok((proto, cbs, observed))
+        Ok((proto, cbs, observed, disable_shadow))
     })();
     h.ce.borrow_mut().defining = false;
-    let (proto, [connected, disconnected, adopted, attribute_changed], observed) = r?;
+    let (proto, [connected, disconnected, adopted, attribute_changed], observed, disable_shadow) = r?;
     // Steps 15–16.
     let def = {
         let mut r = h.ce.borrow_mut();
@@ -740,6 +758,7 @@ fn define(vm: &mut Vm, c: NativeCall) -> R {
             disconnected,
             adopted,
             attribute_changed,
+            disable_shadow,
             construction: Vec::new(),
         });
         r.defs.len() - 1
@@ -747,7 +766,7 @@ fn define(vm: &mut Vm, c: NativeCall) -> R {
     // Steps 17–19: upgrade candidates, in tree order.
     enter(&h);
     let _ = with_doc(vm, &h, 0, |d| {
-        for x in d.descendants(bb_dom::Document::ROOT) {
+        for x in d.shadow_including_descendants(bb_dom::Document::ROOT) {
             let Some(e) = d.element(x) else { continue };
             if e.ns != Namespace::Html || e.name != local {
                 continue;
@@ -816,7 +835,7 @@ pub fn setup_registry(vm: &mut Vm, proto: ObjRef) {
         let Some(root) = node_of(vm, &c.arg(0)) else { return vm.type_error("upgrade needs a node") };
         enter(&h);
         let _ = with_doc(vm, &h, root.doc, |d| {
-            for x in d.descendants(root.id) {
+            for x in d.shadow_including_descendants(root.id) {
                 if d.element(x).is_some() {
                     try_upgrade(&h, d, root.with(x));
                 }

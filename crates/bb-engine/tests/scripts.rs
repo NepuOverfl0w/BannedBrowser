@@ -1,6 +1,7 @@
 //! Page scripts (milestone E): scripts change what is rendered; timers, click listeners and
 //! `location` navigations go through the page.
 
+use bb_dom::Document;
 use bb_engine::{new_client, Page, PageConfig};
 use bb_url::Url;
 
@@ -505,4 +506,48 @@ fn streams() {
     );
     wait_for_change(&mut p, "log", "-");
     assert_eq!(text(&p, "log"), "hello streams 9 true AB xy");
+}
+
+#[test]
+fn shadow_trees_render_and_scope_styles() {
+    let mut p = page(
+        "<!doctype html><style>p { color: rgb(0, 0, 255) }</style>\
+         <div id=host><template shadowrootmode=open>\
+         <style>p { color: rgb(255, 0, 0) } :host { display: block; padding-left: 50px }\
+         ::slotted(span) { font-weight: bold }</style>\
+         <p>Shadow text</p><slot name=a></slot><slot>fallback</slot></template>\
+         <span id=s slot=a>slotted</span></div>\
+         <p id=outside>outside</p><div id=imperative></div><p id=log></p><script>\
+         var log = [];\
+         var host = document.getElementById('host');\
+         log.push(host.shadowRoot.mode, host.shadowRoot.querySelector('p').textContent.length);\
+         log.push(document.getElementById('s').assignedSlot.name);\
+         var sr = document.getElementById('imperative').attachShadow({ mode: 'closed' });\
+         sr.innerHTML = '<b id=inner>in shadow</b>';\
+         log.push(String(document.getElementById('inner')), sr.getElementById('inner').textContent.length);\
+         var path = [];\
+         sr.firstChild.addEventListener('ping', function (e) { path.push(e.composedPath().length); });\
+         document.body.addEventListener('ping', function (e) { path.push(e.target.id); });\
+         sr.firstChild.dispatchEvent(new Event('ping', { bubbles: true, composed: true }));\
+         log.push(path.join(','));\
+         document.getElementById('log').textContent = log.join(' ');</script>",
+    );
+    assert_eq!(text(&p, "log"), "open 11 a null 9 7,imperative");
+    // The shadow tree is rendered (its own <style> applies inside it only), the slotted span
+    // is placed in its slot, and :host styles the host.
+    let shadow_p = p
+        .doc
+        .shadow_including_descendants(Document::ROOT)
+        .into_iter()
+        .find(|&n| p.doc.is_html(n, "p") && p.doc.containing_shadow_root(n).is_some());
+    let shadow_p = shadow_p.expect("the shadow tree's <p>");
+    assert_eq!(p.styles.get(shadow_p).unwrap().color, bb_css::Rgba { r: 255, g: 0, b: 0, a: 255 });
+    let outside = p.doc.get_element_by_id("outside").unwrap();
+    assert_eq!(p.styles.get(outside).unwrap().color, bb_css::Rgba { r: 0, g: 0, b: 255, a: 255 });
+    let s = p.doc.get_element_by_id("s").unwrap();
+    assert_eq!(p.styles.get(s).unwrap().font_weight, 700);
+    assert!(rect(&p, "s")[0] >= 50.0, "the host's padding comes from :host");
+    assert_eq!(p.find("Shadow text", 0.0).0, 1);
+    assert_eq!(p.find("fallback", 0.0).0, 1);
+    assert_eq!(p.find("in shadow", 0.0).0, 1);
 }

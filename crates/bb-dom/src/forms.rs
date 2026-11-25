@@ -323,13 +323,6 @@ impl Document {
             .collect()
     }
 
-    fn tree_root(&self, mut n: NodeId) -> NodeId {
-        while let Some(p) = self.parent(n) {
-            n = p;
-        }
-        n
-    }
-
     /// Called by the parser for a form-associated element it inserted while its form element
     /// pointer was set (HTML §13.2.6.1 "create an element for a token").
     pub fn set_parser_form_owner(&mut self, el: NodeId, form: NodeId) {

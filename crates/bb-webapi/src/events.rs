@@ -404,10 +404,7 @@ pub fn setup_event(vm: &mut Vm, proto: ObjRef, ctor: ObjRef) {
     );
     op(vm, proto, "composedPath", 0, |vm, c| {
         let o = event_obj(vm, &c.this)?;
-        let items = match slot(vm, o, S_PATH) {
-            Value::Object(a) if flags(vm, o) & DISPATCH != 0 => vm.list_from_array_like(&Value::Object(a))?,
-            _ => Vec::new(),
-        };
+        let items = if flags(vm, o) & DISPATCH != 0 { composed_path(vm, o)? } else { Vec::new() };
         Ok(Value::Object(vm.new_array(items)))
     });
     op(vm, proto, "stopPropagation", 0, |vm, c| {
@@ -516,8 +513,35 @@ pub fn fire_submit(vm: &mut Vm, h: &Host, form: NodeRef, submitter: Option<NodeR
     dispatch(vm, h, e, t)
 }
 
+/// The legacy initXEvent methods (UI Events §A): type, bubbles, cancelable, then `fields`.
+fn legacy_init(vm: &mut Vm, c: &NativeCall, fields: &[(&str, char)]) -> R {
+    let ty = rstr(vm, &c.arg(0))?;
+    let (b, ca) = (vm.to_boolean(&c.arg(1)), vm.to_boolean(&c.arg(2)));
+    let o = event_obj(vm, &c.this)?;
+    let mut vals = Vec::with_capacity(fields.len());
+    for (i, (_, k)) in fields.iter().enumerate() {
+        let a = c.arg(3 + i);
+        vals.push(match k {
+            'b' => Value::Bool(vm.to_boolean(&a)),
+            'l' => Value::Number(vm.to_int32(&a)? as f64),
+            's' => js(&rstr(vm, &a)?),
+            _ if a.is_nullish() => Value::Null,
+            _ if matches!(a, Value::Object(_)) => a,
+            _ => return vm.type_error("expected an object or null"),
+        });
+    }
+    if flags(vm, o) & DISPATCH == 0 {
+        init_event(vm, o, &ty, b, ca);
+        for ((name, _), v) in fields.iter().zip(vals) {
+            set_field(vm, o, name, v);
+        }
+    }
+    Ok(Value::Undefined)
+}
+
 pub fn setup_ui_event(vm: &mut Vm, proto: ObjRef) {
     define_fields(vm, proto, C::UIEvent, &[]);
+    op(vm, proto, "initUIEvent", 1, |vm, c| legacy_init(vm, &c, &[("view", 'n'), ("detail", 'l')]));
     attr(
         vm,
         proto,
@@ -537,8 +561,33 @@ pub fn setup_ui_event(vm: &mut Vm, proto: ObjRef) {
     );
 }
 
+/// UI Events §5.3 FocusEvent: relatedTarget.
+pub fn setup_focus_event(vm: &mut Vm, proto: ObjRef) {
+    define_fields(vm, proto, C::FocusEvent, &["detail", "view"]);
+}
+
 pub fn setup_mouse_event(vm: &mut Vm, proto: ObjRef) {
     define_fields(vm, proto, C::MouseEvent, &["detail", "view"]);
+    op(vm, proto, "initMouseEvent", 1, |vm, c| {
+        legacy_init(
+            vm,
+            &c,
+            &[
+                ("view", 'n'),
+                ("detail", 'l'),
+                ("screenX", 'l'),
+                ("screenY", 'l'),
+                ("clientX", 'l'),
+                ("clientY", 'l'),
+                ("ctrlKey", 'b'),
+                ("altKey", 'b'),
+                ("shiftKey", 'b'),
+                ("metaKey", 'b'),
+                ("button", 'l'),
+                ("relatedTarget", 'n'),
+            ],
+        )
+    });
     for (alias, field) in [
         ("x", "clientX"),
         ("y", "clientY"),
@@ -565,6 +614,21 @@ pub fn setup_mouse_event(vm: &mut Vm, proto: ObjRef) {
 
 pub fn setup_keyboard_event(vm: &mut Vm, proto: ObjRef) {
     define_fields(vm, proto, C::KeyboardEvent, &["detail", "view"]);
+    op(vm, proto, "initKeyboardEvent", 1, |vm, c| {
+        legacy_init(
+            vm,
+            &c,
+            &[
+                ("view", 'n'),
+                ("key", 's'),
+                ("location", 'l'),
+                ("ctrlKey", 'b'),
+                ("altKey", 'b'),
+                ("shiftKey", 'b'),
+                ("metaKey", 'b'),
+            ],
+        )
+    });
     for (n, v) in [
         ("DOM_KEY_LOCATION_STANDARD", 0),
         ("DOM_KEY_LOCATION_LEFT", 1),
@@ -707,100 +771,359 @@ pub fn setup_event_target(vm: &mut Vm, proto: ObjRef) {
     });
 }
 
-/// The event path (DOM §2.9 "get the parent"): the target, its ancestors, and the window
-/// for a node in the window's document (except for `load`).
-fn event_path(vm: &mut Vm, h: &Host, target: &Value, ty: &str) -> JsResult<Vec<ObjRef>> {
-    let Value::Object(t) = target else { return Ok(Vec::new()) };
-    let mut path = vec![*t];
-    if let Some(n) = node_of(vm, target) {
-        let anc: Vec<bb_dom::NodeId> = with_doc(vm, h, n.doc, |d| d.ancestors(n.id).collect())?;
-        let mut top = n.id;
-        for a in anc {
-            top = a;
-            if let Value::Object(o) = wrap(vm, h, n.with(a))? {
-                path.push(o);
-            }
+// An event's path (DOM §2.9) lives in slot 7 while it is dispatched, as a flat array of
+// PATH_STRIDE values per struct: invocation target, shadow-adjusted target (or null),
+// relatedTarget (or null), and flags.
+const PATH_STRIDE: usize = 4;
+const P_IN_SHADOW: u32 = 1;
+const P_ROOT_CLOSED: u32 = 2;
+const P_SLOT_CLOSED: u32 = 4;
+
+struct PathItem {
+    target: ObjRef,
+    adjusted: Option<ObjRef>,
+    related: Value,
+    flags: u32,
+}
+
+fn read_path(vm: &mut Vm, e: ObjRef) -> JsResult<Vec<PathItem>> {
+    let Value::Object(a) = slot(vm, e, S_PATH) else { return Ok(Vec::new()) };
+    let items = vm.list_from_array_like(&Value::Object(a))?;
+    Ok(items
+        .chunks(PATH_STRIDE)
+        .filter_map(|c| {
+            let Value::Object(target) = c[0] else { return None };
+            Some(PathItem {
+                target,
+                adjusted: match c[1] {
+                    Value::Object(o) => Some(o),
+                    _ => None,
+                },
+                related: c[2].clone(),
+                flags: match c[3] {
+                    Value::Number(n) => n as u32,
+                    _ => 0,
+                },
+            })
+        })
+        .collect())
+}
+
+/// DOM §4.2.2.1 "retarget" `a` against `b`: `a`, or the host of the shadow tree it is in,
+/// moved out until `b` can see it.
+pub fn retarget(vm: &mut Vm, h: &Host, a: &Value, b: &Value) -> JsResult<Value> {
+    let Some(mut n) = node_of(vm, a) else { return Ok(a.clone()) };
+    let bn = node_of(vm, b);
+    let out = with_doc(vm, h, n.doc, |d| loop {
+        let root = d.tree_root(n.id);
+        let Some(host) = d.shadow_host(root) else { return n };
+        if bn.is_some_and(|b| b.doc == n.doc && d.is_shadow_including_inclusive_ancestor(root, b.id)) {
+            return n;
         }
-        if n.doc == 0 && top == bb_dom::Document::ROOT && ty != "load" {
-            if let Some(w) = h.window.get() {
-                path.push(w);
-            }
-        }
+        n = n.with(host);
+    })?;
+    if out == node_of(vm, a).unwrap_or(out) {
+        return Ok(a.clone());
     }
-    Ok(path)
+    wrap(vm, h, out)
+}
+
+/// DOM §2.9 "get the parent" of `t` for an event of type `ty`; `first` is the path's first
+/// invocation target.
+fn get_the_parent(
+    vm: &mut Vm,
+    h: &Host,
+    t: &Value,
+    ty: &str,
+    composed: bool,
+    first: &Value,
+) -> JsResult<Value> {
+    let Some(n) = node_of(vm, t) else { return Ok(Value::Null) };
+    let first = node_of(vm, first);
+    enum P {
+        Node(bb_dom::NodeId),
+        Window,
+        None,
+    }
+    let p = with_doc(vm, h, n.doc, |d| {
+        if n.id == bb_dom::Document::ROOT {
+            // A document's parent is its window, except for load events.
+            return if n.doc == 0 && ty != "load" { P::Window } else { P::None };
+        }
+        if let Some(host) = d.shadow_host(n.id) {
+            let is_first_root = first.is_some_and(|f| f.doc == n.doc && d.tree_root(f.id) == n.id);
+            return if !composed && is_first_root { P::None } else { P::Node(host) };
+        }
+        match d.find_slot(n.id, false).or_else(|| d.parent(n.id)) {
+            Some(p) => P::Node(p),
+            None => P::None,
+        }
+    })?;
+    match p {
+        P::Node(id) => wrap(vm, h, n.with(id)),
+        P::Window => Ok(h.window.get().map_or(Value::Null, Value::Object)),
+        P::None => Ok(Value::Null),
+    }
+}
+
+/// Facts about a path entry: (is in a shadow tree, is a closed shadow root, its root).
+fn node_facts(vm: &mut Vm, h: &Host, v: &Value) -> JsResult<(bool, bool, Option<NodeRef>)> {
+    let Some(n) = node_of(vm, v) else { return Ok((false, false, None)) };
+    with_doc(vm, h, n.doc, |d| {
+        let root = d.tree_root(n.id);
+        let in_shadow = d.is_shadow_root(root);
+        let closed = d.shadow_info(n.id).is_some_and(|i| !i.open);
+        (in_shadow, closed, Some(n.with(root)))
+    })
 }
 
 /// DOM §2.9 "dispatch" event `e` at `target`; returns false if it was canceled.
 pub fn dispatch(vm: &mut Vm, h: &Host, e: ObjRef, target: Value) -> JsResult<bool> {
     let ty = rstr(vm, &slot(vm, e, S_TYPE))?;
+    // Step 1.
     flag_on(vm, e, DISPATCH, true);
-    set_slot(vm, e, S_TARGET, target.clone());
-    let path = event_path(vm, h, &target, &ty)?;
-    let arr = vm.new_array(path.iter().map(|o| Value::Object(*o)).collect());
-    set_slot(vm, e, S_PATH, Value::Object(arr));
-    let bubbles = flags(vm, e) & BUBBLES != 0;
-    // Steps 5 and 11: a script's click event gets the activation behavior of its target (or
-    // the nearest ancestor with one); the browser does that itself for trusted clicks.
-    let activation = match node_of(vm, &target) {
-        Some(n)
-            if ty == "click"
-                && flags(vm, e) & TRUSTED == 0
-                && matches!(vm.host_data(&Value::Object(e)), Some((c, _)) if c == C::MouseEvent as u32) =>
-        {
-            match crate::activation::target(vm, h, n, bubbles)? {
-                Some(t) => Some((t, crate::activation::pre(vm, h, t)?)),
-                None => None,
+    let f0 = flags(vm, e);
+    let bubbles = f0 & BUBBLES != 0;
+    let composed = f0 & COMPOSED != 0;
+    // Step 3: a script's click event gets the activation behavior of its target (or the
+    // nearest inclusive ancestor in its path with one); the browser does that itself for
+    // trusted clicks.
+    let is_activation = ty == "click"
+        && f0 & TRUSTED == 0
+        && matches!(vm.host_data(&Value::Object(e)), Some((c, _)) if c == C::MouseEvent as u32);
+    let mut activation: Option<NodeRef> = None;
+    let has_activation = |vm: &mut Vm, v: &Value| -> JsResult<Option<NodeRef>> {
+        let Some(n) = node_of(vm, v) else { return Ok(None) };
+        Ok(with_doc(vm, h, n.doc, |d| crate::activation::has_activation(d, n.id))?.then_some(n))
+    };
+    // Step 4.
+    let original_related = get_field(vm, e, "relatedTarget").unwrap_or(Value::Null);
+    let related = retarget(vm, h, &original_related, &target)?;
+    let mut clear_targets = false;
+    let mut flat: Vec<Value> = Vec::new();
+    let mut push =
+        |vm: &mut Vm, t: &Value, adjusted: Value, related: Value, slot_closed: bool| -> JsResult<()> {
+            let (in_shadow, root_closed, _) = node_facts(vm, h, t)?;
+            let mut fl = 0;
+            if in_shadow {
+                fl |= P_IN_SHADOW;
+            }
+            if root_closed {
+                fl |= P_ROOT_CLOSED;
+            }
+            if slot_closed {
+                fl |= P_SLOT_CLOSED;
+            }
+            flat.extend([t.clone(), adjusted, related, Value::Number(fl as f64)]);
+            Ok(())
+        };
+    // Step 5.
+    let same = |a: &Value, b: &Value| matches!((a, b), (Value::Object(x), Value::Object(y)) if x == y);
+    if !same(&target, &related) || same(&target, &original_related) {
+        push(vm, &target, target.clone(), related.clone(), false)?;
+        if is_activation {
+            activation = has_activation(vm, &target)?;
+        }
+        let assigned = |vm: &mut Vm, v: &Value| -> JsResult<bool> {
+            let Some(n) = node_of(vm, v) else { return Ok(false) };
+            with_doc(vm, h, n.doc, |d| d.is_slottable(n.id) && d.find_slot(n.id, false).is_some())
+        };
+        let mut slottable = assigned(vm, &target)?.then(|| target.clone());
+        let mut slot_in_closed_tree = false;
+        let mut cur_target = target.clone();
+        let mut parent = get_the_parent(vm, h, &target, &ty, composed, &target)?;
+        while !matches!(parent, Value::Null) {
+            let (_, _, target_root) = node_facts(vm, h, &cur_target)?;
+            if slottable.is_some() {
+                slottable = None;
+                if let Some(p) = node_of(vm, &parent) {
+                    slot_in_closed_tree = with_doc(vm, h, p.doc, |d| {
+                        d.containing_shadow_root(p.id).and_then(|r| d.shadow_info(r)).is_some_and(|i| !i.open)
+                    })?;
+                }
+            }
+            if assigned(vm, &parent)? {
+                slottable = Some(parent.clone());
+            }
+            let rel = retarget(vm, h, &original_related, &parent)?;
+            let is_window = node_of(vm, &parent).is_none();
+            let sees = match (node_of(vm, &parent), target_root) {
+                (Some(p), Some(r)) if p.doc == r.doc => {
+                    with_doc(vm, h, p.doc, |d| d.is_shadow_including_inclusive_ancestor(r.id, p.id))?
+                }
+                _ => false,
+            };
+            if is_window || sees {
+                if is_activation && bubbles && activation.is_none() {
+                    activation = has_activation(vm, &parent)?;
+                }
+                push(vm, &parent, Value::Null, rel, slot_in_closed_tree)?;
+            } else if same(&parent, &rel) {
+                parent = Value::Null;
+            } else {
+                cur_target = parent.clone();
+                if is_activation && activation.is_none() {
+                    activation = has_activation(vm, &cur_target)?;
+                }
+                push(vm, &parent, cur_target.clone(), rel, slot_in_closed_tree)?;
+            }
+            if !matches!(parent, Value::Null) {
+                parent = get_the_parent(vm, h, &parent, &ty, composed, &target)?;
+            }
+            slot_in_closed_tree = false;
+        }
+        let arr = vm.new_array(flat);
+        set_slot(vm, e, S_PATH, Value::Object(arr));
+        let path = read_path(vm, e)?;
+        // Steps 5.10–5.11.
+        if let Some(last) = path.iter().rev().find(|p| p.adjusted.is_some()) {
+            for v in [Value::Object(last.adjusted.unwrap_or(last.target)), last.related.clone()] {
+                if node_facts(vm, h, &v)?.0 {
+                    clear_targets = true;
+                }
             }
         }
-        _ => None,
-    };
-    // Capturing: from the top down to the target.
-    for (i, &t) in path.iter().enumerate().rev() {
-        if flags(vm, e) & STOP != 0 {
-            break;
+        // Step 5.12: legacy-pre-activation behavior.
+        let saved = match activation {
+            Some(t) => Some((t, crate::activation::pre(vm, h, t)?)),
+            None => None,
+        };
+        // Steps 5.13–5.14.
+        for i in (0..path.len()).rev() {
+            let phase = if path[i].adjusted.is_some() { 2 } else { 1 };
+            invoke(vm, h, e, &path, i, &ty, phase, true)?;
         }
-        let phase = if i == 0 { 2 } else { 1 };
-        invoke(vm, h, e, t, &ty, phase, true)?;
+        for i in 0..path.len() {
+            let phase = if path[i].adjusted.is_some() {
+                2
+            } else {
+                if !bubbles {
+                    continue;
+                }
+                3
+            };
+            invoke(vm, h, e, &path, i, &ty, phase, false)?;
+        }
+        finish(vm, h, e, clear_targets);
+        // Steps 10–11.
+        let f = flags(vm, e);
+        if let Some((t, saved)) = saved {
+            if f & CANCELED != 0 {
+                crate::activation::canceled(vm, h, t, &saved)?;
+            } else {
+                crate::activation::activate(vm, h, t, &saved)?;
+            }
+        }
+        return Ok(f & CANCELED == 0);
     }
-    // Bubbling: the target, then (for bubbling events) back up.
-    for (i, &t) in path.iter().enumerate() {
-        if flags(vm, e) & STOP != 0 {
-            break;
-        }
-        if i > 0 && !bubbles {
-            break;
-        }
-        let phase = if i == 0 { 2 } else { 3 };
-        invoke(vm, h, e, t, &ty, phase, false)?;
-    }
+    finish(vm, h, e, clear_targets);
+    Ok(flags(vm, e) & CANCELED == 0)
+}
+
+/// DOM §2.9 dispatch steps 6–9.
+fn finish(vm: &mut Vm, h: &Host, e: ObjRef, clear_targets: bool) {
     set_slot(vm, e, S_PHASE, Value::Number(0.0));
     set_slot(vm, e, S_CURRENT, Value::Null);
     set_slot(vm, e, S_PATH, Value::Undefined);
     let f = flags(vm, e);
     set_flags(vm, e, f & !(DISPATCH | STOP | STOP_IMMEDIATE));
-    // Steps 13–14.
-    if let Some((t, saved)) = activation {
-        if f & CANCELED != 0 {
-            crate::activation::canceled(vm, h, t, &saved)?;
-        } else {
-            crate::activation::activate(vm, h, t, &saved)?;
+    if clear_targets {
+        set_slot(vm, e, S_TARGET, Value::Null);
+        if get_field(vm, e, "relatedTarget").is_some() {
+            set_field(vm, e, "relatedTarget", Value::Null);
         }
     }
-    Ok(f & CANCELED == 0)
+    let _ = h;
 }
 
-/// DOM §2.10 "inner invoke" of `t`'s listeners for the capture or bubble pass.
+/// DOM §2.9 "composedPath()".
+fn composed_path(vm: &mut Vm, e: ObjRef) -> JsResult<Vec<Value>> {
+    let path = read_path(vm, e)?;
+    let Value::Object(current) = slot(vm, e, S_CURRENT) else { return Ok(Vec::new()) };
+    if path.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = std::collections::VecDeque::new();
+    out.push_back(Value::Object(current));
+    let mut current_index = 0usize;
+    let mut level: i64 = 0;
+    for (i, p) in path.iter().enumerate().rev() {
+        if p.flags & P_ROOT_CLOSED != 0 {
+            level += 1;
+        }
+        if p.target == current {
+            current_index = i;
+            break;
+        }
+        if p.flags & P_SLOT_CLOSED != 0 {
+            level -= 1;
+        }
+    }
+    let (mut cur, mut max) = (level, level);
+    for p in path[..current_index].iter().rev() {
+        if p.flags & P_ROOT_CLOSED != 0 {
+            cur += 1;
+        }
+        if cur <= max {
+            out.push_front(Value::Object(p.target));
+        }
+        if p.flags & P_SLOT_CLOSED != 0 {
+            cur -= 1;
+            max = max.min(cur);
+        }
+    }
+    let (mut cur, mut max) = (level, level);
+    for p in &path[current_index + 1..] {
+        if p.flags & P_SLOT_CLOSED != 0 {
+            cur += 1;
+        }
+        if cur <= max {
+            out.push_back(Value::Object(p.target));
+        }
+        if p.flags & P_ROOT_CLOSED != 0 {
+            cur -= 1;
+            max = max.min(cur);
+        }
+    }
+    Ok(out.into())
+}
+
+/// DOM §2.9 "invoke" path struct `i` for the capture or bubble pass, then §2.10 "inner
+/// invoke" of its listeners.
+#[allow(clippy::too_many_arguments)]
 fn invoke(
     vm: &mut Vm,
     h: &Host,
     e: ObjRef,
-    t: ObjRef,
+    path: &[PathItem],
+    i: usize,
     ty: &str,
     phase: u8,
     capture_pass: bool,
 ) -> JsResult<()> {
-    set_slot(vm, e, S_CURRENT, Value::Object(t));
     set_slot(vm, e, S_PHASE, Value::Number(phase as f64));
+    // Steps 1–2.
+    if let Some(t) = path[..=i].iter().rev().find_map(|p| p.adjusted) {
+        set_slot(vm, e, S_TARGET, Value::Object(t));
+    }
+    if get_field(vm, e, "relatedTarget").is_some() {
+        set_field(vm, e, "relatedTarget", path[i].related.clone());
+    }
+    // Step 4.
+    if flags(vm, e) & STOP != 0 {
+        return Ok(());
+    }
+    let t = path[i].target;
+    set_slot(vm, e, S_CURRENT, Value::Object(t));
+    // HTML §7.2.2 window.event: the event, unless the listener is in a shadow tree.
+    let in_shadow = path[i].flags & P_IN_SHADOW != 0;
+    let saved = h.current_event.replace(if in_shadow { None } else { Some(e) });
+    let r = inner_invoke(vm, h, e, t, ty, capture_pass);
+    h.current_event.set(saved);
+    r
+}
+
+fn inner_invoke(vm: &mut Vm, h: &Host, e: ObjRef, t: ObjRef, ty: &str, capture_pass: bool) -> JsResult<()> {
     let snapshot: Vec<(Value, bool, bool, bool, Rc<Cell<bool>>)> = match h.listeners.borrow().get(&t) {
         Some(list) => list
             .iter()

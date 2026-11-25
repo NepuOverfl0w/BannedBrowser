@@ -27,12 +27,14 @@ pub fn ua_sheets(quirks: bool) -> Vec<Sheet> {
         origin: Origin::UserAgent,
         stylesheet: UA_SHEET.with(|s| s.clone()),
         media: bb_css::MediaQueryList::default(),
+        scope: None,
     }];
     if quirks {
         v.push(Sheet {
             origin: Origin::UserAgent,
             stylesheet: QUIRKS_SHEET.with(|s| s.clone()),
             media: bb_css::MediaQueryList::default(),
+            scope: None,
         });
     }
     v
@@ -47,6 +49,7 @@ pub fn ua_scripting_sheet() -> Sheet {
         origin: Origin::UserAgent,
         stylesheet: SHEET.with(|s| s.clone()),
         media: bb_css::MediaQueryList::default(),
+        scope: None,
     }
 }
 
@@ -85,6 +88,7 @@ pub fn style_document(doc: &bb_dom::Document, author_css: &[&str], env: &StyleEn
             origin: Origin::Author,
             stylesheet: Rc::new(bb_css::Stylesheet::parse(css)),
             media: bb_css::MediaQueryList::default(),
+            scope: None,
         });
     }
     let media = bb_css::MediaContext {

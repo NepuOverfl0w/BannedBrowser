@@ -258,7 +258,7 @@ pub fn setup_node(vm: &mut Vm, proto: ObjRef, ctor: ObjRef) {
                 return Ok(Value::Bool(false));
             }
             let (h, n) = this(vm, &c)?;
-            let r = with_doc(vm, &h, n.doc, |d| root_of(d, n.id) == Document::ROOT)?;
+            let r = with_doc(vm, &h, n.doc, |d| d.is_connected(n.id))?;
             Ok(Value::Bool(r))
         },
         None,
@@ -284,7 +284,16 @@ pub fn setup_node(vm: &mut Vm, proto: ObjRef, ctor: ObjRef) {
         if crate::attr::is_attr(vm, &c.this) {
             return Ok(c.this.clone());
         }
-        node_rel(vm, &c, |d, id| Some(root_of(d, id)))
+        // GetRootNodeOptions.composed: the shadow-including root.
+        let composed = {
+            let v = dict_get(vm, &c.arg(0), "composed")?;
+            vm.to_boolean(&v)
+        };
+        if composed {
+            node_rel(vm, &c, |d, id| Some(d.shadow_including_root(id)))
+        } else {
+            node_rel(vm, &c, |d, id| Some(root_of(d, id)))
+        }
     });
     attr(
         vm,
@@ -352,6 +361,9 @@ pub fn setup_node(vm: &mut Vm, proto: ObjRef, ctor: ObjRef) {
             return crate::attr::clone_attr(vm, &c.this);
         }
         let (h, n) = this(vm, &c)?;
+        if crate::shadow::is_shadow_root(vm, &h, n)? {
+            return throw(vm, "NotSupportedError", "shadow roots can't be cloned");
+        }
         let r = clone_node(vm, &h, n, deep)?;
         wrap(vm, &h, r)
     });
@@ -611,7 +623,7 @@ pub fn clone_node(vm: &mut Vm, h: &Host, n: NodeRef, deep: bool) -> JsResult<Nod
             let (url, quirks) = (docs[n.doc as usize].url.clone(), docs[n.doc as usize].quirks_mode);
             for k in kids {
                 let (src, dst) = split2(&mut docs, n.doc as usize, nd as usize);
-                let (copy, _) = dst.import_node(src, k, true);
+                let copy = dst.import_clone(src, k);
                 dst.append_child(Document::ROOT, copy);
             }
             docs[nd as usize].url = url;
@@ -619,29 +631,17 @@ pub fn clone_node(vm: &mut Vm, h: &Host, n: NodeRef, deep: bool) -> JsResult<Nod
         }
         return Ok(NodeRef { doc: nd, id: Document::ROOT });
     }
-    let id = with_doc_mut(vm, h, n.doc, |d| d.clone_node(n.id, deep))?;
+    let (id, pairs) = with_doc_mut(vm, h, n.doc, |d| d.clone_node_pairs(n.id, deep))?;
+    let pairs: Vec<(NodeRef, NodeRef)> = pairs.into_iter().map(|(a, b)| (n.with(a), n.with(b))).collect();
     // HTML §4.12.1 cloning steps: a script's "already started" goes with its clone.
     let started: Vec<u64> = {
         let set = h.started_scripts.borrow();
-        if set.is_empty() {
-            Vec::new()
-        } else {
-            with_doc(vm, h, n.doc, |d| {
-                d.descendants(n.id)
-                    .zip(d.descendants(id))
-                    .filter(|(a, _)| set.contains(&n.with(*a).pack()))
-                    .map(|(_, b)| n.with(b).pack())
-                    .collect()
-            })?
-        }
+        pairs.iter().filter(|(a, _)| set.contains(&a.pack())).map(|(_, b)| b.pack()).collect()
     };
     h.started_scripts.borrow_mut().extend(started);
     // DOM §4.5 "clone a node" step 2.2: copies are created with their `is` values, and those
     // with a definition get an upgrade reaction.
     crate::ce::enter(h);
-    let pairs: Vec<(NodeRef, NodeRef)> = with_doc(vm, h, n.doc, |d| {
-        d.descendants(n.id).zip(d.descendants(id)).map(|(a, b)| (n.with(a), n.with(b))).collect()
-    })?;
     crate::ce::cloned(vm, h, &pairs);
     crate::ce::leave(vm, h);
     Ok(n.with(id))
@@ -867,7 +867,7 @@ fn query(vm: &mut Vm, h: &Host, n: NodeRef, sel: &str, first: bool) -> JsResult<
         for x in d.descendants(n.id) {
             if x != n.id
                 && d.node(x).is_element()
-                && bb_css::selectors::matches_any(&list, bb_style::DomElement { doc: d, id: x })
+                && bb_css::selectors::matches_any(&list, bb_style::DomElement::new(d, x))
             {
                 out.push(n.with(x));
                 if first {
@@ -885,9 +885,7 @@ fn matches_selector(vm: &mut Vm, h: &Host, n: NodeRef, sel: &str) -> JsResult<bo
     let Some(list) = bb_css::selectors::parse_selector_list(&cvs) else {
         return throw(vm, "SyntaxError", &format!("'{sel}' is not a valid selector"));
     };
-    with_doc(vm, h, n.doc, |d| {
-        bb_css::selectors::matches_any(&list, bb_style::DomElement { doc: d, id: n.id })
-    })
+    with_doc(vm, h, n.doc, |d| bb_css::selectors::matches_any(&list, bb_style::DomElement::new(d, n.id)))
 }
 
 /// ChildNode (DOM §4.2.8) on Element, CharacterData and DocumentType.
@@ -1302,8 +1300,8 @@ pub fn setup_document(vm: &mut Vm, proto: ObjRef) {
             v => vm.to_boolean(&v),
         };
         let is_doc = node.id == Document::ROOT;
-        if is_doc {
-            return throw(vm, "NotSupportedError", "documents can't be imported");
+        if is_doc || crate::shadow::is_shadow_root(vm, &h, node)? {
+            return throw(vm, "NotSupportedError", "documents and shadow roots can't be imported");
         }
         let copy = clone_node(vm, &h, node, deep)?;
         let r = tree::adopt(vm, &h, copy, n.doc)?;
@@ -1318,6 +1316,9 @@ pub fn setup_document(vm: &mut Vm, proto: ObjRef) {
         let node = arg_node(vm, &c.arg(0), "parameter 1")?;
         if node.id == Document::ROOT {
             return throw(vm, "NotSupportedError", "documents can't be adopted");
+        }
+        if crate::shadow::is_shadow_root(vm, &h, node)? {
+            return throw(vm, "HierarchyRequestError", "shadow roots can't be adopted");
         }
         tree::adopt(vm, &h, node, n.doc)?;
         Ok(c.arg(0))

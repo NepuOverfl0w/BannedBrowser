@@ -22,6 +22,9 @@ fn pump(vm: &mut Vm, h: &Host, end: Option<usize>) -> Option<NodeId> {
         let tb = p.as_mut()?;
         let mut docs = h.docs.try_borrow_mut().ok()?;
         let before = docs[0].len();
+        let disabled: Vec<String> =
+            h.ce.borrow().defs.iter().filter(|d| d.disable_shadow).map(|d| d.name.clone()).collect();
+        tb.set_shadow_disabled_names(disabled);
         std::mem::swap(&mut tb.doc, &mut docs[0]);
         let r = match end {
             Some(e) => tb.pump_until(e),
@@ -100,6 +103,7 @@ fn parsed_records(vm: &mut Vm, h: &Host, before: usize) {
 pub fn load(vm: &mut Vm, h: &Host, html: &str) {
     let mut tb = TreeBuilder::new(html);
     tb.set_scripting(true);
+    tb.set_allow_declarative_shadow_roots(true);
     *h.parser.borrow_mut() = Some(Box::new(tb));
     h.ready_state.set(ReadyState::Loading);
     while let Some(script) = pump(vm, h, None) {
@@ -220,7 +224,7 @@ pub fn prepare_script(vm: &mut Vm, h: &Host, s: NodeRef, parser_inserted: bool) 
         return;
     }
     let info = with_doc(vm, h, s.doc, |d| {
-        let connected = std::iter::once(s.id).chain(d.ancestors(s.id)).last() == Some(Document::ROOT);
+        let connected = d.is_connected(s.id);
         (
             script_type(d, s.id),
             d.attr(s.id, "src").map(str::to_string),
@@ -294,9 +298,11 @@ fn execute_element(vm: &mut Vm, h: &Host, s: NodeRef) {
         None => (text, None),
     };
     let el = wrap(vm, h, s).unwrap_or(Value::Null);
+    // Step 6.1: currentScript is the element, unless it is in a shadow tree.
+    let in_shadow = with_doc(vm, h, s.doc, |d| d.containing_shadow_root(s.id).is_some()).unwrap_or(false);
     let prev = std::mem::replace(
         &mut *h.current_script.borrow_mut(),
-        if ty == ScriptType::Module { Value::Null } else { el },
+        if ty == ScriptType::Module || in_shadow { Value::Null } else { el },
     );
     let key = url.as_ref().map(|u| u.href()).unwrap_or_else(|| h.url.borrow().href());
     // HTML §4.12.1.2 step 4: an external script can't replace the document by writing.
@@ -433,6 +439,7 @@ pub fn document_open(vm: &mut Vm, h: &Host, doc: u32) -> JsResult<()> {
     // Steps 15–18: a new script-created parser, readiness "loading".
     let mut tb = TreeBuilder::new("");
     tb.set_scripting(true);
+    tb.set_allow_declarative_shadow_roots(true);
     *h.parser.borrow_mut() = Some(Box::new(tb));
     h.frames.borrow_mut().script_parser = true;
     h.ready_state.set(ReadyState::Loading);

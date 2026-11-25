@@ -272,7 +272,7 @@ pub fn add_transient_observers(vm: &mut Vm, h: &Host, parent: NodeRef, node: Nod
     Ok(())
 }
 
-fn queue_microtask(vm: &mut Vm, h: &Host) {
+pub fn queue_microtask(vm: &mut Vm, h: &Host) {
     if h.mo.borrow().microtask_queued {
         return;
     }
@@ -300,7 +300,8 @@ fn notify(vm: &mut Vm, _c: NativeCall) -> R {
         set.sort_unstable();
         set
     };
-    // Step 4 (signal slots) has nothing to do: no slot gets assigned nodes without shadow trees.
+    // Step 4.
+    let signals = crate::shadow::take_signals(&h);
     for id in set {
         let (obj, records) = {
             let mut st = h.mo.borrow_mut();
@@ -324,6 +325,11 @@ fn notify(vm: &mut Vm, _c: NativeCall) -> R {
             }
             crate::events::report_exception(vm, e);
         }
+    }
+    // Step 7.
+    for slot in signals {
+        let t = wrap(vm, &h, slot)?;
+        crate::events::fire(vm, &h, t, "slotchange", true, false)?;
     }
     Ok(Value::Undefined)
 }
@@ -613,6 +619,7 @@ fn handle_change_steps(
         },
     )?;
     if ns == Namespace::None {
+        crate::shadow::attribute_changed(vm, h, n, local);
         crate::events::attribute_changed(vm, h, n, local)?;
         // HTML §4.12.5: a canvas's width or height attribute set resets its bitmap.
         if matches!(local, "width" | "height") && with_doc(vm, h, n.doc, |d| d.is_html(n.id, "canvas"))? {

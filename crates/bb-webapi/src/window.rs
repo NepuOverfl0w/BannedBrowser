@@ -58,7 +58,24 @@ pub fn setup_window(vm: &mut Vm, _proto: ObjRef) {
         },
         None,
     );
-    attr(vm, g, "event", |_, _| Ok(Value::Undefined), Some(|_, _| Ok(Value::Undefined)));
+    // HTML §7.2.2 window.event ([Replaceable]): the event being dispatched, if any.
+    attr(
+        vm,
+        g,
+        "event",
+        |vm, _| {
+            let h = host(vm)?;
+            Ok(h.current_event.get().map_or(Value::Undefined, Value::Object))
+        },
+        Some(|vm, c| {
+            let g = vm.realm.global;
+            vm.heap.obj_mut(g).props.insert(
+                bb_js::vm::PropKey::lit("event"),
+                bb_js::vm::heap::Prop::data(c.arg(0), true, true, true),
+            );
+            Ok(Value::Undefined)
+        }),
+    );
     for (name, f) in [
         ("innerWidth", (|vm, _| viewport(vm, 0)) as bb_js::vm::heap::NativeFn),
         ("innerHeight", |vm, _| viewport(vm, 1)),

@@ -32,6 +32,7 @@ pub mod net;
 pub mod port;
 pub mod range;
 pub mod selection;
+pub mod shadow;
 pub mod storage;
 pub mod streams;
 pub mod traversal;

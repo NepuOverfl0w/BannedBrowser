@@ -19,15 +19,15 @@ fn is_element(doc: &Document, id: NodeId) -> bool {
     doc.node(id).is_element()
 }
 
-/// Whether `a` is an inclusive ancestor of `b` (template contents count as children of
-/// their template: "host-including").
+/// Whether `a` is a host-including inclusive ancestor of `b` (DOM §4.2.2.1: a shadow root,
+/// and a template's contents, count as children of their host).
 pub fn is_inclusive_ancestor(doc: &Document, a: NodeId, b: NodeId) -> bool {
     let mut cur = Some(b);
     while let Some(c) = cur {
         if c == a {
             return true;
         }
-        cur = doc.parent(c).or_else(|| template_host(doc, c));
+        cur = doc.parent_or_host(c).or_else(|| template_host(doc, c));
     }
     false
 }
@@ -274,6 +274,8 @@ fn insert_steps(
         with_doc_mut(vm, h, parent.doc, |d| d.insert_before(parent.id, n.id, child))?;
         inserted.push(n);
     }
+    // Steps 7.4–7.5 and 7.6: slots of the trees that changed are reassigned.
+    crate::shadow::tree_changed(vm, h, parent);
     // Step 8.
     if !suppress {
         crate::mutation::tree_record(
@@ -290,14 +292,13 @@ fn insert_steps(
     // order); a script whose text was added to a connected script element is too.
     if parent.doc == 0 {
         let scripts: Vec<NodeRef> = with_doc(vm, h, 0, |d| {
-            let connected =
-                |x: NodeId| std::iter::once(x).chain(d.ancestors(x)).last() == Some(Document::ROOT);
+            let connected = |x: NodeId| d.is_connected(x);
             let mut out: Vec<NodeRef> = Vec::new();
             for n in &inserted {
                 if !connected(n.id) {
                     continue;
                 }
-                for x in d.descendants(n.id) {
+                for x in d.shadow_including_descendants(n.id) {
                     if d.is_html(x, "script") {
                         out.push(n.with(x));
                     }
@@ -407,6 +408,8 @@ fn remove_steps(vm: &mut Vm, h: &Host, node: NodeRef, suppress: bool) -> JsResul
     let Some((parent, prev, next)) = info else { return Ok(()) };
     // Step 10.
     with_doc_mut(vm, h, node.doc, |d| d.detach(node.id))?;
+    // Steps 12–13: slot reassignment and fallback content changes.
+    crate::shadow::tree_changed(vm, h, parent);
     // HTML §4.8.5 iframe "removing steps": frames whose containers left go away.
     if node.doc == 0 {
         crate::frames::nodes_removed(vm, h);
@@ -504,6 +507,7 @@ fn adopt_steps(vm: &mut Vm, h: &Host, node: NodeRef, doc: u32) -> JsResult<NodeR
     crate::range::remap(h, &packed);
     crate::traversal::remap(h, &packed);
     crate::ce::adopted(vm, h, &packed, node.doc, doc);
+    crate::shadow::adopted(vm, h, &packed, node.doc, doc);
     // Static node lists (mutation records' addedNodes, …) follow too.
     let map: std::collections::HashMap<u64, u64> = packed.iter().copied().collect();
     for c in h.collections.borrow_mut().iter_mut() {

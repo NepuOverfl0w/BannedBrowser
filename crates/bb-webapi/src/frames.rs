@@ -211,21 +211,24 @@ fn top_of(h: &Rc<Host>) -> Rc<Host> {
 }
 
 fn connected(d: &Document, x: NodeId) -> bool {
-    std::iter::once(x).chain(d.ancestors(x)).last() == Some(Document::ROOT)
+    d.is_connected(x)
 }
 
 /// The child windows in tree order of their containers (HTML §7.3.1.1 "document-tree child
 /// navigables").
 pub fn children(h: &Host) -> Vec<(NodeId, Rc<Host>)> {
-    let kids: Vec<(NodeId, Rc<Host>)> =
+    let mut kids: Vec<(NodeId, Rc<Host>)> =
         h.frames.borrow().children.iter().filter_map(|c| Some((c.container, c.nav.host()?))).collect();
+    let Ok(docs) = h.docs.try_borrow() else { return kids };
+    // Containers in shadow trees have child navigables, but not document-tree ones.
+    if docs[0].has_shadow_trees() {
+        kids.retain(|k| docs[0].tree_root(k.0) == Document::ROOT);
+    }
     if kids.len() < 2 {
         return kids;
     }
-    let Ok(docs) = h.docs.try_borrow() else { return kids };
     let order: Vec<NodeId> =
         docs[0].descendants(Document::ROOT).filter(|x| kids.iter().any(|k| k.0 == *x)).collect();
-    let mut kids = kids;
     kids.sort_by_key(|k| order.iter().position(|x| *x == k.0).unwrap_or(usize::MAX));
     kids
 }
@@ -821,7 +824,7 @@ pub fn nodes_inserted(vm: &mut Vm, h: &Rc<Host>, roots: &[NodeId]) -> JsResult<(
             if !connected(d, r) {
                 continue;
             }
-            for x in d.descendants(r) {
+            for x in d.shadow_including_descendants(r) {
                 if d.is_html(x, "iframe") || d.is_html(x, "frame") {
                     out.push(x);
                 }

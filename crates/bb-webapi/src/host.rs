@@ -337,6 +337,10 @@ pub struct Host {
     pub frames: RefCell<crate::frames::FrameState>,
     /// Custom element definitions and element states (HTML §4.13).
     pub ce: RefCell<crate::ce::Registry>,
+    /// HTML §7.2.2 the window's current event.
+    pub current_event: Cell<Option<ObjRef>>,
+    /// Slots' last-known assigned nodes and the signal slots (DOM §4.2.2.5).
+    pub slots: RefCell<crate::shadow::SlotState>,
 }
 
 impl Host {
@@ -395,6 +399,8 @@ impl Host {
             canvas: RefCell::default(),
             frames: RefCell::default(),
             ce: RefCell::default(),
+            current_event: Cell::new(None),
+            slots: RefCell::default(),
         }
     }
 
@@ -458,6 +464,7 @@ impl Host {
         self.canvas.borrow().trace(out);
         self.frames.borrow().trace(out);
         self.ce.borrow().trace(out);
+        out.extend(self.current_event.get());
         for v in self.blob_urls.borrow().values() {
             push(v, out);
         }

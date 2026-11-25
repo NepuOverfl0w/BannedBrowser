@@ -59,6 +59,18 @@ pub fn dom_parser_ctor(vm: &mut Vm, c: NativeCall) -> R {
     Ok(Value::Object(vm.new_host_object(Some(proto), C::DOMParser as u32, 0, false)))
 }
 
+/// HTML §8.4.2 `Document.parseHTMLUnsafe(html)`: a new HTML document, declarative shadow
+/// roots allowed (scripts don't run: it has no browsing context).
+pub fn setup_document_statics(vm: &mut Vm, ctor: ObjRef) {
+    op(vm, ctor, "parseHTMLUnsafe", 1, |vm, c| {
+        let text = rstr(vm, &c.arg(0))?;
+        let h = host(vm)?;
+        let idx = install(&h, bb_html::parse_document_with_shadow_roots(&text), "text/html", "about:blank");
+        mark_scripts_started(&h, idx);
+        wrap(vm, &h, NodeRef { doc: idx, id: Document::ROOT })
+    });
+}
+
 pub fn setup_dom_parser(vm: &mut Vm, proto: ObjRef) {
     // HTML §8.5.1 parseFromString(string, type).
     op(vm, proto, "parseFromString", 2, |vm, c| {
@@ -118,7 +130,8 @@ pub fn mark_scripts_started(h: &Host, idx: u32) {
     let scripts: Vec<u64> = {
         let Ok(docs) = h.docs.try_borrow() else { return };
         let Some(d) = docs.get(idx as usize) else { return };
-        d.descendants(Document::ROOT)
+        d.shadow_including_descendants(Document::ROOT)
+            .into_iter()
             .filter(|&x| d.element(x).is_some_and(|e| e.name == "script"))
             .map(|x| NodeRef { doc: idx, id: x }.pack())
             .collect()

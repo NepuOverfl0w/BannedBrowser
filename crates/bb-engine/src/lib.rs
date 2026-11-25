@@ -219,7 +219,7 @@ pub(crate) fn subresource_context(page_url: &Url) -> bb_net::cookies::CookieCont
 /// change it, the sheets are collected again).
 pub(crate) fn style_signature(doc: &Document) -> String {
     let mut s = String::new();
-    for n in doc.descendants(Document::ROOT) {
+    for n in doc.shadow_including_descendants(Document::ROOT) {
         if doc.is_html(n, "style") {
             s.push_str(&doc.text_content(n));
             s.push('\u{1}');
@@ -350,22 +350,24 @@ pub(crate) fn collect_stylesheets(
         Inline(String, MediaQueryList),
         External(Url, MediaQueryList),
     }
+    // Sheets in shadow trees style only their tree (CSS Scoping §3), so each has its scope.
     let mut srcs = Vec::new();
-    for n in doc.descendants(Document::ROOT) {
+    for n in doc.shadow_including_descendants(Document::ROOT) {
         let Some(e) = doc.element(n) else { continue };
         if e.ns != bb_dom::Namespace::Html {
             continue;
         }
+        let scope = doc.containing_shadow_root(n);
         let media_attr = || e.attr("media").map(MediaQueryList::parse_str).unwrap_or_default();
         if e.name == "style" {
-            srcs.push(Src::Inline(doc.text_content(n), media_attr()));
+            srcs.push((Src::Inline(doc.text_content(n), media_attr()), scope));
         } else if e.name == "link" {
             let rel = e.attr("rel").unwrap_or("").to_ascii_lowercase();
             let rels: Vec<&str> = rel.split_ascii_whitespace().collect();
             if rels.contains(&"stylesheet") && !rels.contains(&"alternate") {
                 if let Some(href) = e.attr("href") {
                     if let Ok(u) = base.join(href.trim()) {
-                        srcs.push(Src::External(u, media_attr()));
+                        srcs.push((Src::External(u, media_attr()), scope));
                     }
                 }
             }
@@ -374,11 +376,12 @@ pub(crate) fn collect_stylesheets(
     // Fetch external sheets in parallel.
     let urls: Vec<Url> = srcs
         .iter()
-        .filter_map(|s| if let Src::External(u, _) = s { Some(u.clone()) } else { None })
+        .filter_map(|(s, _)| if let Src::External(u, _) = s { Some(u.clone()) } else { None })
         .collect();
     let fetched = fetch_texts(client, &urls, deadline, base);
     let mut out = Vec::new();
-    for s in srcs {
+    for (s, scope) in srcs {
+        let start = out.len();
         match s {
             Src::Inline(css, m) => {
                 let ss = Stylesheet::parse(&css);
@@ -390,6 +393,9 @@ pub(crate) fn collect_stylesheets(
                     resolve_imports(client, ss, &u, m, media, deadline, 0, &mut out);
                 }
             }
+        }
+        for sheet in &mut out[start..] {
+            sheet.scope = scope;
         }
     }
     out
@@ -427,7 +433,7 @@ fn resolve_imports(
             }
         }
     }
-    out.push(Sheet { origin: Origin::Author, stylesheet: Rc::new(ss), media });
+    out.push(Sheet { origin: Origin::Author, stylesheet: Rc::new(ss), media, scope: None });
 }
 
 /// Fetch subresources of the document at `page_url` in parallel.
@@ -634,7 +640,7 @@ impl Page {
             window = Some(w);
             d
         } else {
-            bb_html::parse_document(html)
+            bb_html::parse_document_with_shadow_roots(html)
         };
         doc.url = url.href();
         Self::assemble(

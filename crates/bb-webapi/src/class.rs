@@ -39,6 +39,7 @@ interfaces! {
     XMLDocument: Document;
     DocumentType: Node;
     DocumentFragment: Node;
+    ShadowRoot: DocumentFragment;
     CharacterData: Node;
     Text: CharacterData;
     CDATASection: Text;
@@ -323,6 +324,7 @@ pub fn is_valid_custom_element_name(n: &str) -> bool {
 pub fn node_class(doc: &Document, id: NodeId) -> C {
     match &doc.node(id).data {
         NodeData::Document => C::Document,
+        NodeData::DocumentFragment if doc.is_shadow_root(id) => C::ShadowRoot,
         NodeData::DocumentFragment => C::DocumentFragment,
         NodeData::Doctype { .. } => C::DocumentType,
         NodeData::Element(e) => match e.ns {
@@ -511,14 +513,25 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef, worker: bool) {
     match c {
         C::EventTarget => crate::events::setup_event_target(vm, proto),
         C::Node => crate::dom::setup_node(vm, proto, ctor),
-        C::Document => crate::dom::setup_document(vm, proto),
+        C::Document => {
+            crate::dom::setup_document(vm, proto);
+            crate::xml::setup_document_statics(vm, ctor);
+        }
         C::DocumentType => crate::dom::setup_doctype(vm, proto),
         C::DocumentFragment => crate::dom::setup_fragment(vm, proto),
         C::CharacterData => crate::dom::setup_chardata(vm, proto),
-        C::Text => crate::dom::setup_text(vm, proto),
+        C::Text => {
+            crate::dom::setup_text(vm, proto);
+            crate::shadow::setup_text(vm, proto);
+        }
+        C::ShadowRoot => crate::shadow::setup_shadow_root(vm, proto),
+        C::HTMLSlotElement => crate::shadow::setup_slot(vm, proto),
         C::ProcessingInstruction => crate::dom::setup_pi(vm, proto),
         C::Attr => crate::attr::setup_attr(vm, proto),
-        C::Element => crate::dom::setup_element(vm, proto),
+        C::Element => {
+            crate::dom::setup_element(vm, proto);
+            crate::shadow::setup_element(vm, proto);
+        }
         C::HTMLElement => crate::html::setup_html_element(vm, proto),
         C::SVGElement | C::MathMLElement => {
             crate::css::setup_inline_style(vm, proto);
@@ -536,6 +549,7 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef, worker: bool) {
         C::SubmitEvent => crate::events::setup_submit_event(vm, proto),
         C::CustomElementRegistry => crate::ce::setup_registry(vm, proto),
         C::MouseEvent => crate::events::setup_mouse_event(vm, proto),
+        C::FocusEvent => crate::events::setup_focus_event(vm, proto),
         C::KeyboardEvent => crate::events::setup_keyboard_event(vm, proto),
         C::ErrorEvent => crate::events::setup_error_event(vm, proto),
         C::Window => {

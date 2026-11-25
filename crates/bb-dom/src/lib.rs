@@ -11,8 +11,12 @@ mod dump;
 pub mod form_data;
 mod forms;
 mod select;
-pub use dump::{dump_html5lib, serialize_html};
+mod shadow;
+pub use dump::{
+    dump_html5lib, is_void, serialize_children_html, serialize_html, serialize_shadow_template, Shadows,
+};
 pub use forms::{sanitize_value, InputType, FORM_ASSOCIATED, LISTED};
+pub use shadow::{ShadowRootInfo, SlotAssignment};
 
 /// CR LF and lone CR become LF (HTML's newline normalization).
 pub fn normalize_newlines(s: &str) -> String {
@@ -26,7 +30,7 @@ pub fn normalize_newlines(s: &str) -> String {
 use bitflags::bitflags;
 
 /// Index of a node in its document's arena.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord, Default)]
 pub struct NodeId(pub u32);
 
 impl NodeId {
@@ -252,6 +256,8 @@ pub struct Document {
     select_state: select::SelectState,
     /// Form control values, checkedness and parser-set form owners (see `forms.rs`).
     form_state: forms::FormState,
+    /// Shadow roots and manual slot assignments (see `shadow.rs`).
+    shadow: shadow::ShadowState,
 }
 
 impl Default for Document {
@@ -272,6 +278,7 @@ impl Document {
             generation: 0,
             select_state: Default::default(),
             form_state: Default::default(),
+            shadow: Default::default(),
         }
     }
 
@@ -538,10 +545,19 @@ impl Document {
     /// A copy of node `id` of document `src` (and its descendants, for `deep`) in this one,
     /// not inserted anywhere. Returns the copy and the (source, copy) pairs of every node
     /// copied, in tree order.
+    /// Shadow roots go along (with `deep`), as adopting a node takes its shadow-including
+    /// descendants.
     pub fn import_node(&mut self, src: &Document, id: NodeId, deep: bool) -> (NodeId, Vec<(NodeId, NodeId)>) {
         let mut pairs = Vec::new();
-        let copy = self.import_rec(src, id, deep, &mut pairs);
+        let copy = self.import_rec(src, id, deep, false, &mut pairs);
         (copy, pairs)
+    }
+
+    /// Like [`Document::import_node`] with `deep`, but as DOM §4.4 "clone a node" does it:
+    /// only clonable shadow roots are copied.
+    pub fn import_clone(&mut self, src: &Document, id: NodeId) -> NodeId {
+        let mut pairs = Vec::new();
+        self.import_rec(src, id, true, true, &mut pairs)
     }
 
     fn import_rec(
@@ -549,6 +565,7 @@ impl Document {
         src: &Document,
         id: NodeId,
         deep: bool,
+        cloning: bool,
         pairs: &mut Vec<(NodeId, NodeId)>,
     ) -> NodeId {
         let copy = self.alloc_copy(src.nodes[id.index()].data.clone());
@@ -557,15 +574,27 @@ impl Document {
         }
         pairs.push((id, copy));
         if deep {
+            if let Some(sr) = src.shadow_root(id) {
+                if !cloning || src.shadow_info(sr).is_some_and(|i| i.clonable) {
+                    if let Some(to) = self.copy_shadow_from(src, sr, copy) {
+                        pairs.push((sr, to));
+                        let kids: Vec<NodeId> = src.children(sr).collect();
+                        for k in kids {
+                            let c = self.import_rec(src, k, true, cloning, pairs);
+                            self.append_child(to, c);
+                        }
+                    }
+                }
+            }
             let kids: Vec<NodeId> = src.children(id).collect();
             for k in kids {
-                let c = self.import_rec(src, k, true, pairs);
+                let c = self.import_rec(src, k, true, cloning, pairs);
                 self.append_child(copy, c);
             }
             if let (Some(s), Some(d)) = (src.template_of(id), self.template_of(copy)) {
                 let kids: Vec<NodeId> = src.children(s).collect();
                 for k in kids {
-                    let c = self.import_rec(src, k, true, pairs);
+                    let c = self.import_rec(src, k, true, cloning, pairs);
                     self.append_child(d, c);
                 }
             }

@@ -324,8 +324,26 @@ pub fn outer_html_get(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
 
 /// HTML §13.4 fragment parsing with `context`, imported into document `doc` as a fragment.
 /// Scripts in it never run (they are marked "already started").
-fn parse_fragment_into(vm: &mut Vm, h: &Host, doc: u32, context: NodeRef, markup: &str) -> JsResult<NodeRef> {
-    parse_fragment_scripts(vm, h, doc, context, markup, false)
+pub fn parse_fragment_into(
+    vm: &mut Vm,
+    h: &Host,
+    doc: u32,
+    context: NodeRef,
+    markup: &str,
+) -> JsResult<NodeRef> {
+    parse_fragment_scripts(vm, h, doc, context, markup, false, false)
+}
+
+/// [`parse_fragment_into`] with declarative shadow roots allowed (HTML §8.4.1 "unsafely set
+/// HTML").
+pub fn parse_fragment_shadow(
+    vm: &mut Vm,
+    h: &Host,
+    doc: u32,
+    context: NodeRef,
+    markup: &str,
+) -> JsResult<NodeRef> {
+    parse_fragment_scripts(vm, h, doc, context, markup, false, true)
 }
 
 /// Fragment parsing; `scripts_run` leaves the scripts able to run when inserted.
@@ -336,6 +354,7 @@ fn parse_fragment_scripts(
     context: NodeRef,
     markup: &str,
     scripts_run: bool,
+    shadow_roots: bool,
 ) -> JsResult<NodeRef> {
     // XML documents use the XML fragment parsing algorithm (HTML §13.4).
     if !crate::dom::is_html_doc(h, doc) {
@@ -344,7 +363,8 @@ fn parse_fragment_scripts(
     let (ns, name) = with_doc(vm, h, context.doc, |d| {
         d.element(context.id).map_or((Namespace::Html, "body".to_string()), |e| (e.ns, e.name.clone()))
     })?;
-    let (src, root) = bb_html::parse_fragment(markup, ns, &name);
+    let (src, root) =
+        bb_html::tree_builder::TreeBuilder::parse_fragment_with(markup, ns, &name, shadow_roots);
     let (frag, pairs) = with_doc_mut(vm, h, doc, |d| {
         let frag = d.create_fragment();
         let mut all = Vec::new();
@@ -389,7 +409,7 @@ pub fn create_contextual_fragment(vm: &mut Vm, h: &Host, node: NodeRef, markup: 
         Some(e) if !is_html_root => node.with(e),
         _ => node.with(with_doc_mut(vm, h, node.doc, |d| d.create_html_element("body"))?),
     };
-    parse_fragment_scripts(vm, h, node.doc, context, markup, true)
+    parse_fragment_scripts(vm, h, node.doc, context, markup, true, false)
 }
 
 pub fn inner_html_set(vm: &mut Vm, c: NativeCall) -> JsResult<Value> {
@@ -924,8 +944,52 @@ pub fn setup_element_interface(vm: &mut Vm, c: C, proto: ObjRef) {
                 },
                 None,
             );
+            // HTML §4.12.3: shadowRootMode reflects shadowrootmode, limited to known values.
+            attr(
+                vm,
+                proto,
+                "shadowRootMode",
+                |vm, c| {
+                    let (h, n) = this_node(vm, &c.this, C::HTMLTemplateElement)?;
+                    let v = with_doc(vm, &h, n.doc, |d| {
+                        d.attr(n.id, "shadowrootmode").map(str::to_ascii_lowercase)
+                    })?;
+                    Ok(js(match v.as_deref() {
+                        Some("open") => "open",
+                        Some("closed") => "closed",
+                        _ => "",
+                    }))
+                },
+                Some(|vm, c| {
+                    let v = rstr(vm, &c.arg(0))?;
+                    let (h, n) = this_node(vm, &c.this, C::HTMLTemplateElement)?;
+                    crate::mutation::set_or_remove(vm, &h, n, "shadowrootmode", Some(&v))?;
+                    Ok(Value::Undefined)
+                }),
+            );
+            attr(
+                vm,
+                proto,
+                "shadowRootSlotAssignment",
+                |vm, c| {
+                    let (h, n) = this_node(vm, &c.this, C::HTMLTemplateElement)?;
+                    let manual = with_doc(vm, &h, n.doc, |d| {
+                        d.attr(n.id, "shadowrootslotassignment")
+                            .is_some_and(|v| v.eq_ignore_ascii_case("manual"))
+                    })?;
+                    Ok(js(if manual { "manual" } else { "named" }))
+                },
+                Some(|vm, c| {
+                    let v = rstr(vm, &c.arg(0))?;
+                    let (h, n) = this_node(vm, &c.this, C::HTMLTemplateElement)?;
+                    crate::mutation::set_or_remove(vm, &h, n, "shadowrootslotassignment", Some(&v))?;
+                    Ok(Value::Undefined)
+                }),
+            );
+            reflect(vm, proto, "shadowRootDelegatesFocus", "shadowrootdelegatesfocus", Bool);
+            reflect(vm, proto, "shadowRootClonable", "shadowrootclonable", Bool);
+            reflect(vm, proto, "shadowRootSerializable", "shadowrootserializable", Bool);
         }
-        C::HTMLSlotElement => reflect(vm, proto, "name", "name", Str),
         C::HTMLHtmlElement => reflect(vm, proto, "version", "version", Str),
         C::HTMLBodyElement => s(vm, &["text", "link", "vLink", "aLink", "bgColor", "background"]),
         C::HTMLHeadingElement

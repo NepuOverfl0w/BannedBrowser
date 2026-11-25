@@ -57,6 +57,10 @@ pub enum PseudoClass {
     Indeterminate,
     Defined,
     Scope,
+    /// CSS Scoping §3.2.1 `:host` / `:host(<compound>)`: the shadow host, from its shadow tree.
+    Host(Option<SelectorList>),
+    /// `:host-context(<compound>)`: the host, if it or a shadow-including ancestor matches.
+    HostContext(SelectorList),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -92,6 +96,9 @@ pub enum Combinator {
     Child,
     NextSibling,
     SubsequentSibling,
+    /// `X::slotted(Y)` (CSS Scoping §3.2.2), stored as `Y` joined to `X`: from a slotted
+    /// element to the slot it is assigned to.
+    Slotted,
 }
 
 /// A complex selector, stored right-to-left.
@@ -127,6 +134,24 @@ pub trait Element: Copy {
     /// Answer state pseudo-classes (`:hover`, `:link`, …).
     fn match_state(&self, pc: &PseudoClass) -> bool;
     fn same(&self, other: &Self) -> bool;
+    /// A shadow host seen from its shadow tree (CSS Scoping §3.1): "featureless", matched only
+    /// by `:host`, `:host()` and `:host-context()`.
+    fn is_featureless(&self) -> bool {
+        false
+    }
+    /// The same element, not featureless (for `:host(<compound>)`).
+    fn as_featured(&self) -> Self {
+        *self
+    }
+    /// The parent element across shadow boundaries (for `:host-context()`).
+    fn shadow_including_parent(&self) -> Option<Self> {
+        self.parent_element()
+    }
+    /// The slot this element is assigned to, in the shadow tree whose rules are matching
+    /// (for `::slotted()`).
+    fn assigned_slot(&self) -> Option<Self> {
+        None
+    }
 }
 
 // ---------------- parsing ----------------
@@ -180,11 +205,20 @@ fn parse_complex(cvs: &[Cv]) -> Option<Selector> {
     let mut combs_ltr: Vec<Combinator> = Vec::new();
     let mut pseudo_element = None;
     loop {
-        let (compound, pe) = parse_compound(&mut cur)?;
-        if compound.is_empty() && pe.is_none() {
+        let (compound, pe, slotted) = parse_compound(&mut cur)?;
+        if compound.is_empty() && pe.is_none() && slotted.is_none() {
             return None;
         }
         compounds_ltr.push(if compound.is_empty() { vec![Simple::Universal] } else { compound });
+        if let Some(arg) = slotted {
+            cur.skip_ws();
+            if cur.peek().is_some() {
+                return None; // nothing may follow ::slotted() (in our subset)
+            }
+            combs_ltr.push(Combinator::Slotted);
+            compounds_ltr.push(arg);
+            break;
+        }
         if pe.is_some() {
             pseudo_element = pe;
             cur.skip_ws();
@@ -223,7 +257,10 @@ fn parse_complex(cvs: &[Cv]) -> Option<Selector> {
     Some(sel)
 }
 
-fn parse_compound(cur: &mut Cursor) -> Option<(Vec<Simple>, Option<PseudoElement>)> {
+/// A compound selector, its pseudo-element, and a `::slotted()` argument.
+type Compound = (Vec<Simple>, Option<PseudoElement>, Option<Vec<Simple>>);
+
+fn parse_compound(cur: &mut Cursor) -> Option<Compound> {
     let mut out = Vec::new();
     // Type or universal selector, with optional namespace prefix.
     match cur.peek() {
@@ -287,9 +324,12 @@ fn parse_compound(cur: &mut Cursor) -> Option<(Vec<Simple>, Option<PseudoElement
                     cur.next();
                     let pe = match cur.next() {
                         Some(Cv::Token(Token::Ident(n))) => parse_pseudo_element(n)?,
+                        Some(Cv::Function(name, args)) if name.eq_ignore_ascii_case("slotted") => {
+                            return Some((out, None, Some(parse_single_compound(args)?)));
+                        }
                         _ => return None,
                     };
-                    return Some((out, Some(pe)));
+                    return Some((out, Some(pe), None));
                 }
                 match cur.next() {
                     Some(Cv::Token(Token::Ident(n))) => {
@@ -302,7 +342,7 @@ fn parse_compound(cur: &mut Cursor) -> Option<(Vec<Simple>, Option<PseudoElement
                             "first-letter" => Some(PseudoElement::FirstLetter),
                             _ => None,
                         } {
-                            return Some((out, Some(pe)));
+                            return Some((out, Some(pe), None));
                         }
                         out.push(Simple::Pseudo(parse_pseudo_class(&lower)?));
                     }
@@ -310,9 +350,29 @@ fn parse_compound(cur: &mut Cursor) -> Option<(Vec<Simple>, Option<PseudoElement
                     _ => return None,
                 }
             }
-            _ => return Some((out, None)),
+            _ => return Some((out, None, None)),
         }
     }
+}
+
+/// The argument of `::slotted()`, `:host()` and `:host-context()`: one compound selector.
+fn parse_single_compound(args: &[Cv]) -> Option<Vec<Simple>> {
+    let mut cur = Cursor { cvs: args, pos: 0 };
+    cur.skip_ws();
+    let (compound, pe, slotted) = parse_compound(&mut cur)?;
+    cur.skip_ws();
+    if pe.is_some() || slotted.is_some() || cur.peek().is_some() {
+        return None;
+    }
+    Some(if compound.is_empty() { vec![Simple::Universal] } else { compound })
+}
+
+fn compound_selector(args: &[Cv]) -> Option<SelectorList> {
+    let compound = parse_single_compound(args)?;
+    let mut sel =
+        Selector { compounds: vec![compound], combinators: Vec::new(), pseudo_element: None, specificity: 0 };
+    sel.specificity = specificity(&sel);
+    Some(vec![sel])
 }
 
 fn parse_pseudo_element(n: &str) -> Option<PseudoElement> {
@@ -360,6 +420,7 @@ fn parse_pseudo_class(n: &str) -> Option<PseudoClass> {
         "indeterminate" => P::Indeterminate,
         "defined" => P::Defined,
         "scope" => P::Scope,
+        "host" => P::Host(None),
         _ => return None,
     })
 }
@@ -381,6 +442,8 @@ fn parse_functional(name: &str, args: &[Cv]) -> Option<PseudoClass> {
                 _ => P::NthLastOfType(a, b),
             }
         }
+        "host" => P::Host(Some(compound_selector(args)?)),
+        "host-context" => P::HostContext(compound_selector(args)?),
         "lang" => {
             let v = args.iter().find_map(|c| match c {
                 Cv::Token(Token::Ident(s)) | Cv::Token(Token::String(s)) => Some(s.to_ascii_lowercase()),
@@ -558,11 +621,19 @@ pub fn specificity(sel: &Selector) -> u32 {
                     b += y;
                     c += z;
                 }
+                // CSS Scoping §3.2.1: a pseudo-class, plus its argument.
+                Simple::Pseudo(PseudoClass::Host(Some(l)) | PseudoClass::HostContext(l)) => {
+                    let (x, y, z) = list_max(l);
+                    a += x;
+                    b += y + 1;
+                    c += z;
+                }
                 Simple::Pseudo(_) => b += 1,
             }
         }
     }
-    if sel.pseudo_element.is_some() {
+    // A pseudo-element (`::slotted()` too: CSS Scoping §3.2.2).
+    if sel.pseudo_element.is_some() || sel.combinators.contains(&Combinator::Slotted) {
         c += 1;
     }
     (a.min(1023) << 20) | (b.min(1023) << 10) | c.min(1023)
@@ -614,6 +685,7 @@ fn match_from<E: Element>(sel: &Selector, idx: usize, el: E, depth: usize) -> bo
             }
             false
         }
+        Combinator::Slotted => el.assigned_slot().is_some_and(|s| match_from(sel, idx + 1, s, depth)),
     }
 }
 
@@ -626,6 +698,15 @@ fn eq_maybe_ci(a: &str, b: &str, ci: bool) -> bool {
 }
 
 fn match_compound<E: Element>(compound: &[Simple], el: E, depth: usize) -> bool {
+    if el.is_featureless() {
+        // Only the :host pseudo-classes match a featureless host (CSS Scoping §3.1).
+        let host =
+            |s: &Simple| matches!(s, Simple::Pseudo(PseudoClass::Host(_) | PseudoClass::HostContext(_)));
+        return compound.iter().any(host)
+            && compound
+                .iter()
+                .all(|s| matches!(s, Simple::Universal) || (host(s) && match_simple(s, el, depth)));
+    }
     compound.iter().all(|s| match_simple(s, el, depth))
 }
 
@@ -720,6 +801,25 @@ fn match_pseudo<E: Element>(pc: &PseudoClass, el: E, depth: usize) -> bool {
         P::Not(list) => !list.iter().any(|s| match_from(s, 0, el, depth + 1)),
         P::Is(list) | P::Where(list) => list.iter().any(|s| match_from(s, 0, el, depth + 1)),
         P::Has(list) => list.iter().any(|s| has_matches(s, el, depth + 1)),
+        P::Host(arg) => {
+            el.is_featureless()
+                && arg
+                    .as_ref()
+                    .is_none_or(|l| l.iter().any(|s| match_from(s, 0, el.as_featured(), depth + 1)))
+        }
+        P::HostContext(l) => {
+            if !el.is_featureless() {
+                return false;
+            }
+            let mut cur = Some(el.as_featured());
+            while let Some(e) = cur {
+                if l.iter().any(|s| match_from(s, 0, e, depth + 1)) {
+                    return true;
+                }
+                cur = e.shadow_including_parent();
+            }
+            false
+        }
         P::Lang(l) => {
             let mut cur = Some(el);
             while let Some(e) = cur {

@@ -37,6 +37,7 @@ const DIRS: &[&str] = &[
     "css/geometry",
     "custom-elements",
     "streams",
+    "shadow-dom",
 ];
 
 fn root() -> PathBuf {

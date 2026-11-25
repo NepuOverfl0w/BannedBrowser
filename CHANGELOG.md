@@ -44,11 +44,16 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   WritableStream, TransformStream, the queuing strategies, TextEncoderStream/TextDecoderStream,
   `Response.body` and `Blob.stream()` (byte streams and BYOB readers aren't done yet). The
   Geometry Interfaces: DOMPoint, DOMQuad, DOMMatrix (with CSS transform strings) and
-  `WebKitCSSMatrix`, structured-cloneable, and canvas transforms as DOMMatrix. The parser
+  `WebKitCSSMatrix`, structured-cloneable, and canvas transforms as DOMMatrix. Shadow DOM:
+  `attachShadow`, ShadowRoot, slots with named and manual assignment and `slotchange`,
+  declarative shadow DOM (`<template shadowrootmode>`, `setHTMLUnsafe`, `parseHTMLUnsafe`,
+  `getHTML`), events retargeted across shadow boundaries with `composedPath()`, and pages
+  rendering the flat tree with shadow-scoped styles (`:host`, `::slotted()`). The parser
   runs scripts as it goes, with `document.write`; script changes restyle and relayout the
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
   `dom/`, `domparsing/`, `FileAPI/`, `xhr/formdata/`, `url/`, `encoding/` and `fetch/api/headers/` tests
-  and `workers/`, `webmessaging/`, structured clone (92754/113919 subtests so far).
+  and `workers/`, `webmessaging/`, structured clone, `custom-elements/`, `streams/` and
+  `shadow-dom/` (101842/123460 subtests so far).
 - **JavaScript engine (milestone D):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262, and an interpreter: bytecode compiler, stack VM, garbage

@@ -92,15 +92,77 @@ fn escape(s: &str, attr: bool, out: &mut String) {
 /// Serialize `id` (and descendants) as HTML (HTML §13.3, simplified).
 pub fn serialize_html(doc: &Document, id: NodeId) -> String {
     let mut out = String::new();
-    ser(doc, id, &mut out);
+    ser(doc, id, &Shadows::NONE, &mut out);
     out
 }
 
-fn ser(doc: &Document, id: NodeId, out: &mut String) {
+/// Which shadow roots the HTML fragment serialization algorithm includes (HTML §13.3:
+/// `serializableShadowRoots` and `shadowRoots`).
+pub struct Shadows<'a> {
+    pub serializable: bool,
+    pub roots: &'a [NodeId],
+}
+
+impl Shadows<'_> {
+    pub const NONE: Shadows<'static> = Shadows { serializable: false, roots: &[] };
+}
+
+/// HTML §13.3 "serialize the children" of `id` (a template's contents for a template, and
+/// `shadows` included as declarative `<template>`s).
+pub fn serialize_children_html(doc: &Document, id: NodeId, shadows: &Shadows<'_>) -> String {
+    let mut out = String::new();
+    let src = doc.template_of(id).unwrap_or(id);
+    for c in doc.children(src) {
+        ser(doc, c, shadows, &mut out);
+    }
+    out
+}
+
+/// Whether `name` is an HTML void element (serialized without contents or an end tag).
+pub fn is_void(name: &str) -> bool {
+    VOID.contains(&name)
+}
+
+/// The declarative `<template>` for shadow root `sr` if `sh` includes it (HTML §13.3
+/// serialization step 4), else nothing.
+pub fn serialize_shadow_template(doc: &Document, sr: NodeId, sh: &Shadows<'_>) -> String {
+    let mut out = String::new();
+    shadow_template(doc, sr, sh, &mut out);
+    out
+}
+
+fn shadow_template(doc: &Document, sr: NodeId, sh: &Shadows<'_>, out: &mut String) {
+    let Some(info) = doc.shadow_info(sr) else { return };
+    if !((sh.serializable && info.serializable) || sh.roots.contains(&sr)) {
+        return;
+    }
+    out.push_str("<template shadowrootmode=\"");
+    out.push_str(if info.open { "open" } else { "closed" });
+    out.push('"');
+    if info.delegates_focus {
+        out.push_str(" shadowrootdelegatesfocus=\"\"");
+    }
+    if info.serializable {
+        out.push_str(" shadowrootserializable=\"\"");
+    }
+    if info.slot_assignment == crate::SlotAssignment::Manual {
+        out.push_str(" shadowrootslotassignment=\"manual\"");
+    }
+    if info.clonable {
+        out.push_str(" shadowrootclonable=\"\"");
+    }
+    out.push('>');
+    for c in doc.children(sr) {
+        ser(doc, c, sh, out);
+    }
+    out.push_str("</template>");
+}
+
+fn ser(doc: &Document, id: NodeId, sh: &Shadows<'_>, out: &mut String) {
     match &doc.node(id).data {
         NodeData::Document | NodeData::DocumentFragment => {
             for c in doc.children(id) {
-                ser(doc, c, out);
+                ser(doc, c, sh, out);
             }
         }
         NodeData::Doctype { name, .. } => out.push_str(&format!("<!DOCTYPE {name}>")),
@@ -139,9 +201,12 @@ fn ser(doc: &Document, id: NodeId, out: &mut String) {
             if e.ns == Namespace::Html && VOID.contains(&e.name.as_str()) {
                 return;
             }
+            if let Some(sr) = doc.shadow_root(id) {
+                shadow_template(doc, sr, sh, out);
+            }
             let kids = e.template_contents.unwrap_or(id);
             for c in doc.children(kids) {
-                ser(doc, c, out);
+                ser(doc, c, sh, out);
             }
             out.push_str("</");
             out.push_str(&e.name);

@@ -193,6 +193,53 @@ const SPECIAL_HTML: &[&str] = &[
 ];
 
 /// The HTML tree builder.
+/// DOM §4.2.2.2 "attach a shadow root" steps 1–4 for the parser: an HTML element with a
+/// valid shadow host name that has no shadow root yet (definitions that disable shadow
+/// roots are the builder's `shadow_disabled`).
+fn can_attach_shadow(doc: &Document, host: NodeId) -> bool {
+    let Some(e) = doc.element(host) else { return false };
+    if e.ns != Namespace::Html || doc.shadow_root(host).is_some() {
+        return false;
+    }
+    let n = e.name.as_str();
+    let custom = n.starts_with(|c: char| c.is_ascii_lowercase())
+        && n.contains('-')
+        && !n.chars().any(|c| c.is_ascii_uppercase())
+        && !matches!(
+            n,
+            "annotation-xml"
+                | "color-profile"
+                | "font-face"
+                | "font-face-src"
+                | "font-face-uri"
+                | "font-face-format"
+                | "font-face-name"
+                | "missing-glyph"
+        );
+    custom
+        || matches!(
+            n,
+            "article"
+                | "aside"
+                | "blockquote"
+                | "body"
+                | "div"
+                | "footer"
+                | "h1"
+                | "h2"
+                | "h3"
+                | "h4"
+                | "h5"
+                | "h6"
+                | "header"
+                | "main"
+                | "nav"
+                | "p"
+                | "section"
+                | "span"
+        )
+}
+
 pub struct TreeBuilder {
     pub doc: Document,
     tokenizer: Tokenizer,
@@ -214,6 +261,12 @@ pub struct TreeBuilder {
     pending_script: Option<NodeId>,
     /// Parse error count (tree construction errors).
     pub errors: usize,
+    /// The document's "allow declarative shadow roots" (HTML §13.2.6.4.4: `<template
+    /// shadowrootmode>` attaches a shadow root).
+    allow_shadow_roots: bool,
+    /// Custom element names whose definitions disable shadow roots (DOM §4.2.2.2 step 3),
+    /// as the host knows them.
+    shadow_disabled: Vec<String>,
 }
 
 impl TreeBuilder {
@@ -237,7 +290,20 @@ impl TreeBuilder {
             stopped: false,
             pending_script: None,
             errors: 0,
+            allow_shadow_roots: false,
+            shadow_disabled: Vec::new(),
         }
+    }
+
+    /// Set the custom element names (or `is` values) whose definitions have disableShadow.
+    pub fn set_shadow_disabled_names(&mut self, names: Vec<String>) {
+        self.shadow_disabled = names;
+    }
+
+    /// Let `<template shadowrootmode>` make declarative shadow roots (documents loaded by
+    /// navigation, `setHTMLUnsafe`, `parseHTMLUnsafe`; not innerHTML or DOMParser).
+    pub fn set_allow_declarative_shadow_roots(&mut self, on: bool) {
+        self.allow_shadow_roots = on;
     }
 
     /// Turn the scripting flag on (HTML §13.2.6.5: `<noscript>` is then raw text).
@@ -299,7 +365,18 @@ impl TreeBuilder {
     /// HTML §13.4 fragment parsing algorithm. Returns the document and the
     /// root `<html>` element whose children are the fragment's nodes.
     pub fn parse_fragment(input: &str, context_ns: Namespace, context_name: &str) -> (Document, NodeId) {
+        Self::parse_fragment_with(input, context_ns, context_name, false)
+    }
+
+    /// [`TreeBuilder::parse_fragment`], with declarative shadow roots allowed or not.
+    pub fn parse_fragment_with(
+        input: &str,
+        context_ns: Namespace,
+        context_name: &str,
+        allow_shadow_roots: bool,
+    ) -> (Document, NodeId) {
         let mut tb = TreeBuilder::new(input);
+        tb.allow_shadow_roots = allow_shadow_roots;
         let ctx = tb.doc.create_element(context_ns, context_name, Vec::new());
         tb.context = Some(ctx);
         if context_ns == Namespace::Html {
@@ -1196,11 +1273,65 @@ impl TreeBuilder {
                 self.reprocess(M::AfterHead, tok);
             }
             Tok::Start(ref t) if t.name == "template" => {
-                self.insert_html(t);
                 self.afe.push(Formatting::Marker);
                 self.frameset_ok = false;
                 self.mode = M::InTemplate;
                 self.template_modes.push(M::InTemplate);
+                let attr = |n: &str| t.attrs.iter().find(|(k, _)| k == n).map(|(_, v)| v.as_str());
+                let mode = attr("shadowrootmode").map(str::to_ascii_lowercase);
+                let open = match mode.as_deref() {
+                    Some("open") => Some(true),
+                    Some("closed") => Some(false),
+                    _ => None,
+                };
+                let host = self.adjusted_current_node();
+                match (open, host) {
+                    // (The fragment parser's context element is never a host: browsers don't
+                    // attach to it, as the shadow-dom WPT tests expect.)
+                    (Some(open), Some(host))
+                        if self.allow_shadow_roots
+                            && self.open.first() != Some(&host)
+                            && self.context != Some(host) =>
+                    {
+                        // A declarative shadow root: the template is only on the stack, and its
+                        // contents are the host's new shadow root.
+                        let loc = self.insertion_location(None);
+                        let template = self.create_element_for(t, Namespace::Html);
+                        self.open.push(template);
+                        let disabled = self.doc.element(host).is_some_and(|e| {
+                            self.shadow_disabled
+                                .iter()
+                                .any(|n| *n == e.name || e.attr("is") == Some(n.as_str()))
+                        });
+                        if disabled || !can_attach_shadow(&self.doc, host) {
+                            self.insert_at(loc, template);
+                            return;
+                        }
+                        let info = bb_dom::ShadowRootInfo {
+                            open,
+                            clonable: attr("shadowrootclonable").is_some(),
+                            serializable: attr("shadowrootserializable").is_some(),
+                            delegates_focus: attr("shadowrootdelegatesfocus").is_some(),
+                            slot_assignment: if attr("shadowrootslotassignment")
+                                .is_some_and(|v| v.eq_ignore_ascii_case("manual"))
+                            {
+                                bb_dom::SlotAssignment::Manual
+                            } else {
+                                bb_dom::SlotAssignment::Named
+                            },
+                            declarative: true,
+                            available_to_element_internals: true,
+                            ..Default::default()
+                        };
+                        let root = self.doc.attach_shadow(host, info);
+                        if let Some(e) = self.doc.element_mut(template) {
+                            e.template_contents = Some(root);
+                        }
+                    }
+                    _ => {
+                        self.insert_html(t);
+                    }
+                }
             }
             Tok::End(ref t) if t.name == "template" => {
                 if !self.open.iter().any(|&n| self.is_html(n, "template")) {
