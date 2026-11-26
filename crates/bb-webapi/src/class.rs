@@ -184,6 +184,8 @@ interfaces! {
     Worker: EventTarget;
     WorkerGlobalScope: EventTarget;
     DedicatedWorkerGlobalScope: WorkerGlobalScope;
+    SharedWorker: EventTarget;
+    SharedWorkerGlobalScope: WorkerGlobalScope;
     WorkerLocation: None;
     WorkerNavigator: None;
     MessageChannel: None;
@@ -388,6 +390,7 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
         C::ToggleEvent => (crate::events::event_ctor, 1),
         C::MessageEvent => (crate::events::event_ctor, 1),
         C::Worker => (crate::worker::worker_ctor, 1),
+        C::SharedWorker => (crate::shared_worker::shared_worker_ctor, 1),
         C::MessageChannel => (crate::port::message_channel_ctor, 0),
         C::BroadcastChannel => (crate::port::broadcast_channel_ctor, 1),
         C::ImageData => (crate::canvas::image_data_ctor, 2),
@@ -400,8 +403,22 @@ fn constructor(c: C) -> Option<(NativeFn, u32)> {
     })
 }
 
-/// Interfaces exposed in dedicated workers ([Exposed=DedicatedWorker] and wider).
-fn exposed_in_worker(c: C) -> bool {
+/// What a global object is (HTML §7.2, §10.2.1).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Scope {
+    Window,
+    DedicatedWorker,
+    SharedWorker,
+}
+
+/// Interfaces exposed in a worker ([Exposed=DedicatedWorker], [Exposed=SharedWorker] and
+/// wider).
+fn exposed_in_worker(c: C, scope: Scope) -> bool {
+    match c {
+        C::DedicatedWorkerGlobalScope => return scope == Scope::DedicatedWorker,
+        C::SharedWorkerGlobalScope => return scope == Scope::SharedWorker,
+        _ => {}
+    }
     matches!(
         c,
         C::EventTarget
@@ -453,18 +470,23 @@ fn exposed_in_worker(c: C) -> bool {
 fn exposed_in_window(c: C) -> bool {
     !matches!(
         c,
-        C::WorkerGlobalScope | C::DedicatedWorkerGlobalScope | C::WorkerLocation | C::WorkerNavigator
+        C::WorkerGlobalScope
+            | C::DedicatedWorkerGlobalScope
+            | C::SharedWorkerGlobalScope
+            | C::WorkerLocation
+            | C::WorkerNavigator
     )
 }
 
 /// Create every interface object and prototype (WebIDL §3.7.1–3.7.3) and expose them on
 /// the global object, which becomes a Window.
 pub fn install(vm: &mut Vm, h: &Host) {
-    install_scope(vm, h, false);
+    install_scope(vm, h, Scope::Window);
 }
 
-/// As [`install`], for a Window or (`worker`) a DedicatedWorkerGlobalScope.
-pub fn install_scope(vm: &mut Vm, h: &Host, worker: bool) {
+/// As [`install`], for a Window, a DedicatedWorkerGlobalScope or a SharedWorkerGlobalScope.
+pub fn install_scope(vm: &mut Vm, h: &Host, scope: Scope) {
+    let worker = scope != Scope::Window;
     let g = vm.realm.global;
     let mut protos: Vec<ObjRef> = Vec::with_capacity(ALL.len());
     let mut ctors: Vec<ObjRef> = Vec::with_capacity(ALL.len());
@@ -486,7 +508,7 @@ pub fn install_scope(vm: &mut Vm, h: &Host, worker: bool) {
             .insert(PropKey::lit("prototype"), Prop::data(Value::Object(proto), false, false, false));
         vm.heap.obj_mut(proto).props.insert(PropKey::lit("constructor"), Prop::method(Value::Object(ctor)));
         realm::to_string_tag(vm, proto, name(c));
-        let exposed = if worker { exposed_in_worker(c) } else { exposed_in_window(c) };
+        let exposed = if worker { exposed_in_worker(c, scope) } else { exposed_in_window(c) };
         if exposed {
             realm::value(vm, g, name(c), Value::Object(ctor));
         }
@@ -503,9 +525,14 @@ pub fn install_scope(vm: &mut Vm, h: &Host, worker: bool) {
         }
         setup(vm, c, p, k, worker);
     }
-    if worker {
+    if scope == Scope::DedicatedWorker {
         vm.heap.obj_mut(g).proto = Some(protos[C::DedicatedWorkerGlobalScope as usize]);
         crate::worker::setup_worker_global(vm, g);
+        return;
+    }
+    if scope == Scope::SharedWorker {
+        vm.heap.obj_mut(g).proto = Some(protos[C::SharedWorkerGlobalScope as usize]);
+        crate::worker::setup_shared_worker_global(vm, g);
         return;
     }
     crate::traversal::install_node_filter(vm);
@@ -625,6 +652,7 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef, worker: bool) {
         C::Crypto => crate::blob::setup_crypto(vm, proto),
         C::MessageEvent => crate::worker::setup_message_event(vm, proto),
         C::Worker => crate::worker::setup_worker(vm, proto),
+        C::SharedWorker => crate::shared_worker::setup_shared_worker(vm, proto),
         C::MessageChannel => crate::port::setup_message_channel(vm, proto),
         C::MessagePort => crate::port::setup_message_port(vm, proto),
         C::BroadcastChannel => crate::port::setup_broadcast_channel(vm, proto),
@@ -635,7 +663,11 @@ fn setup(vm: &mut Vm, c: C, proto: ObjRef, ctor: ObjRef, worker: bool) {
         C::TextMetrics => crate::canvas::setup_text_metrics(vm, proto),
         C::Path2D => crate::canvas::setup_path2d(vm, proto),
         C::ImageBitmap => crate::canvas::setup_image_bitmap(vm, proto),
-        C::WorkerGlobalScope | C::DedicatedWorkerGlobalScope | C::WorkerLocation | C::WorkerNavigator => {}
+        C::WorkerGlobalScope
+        | C::DedicatedWorkerGlobalScope
+        | C::SharedWorkerGlobalScope
+        | C::WorkerLocation
+        | C::WorkerNavigator => {}
         C::XMLSerializer => crate::xml::setup_xml_serializer(vm, proto),
         _ => crate::html::setup_element_interface(vm, c, proto),
     }

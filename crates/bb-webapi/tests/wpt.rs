@@ -127,6 +127,19 @@ impl bb_webapi::worker::WorkerNet for FileNet {
 /// Requests are answered from the checkout (as wptserve would serve the files), with the
 /// wrapper wptserve generates for an `.any.js` test's dedicated-worker variant.
 fn serve(req: bb_webapi::net::HttpRequest) -> bb_webapi::net::HttpResponse {
+    if req.url.scheme() == "data" {
+        let (status, ct, body) = match bb_net::data_url::process(&req.url) {
+            Some((ct, body)) => (200, ct, body),
+            None => (400, String::new(), Vec::new()),
+        };
+        return bb_webapi::net::HttpResponse {
+            url: req.url,
+            status,
+            status_text: if status == 200 { "OK" } else { "Bad Request" }.to_string(),
+            headers: vec![("content-type".into(), ct)],
+            body,
+        };
+    }
     let mut path = req.url.pathname();
     // wptserve's alias for the WebIDL parser idlharness.js loads.
     if path == "/resources/WebIDLParser.js" {

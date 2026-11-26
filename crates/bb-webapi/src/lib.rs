@@ -37,6 +37,7 @@ pub mod port;
 pub mod range;
 pub mod selection;
 pub mod shadow;
+pub mod shared_worker;
 pub mod storage;
 pub mod streams;
 pub mod traversal;
@@ -71,15 +72,20 @@ impl Window {
     /// A new window whose document (empty, at `url`) is document 0.
     pub fn new(url: Url, embedder: Rc<dyn Embedder>) -> Window {
         forms::install_validity_hooks();
-        Self::build(url, embedder, None)
+        Self::build(url, embedder, None, class::Scope::Window)
     }
 
     /// A dedicated worker's global scope (HTML §10.2.4 "run a worker"), named `name`.
     pub fn new_worker(url: Url, embedder: Rc<dyn Embedder>, name: &str) -> Window {
-        Self::build(url, embedder, Some(name))
+        Self::build(url, embedder, Some(name), class::Scope::DedicatedWorker)
     }
 
-    fn build(url: Url, embedder: Rc<dyn Embedder>, worker: Option<&str>) -> Window {
+    /// A shared worker's global scope (HTML §10.2.1.3 SharedWorkerGlobalScope), named `name`.
+    pub fn new_shared_worker(url: Url, embedder: Rc<dyn Embedder>, name: &str) -> Window {
+        Self::build(url, embedder, Some(name), class::Scope::SharedWorker)
+    }
+
+    fn build(url: Url, embedder: Rc<dyn Embedder>, worker: Option<&str>, scope: class::Scope) -> Window {
         let mut doc = Document::new();
         doc.url = url.href();
         let host = Rc::new(Host::new(doc, url, embedder));
@@ -128,7 +134,7 @@ impl Window {
             loader::resolve_module(&h, spec, referrer).map(|u| u.href())
         }));
         host.window.set(Some(vm.realm.global));
-        class::install_scope(&mut vm, &host, worker.is_some());
+        class::install_scope(&mut vm, &host, scope);
         Window { vm, host }
     }
 
@@ -169,7 +175,10 @@ impl Window {
 
     /// Whether a worker this global (or one of its frames) started is still running.
     pub fn has_live_workers(&self) -> bool {
-        frames::family(&self.host).iter().any(|h| h.workers.borrow().workers.iter().any(|w| w.alive))
+        frames::family(&self.host).iter().any(|h| {
+            let w = h.workers.borrow();
+            w.workers.iter().any(|w| w.alive) || w.shared.iter().any(|s| s.running())
+        })
     }
 
     /// Whether tasks are waiting (queued tasks or animation frame callbacks) in any window.
@@ -495,6 +504,9 @@ fn run_host_tasks(vm: &mut Vm, h: &Rc<Host>) -> bool {
     }
     // Messages and errors from this global's workers, and messages to its ports.
     if worker::poll(vm, h) {
+        ran = true;
+    }
+    if shared_worker::poll(vm, h) {
         ran = true;
     }
     if port::poll(vm, h) {

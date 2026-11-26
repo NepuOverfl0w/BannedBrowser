@@ -118,6 +118,37 @@ pub fn message_channel_ctor(vm: &mut Vm, c: NativeCall) -> R {
     Ok(Value::Object(o))
 }
 
+/// A new MessagePort here entangled with a port in transit (for [`receive`] on another
+/// thread): a SharedWorker's outside and inside ports (HTML §10.2.6.4).
+pub fn pair_for_transfer(vm: &mut Vm, h: &Host) -> (ObjRef, Box<dyn std::any::Any + Send>) {
+    let (tx1, rx1) = channel::<PortMsg>();
+    let (tx2, rx2) = channel::<PortMsg>();
+    let (home1, home2): (HomeSlot, HomeSlot) = (Arc::default(), Arc::default());
+    let here =
+        new_port(vm, h, PortEnds { rx: rx1, peer: Some(tx2), home: home1.clone(), peer_home: home2.clone() });
+    let there = PortEnds { rx: rx2, peer: Some(tx1), home: home2, peer_home: home1 };
+    (here, Box::new(Transferred { ends: there, queue: VecDeque::new() }))
+}
+
+/// Enable port `o`'s port message queue (HTML §9.4.4), as start() does.
+pub fn enable(h: &Host, o: ObjRef) {
+    if let Some(p) = h.ports.borrow_mut().iter_mut().find(|p| p.obj == o) {
+        p.enabled = true;
+    }
+}
+
+/// Take one from a pending-message counter, never below zero (a message that went into a
+/// port's channel while it had no home wasn't counted).
+pub(crate) fn uncount(p: &AtomicUsize) {
+    let mut n = p.load(Ordering::SeqCst);
+    while n > 0 {
+        match p.compare_exchange(n, n - 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return,
+            Err(now) => n = now,
+        }
+    }
+}
+
 pub fn setup_message_channel(vm: &mut Vm, proto: ObjRef) {
     for (name, i) in [("port1", 0usize), ("port2", 1)] {
         let f: bb_js::vm::heap::NativeFn =
@@ -212,11 +243,11 @@ pub fn poll(vm: &mut Vm, h: &Host) -> bool {
             loop {
                 match ends.rx.try_recv() {
                     Ok(PortMsg::Message(s)) => {
-                        pending.fetch_sub(1, Ordering::SeqCst);
+                        uncount(&pending);
                         p.queue.push_back(s);
                     }
                     Ok(PortMsg::Closed) => {
-                        pending.fetch_sub(1, Ordering::SeqCst);
+                        uncount(&pending);
                         closed.push(p.obj);
                         break;
                     }
@@ -302,7 +333,7 @@ pub fn transfer(vm: &mut Vm, o: ObjRef) -> JsResult<Box<dyn std::any::Any + Send
     let Some(ends) = p.ends.take() else { return vm.type_error("the port was already transferred") };
     let pending = h.workers.borrow().pending.clone();
     while let Ok(m) = ends.rx.try_recv() {
-        pending.fetch_sub(1, Ordering::SeqCst);
+        uncount(&pending);
         if let PortMsg::Message(s) = m {
             queue.push_back(s);
         }
@@ -463,7 +494,7 @@ pub fn poll_broadcasts(vm: &mut Vm, h: &Host) -> bool {
         let pending = h.workers.borrow().pending.clone();
         for b in h.broadcasts.borrow().iter() {
             while let Ok(m) = b.rx.try_recv() {
-                pending.fetch_sub(1, Ordering::SeqCst);
+                uncount(&pending);
                 if !b.closed {
                     got.push((b.obj, m));
                 }

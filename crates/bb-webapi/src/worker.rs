@@ -36,6 +36,20 @@ pub trait WorkerNet: Send + Sync {
 static LIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 const MAX_WORKERS: usize = 64;
 
+/// Count a new worker thread (dedicated or shared); false when there are too many.
+pub(crate) fn reserve_thread() -> bool {
+    if LIVE_WORKERS.fetch_add(1, Ordering::SeqCst) >= MAX_WORKERS {
+        LIVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
+/// A worker thread ended (or never started).
+pub(crate) fn release_thread() {
+    LIVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
+}
+
 /// Wakes an event loop from another thread (the embedder's, or a worker's own).
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
@@ -85,14 +99,21 @@ pub struct WorkerLink {
 }
 
 impl WorkerLink {
-    fn send(&self, m: FromWorker) {
+    pub(crate) fn new(tx: Sender<FromWorker>, wake: Option<Waker>, pending: Arc<AtomicUsize>) -> Self {
+        WorkerLink { tx, wake, pending }
+    }
+
+    /// Send to the parent; false when it is gone.
+    pub(crate) fn send(&self, m: FromWorker) -> bool {
         self.pending.fetch_add(1, Ordering::SeqCst);
         if self.tx.send(m).is_err() {
             self.pending.fetch_sub(1, Ordering::SeqCst);
+            return false;
         }
         if let Some(w) = &self.wake {
             w();
         }
+        true
     }
 }
 
@@ -100,6 +121,8 @@ impl WorkerLink {
 #[derive(Default)]
 pub struct WorkerState {
     pub workers: Vec<WorkerHandle>,
+    /// This window's SharedWorker objects.
+    pub shared: Vec<crate::shared_worker::SharedHandle>,
     pub pending: Arc<AtomicUsize>,
     /// Set in a worker's own Host: its parent.
     pub link: Option<WorkerLink>,
@@ -112,6 +135,7 @@ pub struct WorkerState {
 impl WorkerState {
     pub fn trace(&self, out: &mut Vec<ObjRef>) {
         out.extend(self.workers.iter().filter(|w| w.alive).map(|w| w.obj));
+        out.extend(self.shared.iter().map(|w| w.obj));
     }
 
     pub fn has_messages(&self) -> bool {
@@ -286,7 +310,7 @@ pub fn fire_message_with_ports(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn fire_message_full(
+pub(crate) fn fire_message_full(
     vm: &mut Vm,
     h: &Host,
     target: Value,
@@ -412,12 +436,10 @@ pub fn worker_ctor(vm: &mut Vm, c: NativeCall) -> R {
     let Ok(url) = Url::parse_with_base(&href, Some(&base)) else {
         return throw(vm, "SyntaxError", &format!("'{href}' is not a valid URL"));
     };
-    // The script must be same origin (data: and blob: URLs too, the latter by their creator).
+    // The script must be same origin (data: and blob: URLs too, the latter by their creator):
+    // fetching it fails otherwise, with an error event (HTML §10.2.4 step 12).
     let own = h.url.borrow().origin();
     let same = url.scheme() == "data" || url.scheme() == "blob" || url.origin().same_origin(&own);
-    if !same {
-        return throw(vm, "SecurityError", "a worker's script must be same origin");
-    }
     // A blob URL's script is read now (its store is this thread's).
     let source = if url.scheme() == "blob" {
         let req = HttpRequest { method: "GET".into(), url: url.clone(), headers: Vec::new(), body: None };
@@ -457,16 +479,13 @@ pub fn worker_ctor(vm: &mut Vm, c: NativeCall) -> R {
         link: link.clone(),
         interrupt: interrupt.clone(),
     };
-    let spawned = if LIVE_WORKERS.fetch_add(1, Ordering::SeqCst) >= MAX_WORKERS {
-        LIVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
-        false
-    } else {
+    let spawned = same && reserve_thread() && {
         let r = std::thread::Builder::new().name("bb-worker".into()).stack_size(64 << 20).spawn(move || {
             run_worker(start);
-            LIVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
+            release_thread();
         });
         if r.is_err() {
-            LIVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
+            release_thread();
         }
         r.is_ok()
     };
@@ -478,7 +497,8 @@ pub fn worker_ctor(vm: &mut Vm, c: NativeCall) -> R {
         interrupt,
     });
     if !spawned {
-        link.send(FromWorker::LoadFailed("too many workers".into()));
+        let why = if same { "too many workers" } else { "a worker's script must be same origin" };
+        link.send(FromWorker::LoadFailed(why.into()));
     }
     Ok(Value::Object(o))
 }
@@ -613,12 +633,18 @@ struct WorkerStart {
 
 /// A worker thread's embedder: its clock, the network through the parent's client, and a
 /// waker that posts to its own queue.
-struct WorkerEmbedder {
+pub(crate) struct WorkerEmbedder {
     net: Option<Arc<dyn WorkerNet>>,
     start: Instant,
     origin_ms: f64,
     ua: String,
     wake: Waker,
+}
+
+impl WorkerEmbedder {
+    pub(crate) fn new(net: Option<Arc<dyn WorkerNet>>, origin_ms: f64, ua: String, wake: Waker) -> Self {
+        WorkerEmbedder { net, start: Instant::now(), origin_ms, ua, wake }
+    }
 }
 
 impl Embedder for WorkerEmbedder {
@@ -660,8 +686,7 @@ fn run_worker(s: WorkerStart) {
             let _ = tx.send(ToWorker::Wake);
         }
     });
-    let emb =
-        Rc::new(WorkerEmbedder { net: s.net, start: Instant::now(), origin_ms: s.origin_ms, ua: s.ua, wake });
+    let emb = Rc::new(WorkerEmbedder::new(s.net, s.origin_ms, s.ua, wake));
     let mut w = crate::Window::new_worker(s.url.clone(), emb.clone(), &s.name);
     w.vm.interrupt = Some(s.interrupt.clone());
     w.host.workers.borrow_mut().link = Some(s.link.clone());
@@ -714,29 +739,8 @@ fn run_worker(s: WorkerStart) {
     s.link.send(FromWorker::Closed);
 }
 
-/// Install the DedicatedWorkerGlobalScope members (HTML §10.2.1, §10.2.3) on global `g`.
+/// Install the DedicatedWorkerGlobalScope members (HTML §10.2.1.2) on global `g`.
 pub fn setup_worker_global(vm: &mut Vm, g: ObjRef) {
-    attr(
-        vm,
-        g,
-        "self",
-        |vm, _| {
-            let h = host(vm)?;
-            Ok(h.window.get().map_or(Value::Undefined, Value::Object))
-        },
-        None,
-    );
-    attr(
-        vm,
-        g,
-        "name",
-        |vm, _| {
-            let h = host(vm)?;
-            let n = h.workers.borrow().name.clone();
-            Ok(js(&n))
-        },
-        None,
-    );
     op(vm, g, "postMessage", 1, |vm, c| {
         if c.args.is_empty() {
             return vm.type_error("postMessage needs a message");
@@ -750,6 +754,45 @@ pub fn setup_worker_global(vm: &mut Vm, g: ObjRef) {
         }
         Ok(Value::Undefined)
     });
+    crate::events::setup_named_handlers(vm, g, &["onmessage", "onmessageerror", "onerror"]);
+    setup_global_common(vm, g);
+}
+
+/// Install the SharedWorkerGlobalScope members (HTML §10.2.1.3) on global `g`.
+pub fn setup_shared_worker_global(vm: &mut Vm, g: ObjRef) {
+    crate::events::setup_named_handlers(vm, g, &["onconnect", "onerror"]);
+    setup_global_common(vm, g);
+}
+
+/// WorkerGlobalScope's members (HTML §10.2.1.1, §10.3).
+fn setup_global_common(vm: &mut Vm, g: ObjRef) {
+    attr(
+        vm,
+        g,
+        "self",
+        |vm, _| {
+            let h = host(vm)?;
+            Ok(h.window.get().map_or(Value::Undefined, Value::Object))
+        },
+        None,
+    );
+    // [Replaceable] readonly attribute name: setting it makes an own data property.
+    attr(
+        vm,
+        g,
+        "name",
+        |vm, _| {
+            let h = host(vm)?;
+            let n = h.workers.borrow().name.clone();
+            Ok(js(&n))
+        },
+        Some(|vm, c| {
+            if let Value::Object(o) = c.this {
+                vm.create_data_property(o, PropKey::lit("name"), c.arg(0))?;
+            }
+            Ok(Value::Undefined)
+        }),
+    );
     // HTML §10.2.3 close(): discard the queued tasks, and stop.
     op(vm, g, "close", 0, |vm, _| {
         let h = host(vm)?;
@@ -783,8 +826,9 @@ pub fn setup_worker_global(vm: &mut Vm, g: ObjRef) {
         }
         Ok(Value::Undefined)
     });
-    crate::events::setup_named_handlers(vm, g, &["onmessage", "onmessageerror", "onerror"]);
     install_worker_location(vm, g);
+    // bb-js's shell `print` isn't a web API.
+    vm.heap.obj_mut(g).props.remove(&PropKey::lit("print"));
     install_worker_navigator(vm, g);
     crate::window::setup_global_scope(vm, g);
 }

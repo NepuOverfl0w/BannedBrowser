@@ -727,7 +727,7 @@ fn create_host(
     vm.try_in_realm(realm, |vm| {
         vm.set_realm_host(weak);
         child.window.set(Some(vm.realm.global));
-        crate::class::install_scope(vm, &child, false);
+        crate::class::install_scope(vm, &child, crate::class::Scope::Window);
     });
     Some(child)
 }

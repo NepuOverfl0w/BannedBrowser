@@ -26,7 +26,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   XMLSerializer over a new XML parser (`bb-xml`), XMLHttpRequest's `responseXML`, Blob, File,
   FileReader, FormData, blob URLs, `crypto.getRandomValues`/`randomUUID`, dedicated workers
   (own thread and VM; structured clone in bb-js), `structuredClone`, `window.postMessage`,
-  MessageChannel/MessagePort (transferable to workers), BroadcastChannel, Canvas 2D
+  MessageChannel/MessagePort (transferable to workers), BroadcastChannel, shared workers
+  (`SharedWorker`, one per origin, URL and name across the process's windows), Canvas 2D
   (`<canvas>` with CanvasRenderingContext2D, Path2D, ImageData, `createImageBitmap`), and
   frames with their own windows: each iframe and frame runs its document's scripts in its own
   realm of the page's VM, `contentWindow`/`contentDocument`, `parent`, `top`, `frames[i]`,
@@ -61,7 +62,7 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
   `dom/`, `domparsing/`, `FileAPI/`, `xhr/formdata/`, `url/`, `encoding/` and `fetch/api/headers/` tests
   and `workers/`, `webmessaging/`, structured clone, `custom-elements/`, `streams/`,
-  `shadow-dom/` and `import-maps/` (105177/126528 subtests so far).
+  `shadow-dom/` and `import-maps/` (105535/126687 subtests so far).
 - **JavaScript engine (milestone D):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262, and an interpreter: bytecode compiler, stack VM, garbage
@@ -184,6 +185,11 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   unsuitable element: the error is reported and an HTMLUnknownElement is made (DOM §4.9).
 - An element's `is` value is serialized when it has no `is` attribute (HTML §13.3).
 - Slots see children the parser inserts into a shadow host (`slotchange`).
+- Event handler attributes (`onmessage = {…}`) keep any object, as WebIDL's
+  `[LegacyTreatNonObjectAsNull]` says; only a callable one is called.
+- A worker's `name` is `[Replaceable]`, and workers no longer have the JavaScript shell's
+  `print()` global.
+- `new Worker()` with a cross-origin script fires `error` instead of throwing.
 - `<script type=" module">` is no longer a module script: only JavaScript MIME types may have
   whitespace around them (HTML §4.12.1.1).
 
@@ -197,7 +203,7 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 ### Development
 - The WPT runner runs each `<meta name="variant">` / `// META: variant=` variant, applies
   wptserve's `sub` pipe (`.sub.` files and `?pipe=sub`: `{{GET[…]}}`, `{{host}}`), serves
-  `data:` module URLs, and `scripts/fetch-spec-tests.sh` widens an existing checkout whenever
+  `data:` URLs (scripts, modules and worker fetches), and `scripts/fetch-spec-tests.sh` widens an existing checkout whenever
   its path list grows.
 - GUI tests run on Windows and macOS too, with real OS input (`SendInput`, `CGEvent`), in CI on
   every push. They now also assert window resizing and maximizing.

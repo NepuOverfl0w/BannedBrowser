@@ -1354,8 +1354,10 @@ fn handler_set(vm: &mut Vm, c: NativeCall) -> R {
     let name = handler_name(vm, &c)?;
     let h = host(vm)?;
     let t = handler_target(vm, &h, &c.this, &name)?;
+    // EventHandler is [LegacyTreatNonObjectAsNull]: any object is kept (and only called if
+    // callable), anything else is null.
     let v = c.arg(0);
-    let v = if vm.is_callable(&v) { v } else { Value::Null };
+    let v = if matches!(v, Value::Object(_)) { v } else { Value::Null };
     set_handler(&h, t, &name, v);
     Ok(Value::Undefined)
 }
@@ -1365,9 +1367,9 @@ pub fn handler_value(vm: &mut Vm, h: &Host, t: ObjRef, name: &str) -> R {
     current_handler(vm, h, t, name)
 }
 
-/// Set event handler `name` of `t` to `v` (a function; anything else is null).
-pub fn set_handler_value(vm: &mut Vm, h: &Host, t: ObjRef, name: &str, v: Value) {
-    let v = if vm.is_callable(&v) { v } else { Value::Null };
+/// Set event handler `name` of `t` to `v` (an object; anything else is null).
+pub fn set_handler_value(_vm: &mut Vm, h: &Host, t: ObjRef, name: &str, v: Value) {
+    let v = if matches!(v, Value::Object(_)) { v } else { Value::Null };
     set_handler(h, t, name, v);
 }
 

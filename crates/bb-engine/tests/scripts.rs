@@ -303,6 +303,24 @@ fn blobs_files_form_data_and_crypto() {
 }
 
 #[test]
+fn shared_workers() {
+    // Two pages of the same origin asking for the same shared worker get one worker: its
+    // `connect` count is shared.
+    let html = "<!doctype html><p id=r>-</p><script>\
+         var w = new SharedWorker('data:text/javascript,var n = 0;\
+           onconnect = function (e) { n++; e.ports[0].postMessage(n + \\':\\' + name); };',\
+           'engine-test-counter');\
+         w.port.onmessage = function (e) { document.getElementById('r').textContent = e.data; };\
+         </script>";
+    let mut a = page(html);
+    wait_for_change(&mut a, "r", "-");
+    assert_eq!(text(&a, "r"), "1:engine-test-counter");
+    let mut b = page(html);
+    wait_for_change(&mut b, "r", "-");
+    assert_eq!(text(&b, "r"), "2:engine-test-counter");
+}
+
+#[test]
 fn dedicated_workers_and_structured_clone() {
     let mut p = page(
         "<!doctype html><p id=out>wait</p><script>\
