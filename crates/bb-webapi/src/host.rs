@@ -297,6 +297,9 @@ pub struct Host {
     pub started_scripts: RefCell<HashSet<u64>>,
     /// `defer` scripts waiting for the end of parsing.
     pub deferred: RefCell<Vec<NodeRef>>,
+    /// The document's throw-on-dynamic-markup-insertion counter (HTML §13.2.6.1): above 0
+    /// while the parser runs a custom element constructor.
+    pub throw_on_dynamic_markup: Cell<u32>,
     /// Module scripts whose graphs were fetched when they were prepared, by packed
     /// `NodeRef`: the module, or whether it failed to fetch (else to parse or load).
     pub prepared_modules: RefCell<HashMap<u64, Result<usize, bool>>>,
@@ -397,6 +400,7 @@ impl Host {
             write_ends: RefCell::default(),
             started_scripts: RefCell::default(),
             deferred: RefCell::default(),
+            throw_on_dynamic_markup: Cell::new(0),
             prepared_modules: RefCell::default(),
             current_script: RefCell::new(Value::Null),
             url: RefCell::new(url),

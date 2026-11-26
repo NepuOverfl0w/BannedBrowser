@@ -240,6 +240,21 @@ fn can_attach_shadow(doc: &Document, host: NodeId) -> bool {
         )
 }
 
+/// Why [`TreeBuilder::pump`] returned before the end of the input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pause {
+    /// A `<script>` element whose end tag was just processed, for the host to prepare and run.
+    Script(NodeId),
+    /// The next token is a start tag for an element with a custom element definition (HTML
+    /// §13.2.6.1 "create an element for a token" with "will execute script"): the host
+    /// creates the element (its constructor runs) and appends these attributes, hands it to
+    /// [`TreeBuilder::provide_element`] and pumps again; the parser then inserts it.
+    CustomElement { name: String, is: Option<String>, attrs: Vec<(String, String)> },
+    /// The element given to `provide_element` was inserted (the host runs the reactions of
+    /// its insertion, as "insert an element at the adjusted insertion location" does).
+    Inserted(NodeId),
+}
+
 pub struct TreeBuilder {
     pub doc: Document,
     tokenizer: Tokenizer,
@@ -267,6 +282,15 @@ pub struct TreeBuilder {
     /// Custom element names whose definitions disable shadow roots (DOM §4.2.2.2 step 3),
     /// as the host knows them.
     shadow_disabled: Vec<String>,
+    /// The host's custom element definitions as (name, local name), for "will execute
+    /// script"; empty for parsers whose host constructs nothing.
+    custom_definitions: Vec<(String, String)>,
+    /// A start tag token held back while the host constructs its element.
+    held: Option<Token>,
+    /// The element the host made for the held token, until it is used.
+    provided: Option<NodeId>,
+    /// The provided element, once it has been used for its token.
+    provided_used: Option<NodeId>,
 }
 
 impl TreeBuilder {
@@ -292,12 +316,28 @@ impl TreeBuilder {
             errors: 0,
             allow_shadow_roots: false,
             shadow_disabled: Vec::new(),
+            custom_definitions: Vec::new(),
+            held: None,
+            provided: None,
+            provided_used: None,
         }
     }
 
     /// Set the custom element names (or `is` values) whose definitions have disableShadow.
     pub fn set_shadow_disabled_names(&mut self, names: Vec<String>) {
         self.shadow_disabled = names;
+    }
+
+    /// The host's custom element definitions, as (name, local name): a start tag that one
+    /// of them defines makes [`TreeBuilder::pump`] pause with [`Pause::CustomElement`].
+    pub fn set_custom_definitions(&mut self, defs: Vec<(String, String)>) {
+        self.custom_definitions = defs;
+    }
+
+    /// The element the host created for a [`Pause::CustomElement`] (with its attributes): the
+    /// parser uses it for the held token instead of creating one.
+    pub fn provide_element(&mut self, el: Option<NodeId>) {
+        self.provided = el;
     }
 
     /// Let `<template shadowrootmode>` make declarative shadow roots (documents loaded by
@@ -312,30 +352,73 @@ impl TreeBuilder {
     }
 
     /// Parse until a `<script>` element's end tag has been processed (HTML §13.2.6.4.8
-    /// "An end tag whose tag name is script"): returns that element, for the host to
-    /// prepare and run before pumping again, or `None` when parsing has stopped.
-    pub fn pump(&mut self) -> Option<NodeId> {
+    /// "An end tag whose tag name is script") or a custom element is to be constructed: why
+    /// it stopped, or `None` when parsing has stopped.
+    pub fn pump(&mut self) -> Option<Pause> {
         while !self.stopped {
-            let token = self.tokenizer.next_token();
-            self.dispatch_token(token);
-            if let Some(s) = self.pending_script.take() {
-                return Some(s);
+            if let Some(p) = self.step() {
+                return Some(p);
             }
         }
         None
     }
 
     /// Parse tokens until the tokenizer has passed `end` (the end of text `document.write`
-    /// inserted) or a script end tag stops it.
-    pub fn pump_until(&mut self, end: usize) -> Option<NodeId> {
-        while !self.stopped && self.tokenizer.position() < end {
-            let token = self.tokenizer.next_token();
-            self.dispatch_token(token);
-            if let Some(s) = self.pending_script.take() {
-                return Some(s);
+    /// inserted), or until a pause as in [`TreeBuilder::pump`].
+    pub fn pump_until(&mut self, end: usize) -> Option<Pause> {
+        while !self.stopped && (self.held.is_some() || self.tokenizer.position() < end) {
+            if let Some(p) = self.step() {
+                return Some(p);
             }
         }
         None
+    }
+
+    /// Process one token (the held one first).
+    fn step(&mut self) -> Option<Pause> {
+        let token = match self.held.take() {
+            Some(t) => t,
+            None => {
+                let t = self.tokenizer.next_token();
+                if let Token::StartTag(tag) = &t {
+                    if self.will_execute_script(tag) {
+                        let p = Pause::CustomElement {
+                            name: tag.name.clone(),
+                            is: tag.attr("is").map(str::to_string),
+                            attrs: tag.attrs.clone(),
+                        };
+                        self.held = Some(t);
+                        return Some(p);
+                    }
+                }
+                t
+            }
+        };
+        self.dispatch_token(token);
+        // An element the token didn't use (it was ignored, or went elsewhere) is dropped.
+        self.provided = None;
+        if let Some(n) = self.provided_used.take() {
+            return Some(Pause::Inserted(n));
+        }
+        self.pending_script.take().map(Pause::Script)
+    }
+
+    /// HTML §13.2.6.1 "create an element for a token" steps 4-7: whether a start tag would
+    /// make an HTML element that has a definition, outside fragment parsing (and outside
+    /// template contents, whose document has no browsing context).
+    fn will_execute_script(&self, tag: &Tag) -> bool {
+        if self.custom_definitions.is_empty() || self.context.is_some() {
+            return false;
+        }
+        let is = tag.attr("is");
+        let defined = self
+            .custom_definitions
+            .iter()
+            .any(|(name, local)| *local == tag.name && (*name == tag.name || Some(name.as_str()) == is));
+        if !defined || self.open.iter().any(|&n| self.doc.is_html(n, "template")) {
+            return false;
+        }
+        self.uses_html_rules(&Tok::Start(tag.clone()))
     }
 
     /// Whether parsing has stopped (the end of the input was processed).
@@ -456,7 +539,18 @@ impl TreeBuilder {
 
     /// HTML §13.2.6 tree construction dispatcher.
     fn process(&mut self, tok: Tok) {
-        let use_html = match self.adjusted_current_node() {
+        let use_html = self.uses_html_rules(&tok);
+        if use_html {
+            self.process_in_mode(self.mode, tok);
+        } else {
+            self.process_foreign(tok);
+        }
+    }
+
+    /// The dispatcher's choice (HTML §13.2.6): the current insertion mode's rules, rather
+    /// than the rules for parsing tokens in foreign content.
+    fn uses_html_rules(&self, tok: &Tok) -> bool {
+        match self.adjusted_current_node() {
             None => true,
             Some(acn) => {
                 let e = self.doc.element(acn);
@@ -484,11 +578,6 @@ impl TreeBuilder {
                     }
                 }
             }
-        };
-        if use_html {
-            self.process_in_mode(self.mode, tok);
-        } else {
-            self.process_foreign(tok);
         }
     }
 
@@ -802,7 +891,27 @@ impl TreeBuilder {
         } else {
             attrs
         };
-        let el = self.doc.create_element(ns, &name, attrs);
+        // The host's custom element for the held token already has its attributes (a
+        // customized built-in's constructor may even have inserted it somewhere already).
+        let provided = self.provided.filter(|&p| {
+            ns == Namespace::Html
+                && self.doc.element(p).is_some_and(|e| e.ns == Namespace::Html && e.name == name)
+        });
+        let el = match provided {
+            Some(p) => {
+                self.provided = None;
+                self.provided_used = Some(p);
+                p
+            }
+            None => {
+                let el = self.doc.create_element(ns, &name, attrs);
+                // §13.2.6.1 step 3: the element's `is` value is the token's `is` attribute.
+                if let (Namespace::Html, Some(is)) = (ns, tag.attr("is")) {
+                    self.doc.set_is_value(el, is);
+                }
+                el
+            }
+        };
         // §13.2.6.1 step 12: associate form-associated elements with the form element pointer
         // (unless a template is open, or a listed element has its own `form` attribute). Our
         // form owner lookup also requires the form to be in the element's tree.

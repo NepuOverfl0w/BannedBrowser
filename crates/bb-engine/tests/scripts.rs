@@ -474,6 +474,27 @@ fn import_maps() {
 }
 
 #[test]
+fn parser_constructs_custom_elements() {
+    let p = page(
+        "<!doctype html><p id=log></p><script>var log = [];\
+         customElements.define('x-sync', class extends HTMLElement {\
+           static observedAttributes = ['a'];\
+           constructor() { super();\
+             log.push('ctor:' + this.attributes.length + ':' + (this.parentNode === null) + ':' + this.childNodes.length);\
+             try { document.write('x'); } catch (e) { log.push(e.name); } }\
+           attributeChangedCallback(n, o, v) { log.push('attr:' + n + '=' + v + ':' + (this.parentNode === null)); }\
+           connectedCallback() { log.push('connected:' + this.isConnected); }\
+         });</script>\
+         <x-sync a=1><span>kid</span></x-sync><script>\
+         log.push('after:' + (document.querySelector('x-sync') instanceof customElements.get('x-sync')));\
+         document.getElementById('log').textContent = log.join(' ');</script>",
+    );
+    // The constructor runs as the start tag is read: no attributes, parent or children
+    // yet, and document.write throws; then the attributes, then the insertion.
+    assert_eq!(text(&p, "log"), "ctor:0:true:0 InvalidStateError attr:a=1:true connected:true after:true");
+}
+
+#[test]
 fn custom_elements() {
     let p = page(
         "<!doctype html><x-early id=e></x-early><p id=log></p><script>\
@@ -495,9 +516,10 @@ fn custom_elements() {
          </script><x-early id=late v=2></x-early><script>\
          document.getElementById('log').textContent = log.join(' ');</script>",
     );
+    // The parser constructs the defined `late` element before appending its attributes.
     assert_eq!(
         text(&p, "log"),
-        "ctor:e connected:e true ctor:new attr:v=1 connected:m true x-early SyntaxError defined:true ctor:late attr:v=2 connected:late"
+        "ctor:e connected:e true ctor:new attr:v=1 connected:m true x-early SyntaxError defined:true ctor:new attr:v=2 connected:late"
     );
 }
 

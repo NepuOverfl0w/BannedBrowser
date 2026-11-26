@@ -7,6 +7,7 @@
 //! of parsing; `async` ones run as soon as they are fetched (here: at once).
 
 use bb_dom::{Document, NodeId};
+use bb_html::tree_builder::Pause;
 use bb_html::TreeBuilder;
 use bb_js::vm::heap::NativeCall;
 use bb_js::{JsResult, Value, Vm};
@@ -17,28 +18,118 @@ use crate::host::*;
 /// Run the parser on document 0 until a script element closes (or until the tokenizer
 /// passes `end`, for document.write).
 fn pump(vm: &mut Vm, h: &Host, end: Option<usize>) -> Option<NodeId> {
-    let (r, before) = {
-        let mut p = h.parser.try_borrow_mut().ok()?;
-        let tb = p.as_mut()?;
-        let mut docs = h.docs.try_borrow_mut().ok()?;
-        let before = docs[0].len();
-        let disabled: Vec<String> =
-            h.ce.borrow().defs.iter().filter(|d| d.disable_shadow).map(|d| d.name.clone()).collect();
-        tb.set_shadow_disabled_names(disabled);
-        std::mem::swap(&mut tb.doc, &mut docs[0]);
-        let r = match end {
-            Some(e) => tb.pump_until(e),
-            None => tb.pump(),
+    loop {
+        let (r, before) = {
+            let mut p = h.parser.try_borrow_mut().ok()?;
+            let tb = p.as_mut()?;
+            let mut docs = h.docs.try_borrow_mut().ok()?;
+            let before = docs[0].len();
+            let (disabled, defs) = {
+                let r = h.ce.borrow();
+                (
+                    r.defs.iter().filter(|d| d.disable_shadow).map(|d| d.name.clone()).collect(),
+                    r.defs.iter().map(|d| (d.name.clone(), d.local_name.clone())).collect(),
+                )
+            };
+            tb.set_shadow_disabled_names(disabled);
+            tb.set_custom_definitions(defs);
+            std::mem::swap(&mut tb.doc, &mut docs[0]);
+            let r = match end {
+                Some(e) => tb.pump_until(e),
+                None => tb.pump(),
+            };
+            std::mem::swap(&mut tb.doc, &mut docs[0]);
+            h.dirty.set(true);
+            (r, before)
         };
-        std::mem::swap(&mut tb.doc, &mut docs[0]);
-        h.dirty.set(true);
-        (r, before)
+        parsed_records(vm, h, before);
+        parsed_slots(vm, h, before);
+        crate::details::parsed(vm, h, 0, before);
+        parsed_frames(vm, h, before);
+        crate::ce::parsed(vm, h, before);
+        match r? {
+            Pause::Script(s) => return Some(s),
+            Pause::CustomElement { name, is, attrs } => {
+                let el = construct_for_parser(vm, h, &name, is.as_deref(), &attrs);
+                if let Ok(mut p) = h.parser.try_borrow_mut() {
+                    if let Some(tb) = p.as_mut() {
+                        tb.provide_element(el);
+                    }
+                }
+            }
+            // "insert an element at the adjusted insertion location": its reactions run now.
+            Pause::Inserted(n) => {
+                crate::ce::enter(h);
+                crate::ce::inserted(vm, h, &[NodeRef { doc: 0, id: n }]);
+                crate::ce::leave(vm, h);
+            }
+        }
+    }
+}
+
+/// HTML §13.2.6.1 "create an element for a token" when it will execute script: a
+/// microtask checkpoint (if no script is running), the element created with the
+/// synchronous custom elements flag (its constructor runs, with document.write and friends
+/// throwing), then the token's attributes appended, their reactions run.
+fn construct_for_parser(
+    vm: &mut Vm,
+    h: &Host,
+    name: &str,
+    is: Option<&str>,
+    attrs: &[(String, String)],
+) -> Option<NodeId> {
+    h.throw_on_dynamic_markup.set(h.throw_on_dynamic_markup.get() + 1);
+    if vm.stack_empty() {
+        vm.run_jobs();
+    }
+    crate::ce::enter(h);
+    vm.terminated = false;
+    vm.fuel = Some(crate::SCRIPT_FUEL);
+    let el = match crate::ce::create(vm, h, 0, name, is) {
+        Ok(Some(v)) => node_of(vm, &v).filter(|n| n.doc == 0),
+        Ok(None) => None,
+        Err(e) => {
+            if vm.terminated {
+                log::warn!("the constructor of <{name}> ran too long and was stopped");
+                vm.terminated = false;
+            } else {
+                crate::events::report_exception(vm, e);
+            }
+            None
+        }
     };
-    parsed_records(vm, h, before);
-    crate::details::parsed(vm, h, 0, before);
-    parsed_frames(vm, h, before);
-    crate::ce::parsed(vm, h, before);
-    r
+    if let Some(n) = el {
+        for (k, v) in attrs {
+            if let Err(e) = crate::mutation::set_attr(vm, h, n, bb_dom::Namespace::None, None, k, v) {
+                crate::events::report_exception(vm, e);
+            }
+        }
+    }
+    crate::ce::leave(vm, h);
+    h.throw_on_dynamic_markup.set(h.throw_on_dynamic_markup.get().saturating_sub(1));
+    register_handlers(vm, h);
+    el.map(|n| n.id)
+}
+
+/// Slots see the nodes the parser inserted into shadow hosts and shadow trees (DOM §4.2.3
+/// "insert" steps 7.4-7.5), as a constructor may have attached a shadow root before its
+/// element's children were parsed.
+fn parsed_slots(vm: &mut Vm, h: &Host, before: usize) {
+    let parents: Vec<NodeId> = {
+        let Ok(docs) = h.docs.try_borrow() else { return };
+        let d = &docs[0];
+        if !d.has_shadow_trees() {
+            return;
+        }
+        let mut ps: Vec<NodeId> = (before..d.len()).filter_map(|i| d.parent(NodeId(i as u32))).collect();
+        ps.sort_by_key(|p| p.0);
+        ps.dedup();
+        ps.retain(|&p| d.shadow_root(p).is_some() || d.containing_shadow_root(p).is_some());
+        ps
+    };
+    for p in parents {
+        crate::shadow::tree_changed(vm, h, NodeRef { doc: 0, id: p });
+    }
 }
 
 /// Frames for the iframes and frames the parser inserted (HTML §4.8.5).
@@ -448,6 +539,14 @@ pub fn document_write(vm: &mut Vm, c: &NativeCall, newline: bool) -> JsResult<Va
         text.push('\n');
     }
     let (h, n) = this_node(vm, &c.this, C::Document)?;
+    // Step 3: not while the parser is constructing a custom element.
+    if n.doc == 0 && h.throw_on_dynamic_markup.get() > 0 {
+        return crate::exception::throw(
+            vm,
+            "InvalidStateError",
+            "document.write while a custom element is constructed",
+        );
+    }
     if n.doc != 0 {
         // Documents without a browsing context have no parser to write to (not done yet).
         log::debug!("document.write to a document that isn't a window's ignored");
@@ -509,6 +608,14 @@ pub fn document_open(vm: &mut Vm, h: &Host, doc: u32) -> JsResult<()> {
     if h.doc_types.borrow().get(doc as usize).map(String::as_str) != Some("text/html") {
         return crate::exception::throw(vm, "InvalidStateError", "document.open needs an HTML document");
     }
+    // Step 3: not while the parser is constructing a custom element.
+    if doc == 0 && h.throw_on_dynamic_markup.get() > 0 {
+        return crate::exception::throw(
+            vm,
+            "InvalidStateError",
+            "document.open while a custom element is constructed",
+        );
+    }
     // Only the window's document has a parser here; an active parser keeps the document.
     if doc != 0 || h.parser.borrow().is_some() || h.frames.borrow().ignore_destructive > 0 {
         return Ok(());
@@ -541,6 +648,14 @@ pub fn document_open(vm: &mut Vm, h: &Host, doc: u32) -> JsResult<()> {
 pub fn document_close(vm: &mut Vm, h: &Host, doc: u32) -> JsResult<()> {
     if h.doc_types.borrow().get(doc as usize).map(String::as_str) != Some("text/html") {
         return crate::exception::throw(vm, "InvalidStateError", "document.close needs an HTML document");
+    }
+    // Step 3: not while the parser is constructing a custom element.
+    if doc == 0 && h.throw_on_dynamic_markup.get() > 0 {
+        return crate::exception::throw(
+            vm,
+            "InvalidStateError",
+            "document.close while a custom element is constructed",
+        );
     }
     if doc != 0 || !h.frames.borrow().script_parser || h.parser.borrow().is_none() {
         return Ok(());

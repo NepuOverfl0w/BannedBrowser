@@ -606,44 +606,49 @@ pub fn create(vm: &mut Vm, h: &Host, doc: u32, local: &str, is: Option<&str>) ->
         (r.defs[def].name == r.defs[def].local_name, r.defs[def].ctor)
     };
     if autonomous {
-        // Step 6.2: construct it; the result must be a fresh element of this document.
-        let v = match vm.construct(ctor, Vec::new(), None) {
-            Ok(v) => v,
-            Err(e) => {
-                // Step 6.2.3: report it, and make an HTMLUnknownElement in the "failed" state.
-                crate::events::report_exception(vm, e);
-                let id = with_doc_mut(vm, h, doc, |d| d.create_element(Namespace::Html, local, Vec::new()))?;
-                let n = NodeRef { doc, id };
-                h.ce.borrow_mut().elems.insert(
-                    n.pack(),
-                    Elem { state: State::Failed, def: None, is: None, queue: VecDeque::new() },
+        // Step 6.1: construct it; the result must be a fresh element of this document. If
+        // any of this throws, the exception is reported and the element is an
+        // HTMLUnknownElement in the "failed" state.
+        let made = (|| -> JsResult<Value> {
+            let v = vm.construct(ctor, Vec::new(), None)?;
+            let Some(n) = node_of(vm, &v) else {
+                return vm.type_error("the custom element constructor didn't return an element");
+            };
+            let ok = with_doc(vm, h, n.doc, |d| {
+                let e = d.element(n.id);
+                n.doc == doc
+                    && e.is_some_and(|e| e.attrs.is_empty() && e.name == local && e.ns == Namespace::Html)
+                    && d.first_child(n.id).is_none()
+                    && d.parent(n.id).is_none()
+            })?;
+            if !ok {
+                return throw(
+                    vm,
+                    "NotSupportedError",
+                    "the custom element constructor returned an unsuitable element",
                 );
-                mark_defined(h, n, false);
-                let w = wrap(vm, h, n)?;
-                if let Value::Object(o) = w {
-                    vm.heap.obj_mut(o).proto = Some(h.proto(C::HTMLUnknownElement));
-                }
-                return Ok(Some(w));
             }
+            Ok(v)
+        })();
+        let e = match made {
+            Ok(v) => return Ok(Some(v)),
+            Err(e) => e,
         };
-        let Some(n) = node_of(vm, &v) else {
-            return vm.type_error("the custom element constructor didn't return an element");
-        };
-        let ok = with_doc(vm, h, n.doc, |d| {
-            let e = d.element(n.id);
-            n.doc == doc
-                && e.is_some_and(|e| e.attrs.is_empty() && e.name == local && e.ns == Namespace::Html)
-                && d.first_child(n.id).is_none()
-                && d.parent(n.id).is_none()
-        })?;
-        if !ok {
-            return throw(
-                vm,
-                "NotSupportedError",
-                "the custom element constructor returned an unsuitable element",
-            );
+        if vm.terminated {
+            return Err(e);
         }
-        return Ok(Some(v));
+        crate::events::report_exception(vm, e);
+        let id = with_doc_mut(vm, h, doc, |d| d.create_element(Namespace::Html, local, Vec::new()))?;
+        let n = NodeRef { doc, id };
+        h.ce.borrow_mut()
+            .elems
+            .insert(n.pack(), Elem { state: State::Failed, def: None, is: None, queue: VecDeque::new() });
+        mark_defined(h, n, false);
+        let w = wrap(vm, h, n)?;
+        if let Value::Object(o) = w {
+            vm.heap.obj_mut(o).proto = Some(h.proto(C::HTMLUnknownElement));
+        }
+        return Ok(Some(w));
     }
     // A customized built-in element: created, then upgraded synchronously (step 5).
     let id = with_doc_mut(vm, h, doc, |d| d.create_element(Namespace::Html, local, Vec::new()))?;
@@ -652,6 +657,7 @@ pub fn create(vm: &mut Vm, h: &Host, doc: u32, local: &str, is: Option<&str>) ->
         n.pack(),
         Elem { state: State::Undefined, def: None, is: is.map(str::to_string), queue: VecDeque::new() },
     );
+    record_is(h, n, is);
     let w = wrap(vm, h, n)?;
     if let Err(e) = upgrade(vm, h, n, def) {
         crate::events::report_exception(vm, e);
@@ -659,8 +665,19 @@ pub fn create(vm: &mut Vm, h: &Host, doc: u32, local: &str, is: Option<&str>) ->
     Ok(Some(w))
 }
 
+/// Record element `n`'s `is` value in its document too (for serialization).
+fn record_is(h: &Host, n: NodeRef, is: Option<&str>) {
+    let Some(is) = is else { return };
+    if let Ok(mut docs) = h.docs.try_borrow_mut() {
+        if let Some(d) = docs.get_mut(n.doc as usize) {
+            d.set_is_value(n.id, is);
+        }
+    }
+}
+
 /// Record a created element's state and `is` value (no definition applied).
 pub fn created(h: &Host, n: NodeRef, local: &str, is: Option<&str>) {
+    record_is(h, n, is);
     let custom = valid_name(local) || is.is_some();
     if !custom && h.ce.borrow().elems.is_empty() {
         return;

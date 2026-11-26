@@ -197,6 +197,14 @@ fn ser(doc: &Document, id: NodeId, sh: &Shadows<'_>, out: &mut String) {
                 escape(&a.value, true, out);
                 out.push('"');
             }
+            // HTML §13.3 serialization: an `is` value without an `is` attribute.
+            if let Some(is) = doc.is_value(id) {
+                if !e.attrs.iter().any(|a| a.ns == Namespace::None && a.name == "is") {
+                    out.push_str(" is=\"");
+                    escape(is, true, out);
+                    out.push('"');
+                }
+            }
             out.push('>');
             if e.ns == Namespace::Html && VOID.contains(&e.name.as_str()) {
                 return;

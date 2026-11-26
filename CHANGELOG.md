@@ -44,7 +44,8 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   dynamic `import`), with import maps (`<script type=importmap>`, several merged, scopes,
   `import.meta.resolve()`), and module workers (`type: 'module'`) run. Custom
   elements: `customElements.define`, autonomous and customized built-in elements, upgrades,
-  and connected/disconnected/adopted/attributeChanged callbacks, `:defined`, ElementInternals
+  and connected/disconnected/adopted/attributeChanged callbacks (the parser constructs defined
+  elements as it reads their start tags), `:defined`, ElementInternals
   (form-associated custom elements with form values, validity and form callbacks; custom
   states and `:state()`). Streams: ReadableStream,
   WritableStream, TransformStream, the queuing strategies, TextEncoderStream/TextDecoderStream,
@@ -60,7 +61,7 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
   page; clicks and keys reach page listeners first and can be canceled. Measured with WPT's
   `dom/`, `domparsing/`, `FileAPI/`, `xhr/formdata/`, `url/`, `encoding/` and `fetch/api/headers/` tests
   and `workers/`, `webmessaging/`, structured clone, `custom-elements/`, `streams/`,
-  `shadow-dom/` and `import-maps/` (105117/126527 subtests so far).
+  `shadow-dom/` and `import-maps/` (105177/126528 subtests so far).
 - **JavaScript engine (milestone D):** `bb-js` has a lexer and a parser
   for the whole ES2025 grammar (plus stage-3 import phases and `using`) with its early errors,
   measured against test262, and an interpreter: bytecode compiler, stack VM, garbage
@@ -179,6 +180,10 @@ The v0.2 scope is in [PROGRESS.md](PROGRESS.md).
 - A page's second inline module script ran: every inline module was keyed by the document URL
   in the module map, so later ones got the first one's record. Inline modules now resolve
   against, and report as `import.meta.url`, the document's base URL (`<base href>` included).
+- `document.createElement` no longer throws when a custom element constructor returns an
+  unsuitable element: the error is reported and an HTMLUnknownElement is made (DOM §4.9).
+- An element's `is` value is serialized when it has no `is` attribute (HTML §13.3).
+- Slots see children the parser inserts into a shadow host (`slotchange`).
 - `<script type=" module">` is no longer a module script: only JavaScript MIME types may have
   whitespace around them (HTML §4.12.1.1).
 

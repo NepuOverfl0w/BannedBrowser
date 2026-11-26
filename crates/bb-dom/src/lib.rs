@@ -265,6 +265,8 @@ pub struct Document {
     custom_defined: std::collections::HashMap<NodeId, bool>,
     /// Custom elements' states (ElementInternals.states, CSS `:state()`).
     custom_states: std::collections::HashMap<NodeId, Vec<String>>,
+    /// Elements' `is` values (DOM §4.9), as the host records them.
+    custom_is: std::collections::HashMap<NodeId, String>,
     /// The focused element (see `focus.rs`).
     focused: Option<NodeId>,
 }
@@ -290,6 +292,7 @@ impl Document {
             shadow: Default::default(),
             custom_defined: Default::default(),
             custom_states: Default::default(),
+            custom_is: Default::default(),
             focused: None,
         }
     }
@@ -585,6 +588,10 @@ impl Document {
             self.nodes[copy.index()].flags |= NodeFlags::CDATA;
         }
         pairs.push((id, copy));
+        // A clone gets the `is` value too (DOM §4.5 "clone a node" step 2.1).
+        if let Some(v) = src.custom_is.get(&id) {
+            self.custom_is.insert(copy, v.clone());
+        }
         if !cloning {
             // Adoption: the host's per-element state goes along.
             if let Some(&d) = src.custom_defined.get(&id) {
@@ -659,6 +666,17 @@ impl Document {
         let n = e.name.as_str();
         let custom = n.starts_with(|c: char| c.is_ascii_lowercase()) && n.contains('-');
         !(custom || e.has_attr("is"))
+    }
+
+    /// Element `id`'s `is` value (DOM §4.9), which serialization writes when the element
+    /// has no `is` attribute.
+    pub fn is_value(&self, id: NodeId) -> Option<&str> {
+        self.custom_is.get(&id).map(String::as_str)
+    }
+
+    /// Record element `id`'s `is` value.
+    pub fn set_is_value(&mut self, id: NodeId, is: &str) {
+        self.custom_is.insert(id, is.to_string());
     }
 
     /// Record whether element `id` is defined (its custom element state changed).
